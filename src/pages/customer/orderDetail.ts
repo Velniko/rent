@@ -133,7 +133,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           ${renderRentalDiscounts(order, device || {})}
           <p><strong>押金:</strong> ${formatCurrency(deposit)}（${securityDepositMethodLabel(depositMethod)}；${depositMode === 'PREAUTH' ? '预授权' : depositMode === 'SETUP_INTENT' ? 'SetupIntent 保存卡片，不预扣' : order.billing_mode === 'MONTHLY' ? '随首期收取' : '单独处理'}）</p>
           <p><strong>订单合计:</strong> ${formatCurrency(order.totalAmount)}</p>
-          ${['MONTHLY', 'FULL'].includes(chosenBillingMode) ? `<p><strong>付款计划:</strong> ${isMonthlyRental(order) ? '月付' : '一次性付清（免押金）'}</p>` : ''}
+          ${['MONTHLY', 'FULL'].includes(chosenBillingMode) ? `<p><strong>付款计划:</strong> ${isMonthlyRental(order) ? '月付' : Number(order.rentalPeriod) >= 60 && deposit === 0 ? '一次性付清（免押金）' : '一次性付清'}</p>` : ''}
           <p id="square-payment-summary"${squarePaidAmount > 0 ? '' : ' hidden'}><strong>礼品卡已扣:</strong> ${formatCurrency(squarePaidAmount)}${squareRemainingAmount > 0 ? `；Stripe 剩余 ${formatCurrency(squareRemainingAmount)}` : ''}</p>
           ${squarePaymentSelected && squarePaidAmount > 0 ? `<p><strong>礼品卡扣减后待支付:</strong> ${formatCurrency(squareRemainingAmount)}</p>` : ''}
           ${refundLabel ? `<p><strong>退款状态:</strong> ${esc(refundLabel)}</p>` : ''}

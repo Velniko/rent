@@ -638,9 +638,9 @@ test('new combined authorization requests manual card capture and extended valid
   assert.equal(created.params.get('payment_intent_data[metadata][type]'), 'rental_authorization')
 })
 
-test('long rental charges first month and deposit and saves the card', async t => {
+test('existing 30-day monthly plans retain their first rent and deposit payment', async t => {
   const { sqlite, calls, context, setIntent } = await setup(t, { status: 'pending_payment', mode: 'SETUP_INTENT' })
-  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod = 30, stripe_payment_method_id = 'pm_saved' WHERE id='order'; UPDATE users SET stripe_customer_id = 'cus_test' WHERE id='customer';")
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod = 30, billing_mode = 'MONTHLY', stripe_payment_method_id = 'pm_saved' WHERE id='order'; UPDATE users SET stripe_customer_id = 'cus_test' WHERE id='customer';")
   // The existing customer/card relationship avoids creating another customer.
   const fetchBefore = globalThis.fetch
   globalThis.fetch = (async (url: any, init: any) => String(url).includes('/payment_methods/') ? Response.json({ id: 'pm_saved', customer: 'cus_test', card: { brand: 'visa' } }) : fetchBefore(url, init)) as typeof fetch
@@ -1154,17 +1154,46 @@ test('a long rental can switch between full payment without deposit and monthly 
   assert.match(html,/一次性付清（免押金）/);assert.match(html,/AUD\$1886\.00/)
 })
 
-test('full-payment eligibility starts at 60 days and a paid rental cannot change its plan',async t=>{
+test('full payment is available below 60 days while monthly eligibility starts at 60 days',async t=>{
   const {sqlite,context}=await setup(t,{status:'pending_payment'})
-  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod=59')
-  const shortOrder=await getOrderById(context,'order')
-  await assert.rejects(()=>setRentalPaymentPlan(context,shortOrder,'FULL'),/60天/)
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments')
+  const originalDeposit=Number((await getOrderById(context,'order'))!.depositAmount)
+  for (const days of [1,7,30,59]) {
+    sqlite.prepare('UPDATE orders SET rentalPeriod=?').run(days)
+    const shortOrder=await getOrderById(context,'order')
+    await assert.rejects(()=>setRentalPaymentPlan(context,shortOrder,'MONTHLY'),/60天/)
+    const shortHtml=renderRentalPaymentPlan(shortOrder,{pricePerDay:20,depositAmount:100},'/customer/orders/order/payment-plan')
+    assert.equal(shortHtml,'')
+    assert.doesNotMatch(shortHtml,/免押金/)
+    const full=await setRentalPaymentPlan(context,shortOrder,'FULL')
+    assert.equal(full.depositAmount,originalDeposit)
+    assert.equal(full.totalAmount,300)
+    assert.equal(full.deposit_payment_mode,'PREAUTH')
+  }
   sqlite.exec('UPDATE orders SET rentalPeriod=60')
+  const monthly=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'MONTHLY')
+  assert.equal(monthly.depositAmount,originalDeposit)
+  assert.match(renderRentalPaymentPlan(monthly,{pricePerDay:20},'/customer/orders/order/payment-plan'),/value="MONTHLY" checked/)
   const order=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'FULL')
   assert.equal(order.depositAmount,0)
   sqlite.exec("INSERT INTO payments(id,rental_id,customer_id,payment_method,amount,rental_amount,deposit_amount,status) VALUES('charged','order','customer','card',100,100,0,'paid')")
   await assert.rejects(()=>setRentalPaymentPlan(context,order,'MONTHLY'),/已有付款/)
   assert.equal(sqlite.prepare('SELECT depositAmount FROM orders').get()?.depositAmount,0)
+})
+
+test('short full payment restores its quoted deposit after a prior waiver',async t=>{
+  const {sqlite,context}=await setup(t,{status:'pending_payment'})
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod=60')
+  let order=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'FULL')
+  assert.equal(order.depositAmount,0)
+  sqlite.exec('UPDATE orders SET rentalPeriod=59; UPDATE devices SET depositAmount=999')
+  order=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'FULL')
+  assert.equal(order.depositAmount,200)
+  assert.equal(order.totalAmount,300)
+  assert.equal(order.deposit_status,'PENDING')
+  const html=await renderCustomerOrderDetail(context,{id:'customer',role:'CUSTOMER'},'order')
+  assert.match(html,/付款计划:<\/strong> 一次性付清<\/p>/)
+  assert.doesNotMatch(html,/一次性付清（免押金）/)
 })
 
 test('only the customer who owns an unpaid long rental can update the plan',async t=>{

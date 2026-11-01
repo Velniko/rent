@@ -20,7 +20,7 @@ export function isMonthlyRental(order: { billing_mode?: string; rental_pricing_j
       if (JSON.parse(order.rental_pricing_json).billingMode === 'FULL') return false
     } catch { /* Preserve the legacy billing decision for older snapshots. */ }
   }
-  return order.billing_mode === 'MONTHLY' || (Number(order.rentalPeriod) >= LONG_TERM_RENTAL_DAYS && String(order.paymentProvider || order.payment_provider || 'stripe') === 'stripe')
+  return order.billing_mode === 'MONTHLY' || (Number(order.rentalPeriod) >= 60 && String(order.paymentProvider || order.payment_provider || 'stripe') === 'stripe')
 }
 
 export function rentalPricingSnapshot(device: RentalPricingDeviceLike): string {

@@ -3970,6 +3970,7 @@ const staff: Readonly<Record<string, string>> = {
 
 // @domain customer —— 客户 / 访客端页面文案
 const customer: Readonly<Record<string, string>> = {
+  '一次性付清（含押金）': 'Pay in full (including deposit)',
   '信用卡扣款失败': 'Card charge failed',
   '首期月租付款成功': 'First monthly rental payment successful',
   '月租自动扣款未完成': 'Automatic monthly rental payment incomplete',
@@ -4044,6 +4045,7 @@ const customer: Readonly<Record<string, string>> = {
   '租期满60天且未付款时可修改付款计划': 'Payment plans can be changed before payment for rentals of at least 60 days',
   '请选择月付或一次性付清': 'Choose monthly payments or payment in full',
   '更新付款计划': 'Update payment plan',
+  '一次性付清': 'Pay in full',
   '一次性付清（免押金）': 'Pay in full (no deposit)',
   '月付': 'Pay monthly',
   '租金付款计划': 'Rental payment plan',
@@ -4654,6 +4656,8 @@ const legal: Readonly<Record<string, string>> = {
 
 // @domain errors —— 错误与空状态提示
 const errors: Readonly<Record<string, string>> = {
+  '未付款时可修改付款计划': 'The payment plan can be changed before payment.',
+  '月付仅适用于租期满60天的订单': 'Monthly payments are only available for rentals of 60 days or more.',
   'Stripe 付款摘要数据不匹配': 'Stripe checkout details do not match.',
   '付款摘要数据不匹配': 'Checkout details do not match.',
   'Stripe 正在确认付款，请稍后重试': 'Stripe is confirming your payment. Please try again shortly.',
