@@ -82,6 +82,10 @@ export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[]
 
       <div class="finance-sections">
         <div class="finance-section">
+          <h4>单据中心</h4>
+          <a href="/admin/documents" class="button button-sm">查询单据</a>
+        </div>
+        <div class="finance-section">
           <h4>收入统计</h4>
           <p>查看订单收入和租赁交易明细。</p>
           <a href="/admin/revenue-stats" class="button button-sm">查看收入统计</a>

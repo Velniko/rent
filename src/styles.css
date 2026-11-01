@@ -2027,6 +2027,19 @@ body.is-navigating {
   margin-top: 16px;
 }
 
+.pickup-closed-ranges { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.pickup-closed-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 6px; }
+.pickup-closed-row > button:first-child { white-space: normal; text-align: left; font-family: var(--font-mono); }
+.pickup-closed-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); box-shadow: 0 20px 60px #0003; overflow-y: auto; }
+.pickup-closed-dialog::backdrop { background: #14213280; }
+.pickup-closed-dialog .section-title { margin-bottom: 16px; }
+.pickup-closed-endpoints { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pickup-closed-endpoints .form-control { margin-top: 6px; min-width: 0; }
+.pickup-closed-endpoints [aria-pressed="true"] { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.pickup-closed-dialog .booking-calendar { gap: 4px; }
+.pickup-closed-dialog .booking-day { min-height: 34px; padding: 4px; }
+.pickup-closed-dialog .record-actions { margin: 12px 0 0; padding: 0; border: 0; justify-content: flex-end; }
+
 @media (max-width: 900px) {
   .pickup-time-settings .grid-3 {
     grid-template-columns: 1fr;
@@ -2347,6 +2360,13 @@ button:disabled {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-light);
 }
+
+.announcement-editor { align-items: start; }
+.announcement-editor__language { min-width: 0; }
+textarea.form-control.announcement-source { width: 100%; height: auto; min-height: 180px; max-height: none; resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: var(--font-mono); }
+.announcement-html { overflow-wrap: anywhere; word-break: break-word; }
+.announcement-html pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.announcement-html img, .announcement-html table { max-width: 100%; }
 
 .markdown-editor-toolbar {
   display: flex;
@@ -11041,18 +11061,19 @@ header.desktop-header {
 }
 
 .sidebar-section a .nav-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
   display: grid;
   place-items: center;
   font-size: 0;
-  color: var(--c-text-3);
+  color: var(--c-text-2);
 }
 
 .nav-icon-svg { width: 15px; height: 15px; display: block; stroke-width: 1.6; }
+.sidebar-section a .nav-icon-svg { width: 18px; height: 18px; }
 
-.sidebar-section a:hover .nav-icon { color: var(--c-text-2); }
+.sidebar-section a:hover .nav-icon { color: var(--c-accent); }
 .sidebar-section a.active .nav-icon { color: var(--c-accent) !important; }
 
 /* 导航分组：折叠标题用正文小字，不用编号 */

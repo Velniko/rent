@@ -391,11 +391,18 @@
         const overlay = document.createElement('div');
         overlay.className = isAnnouncement ? 'announcement-overlay' : 'notification-toast notification-toast--stacked';
         overlay.innerHTML = isAnnouncement
-          ? '<div class="announcement-card" role="dialog" aria-modal="true" aria-labelledby="announcement-title"><span class="announcement-card__label">网站通告</span><h2 id="announcement-title"></h2><p></p><button class="button button-primary" type="button">以后不再展示此通告</button></div>'
+          ? '<div class="announcement-card" role="dialog" aria-modal="true" aria-labelledby="announcement-title"><span class="announcement-card__label">网站通告</span><h2 id="announcement-title" data-i18n-ignore></h2><div class="announcement-html" data-announcement-body data-i18n-ignore></div><button class="button button-primary" type="button">以后不再展示此通告</button></div>'
           : '<article class="notification-toast__card" role="status"><div class="notification-toast__header"><span class="notification-toast__mark">N</span><strong></strong><button type="button" aria-label="关闭通知">×</button></div><p></p><a class="button button-sm button-secondary" href="/notifications">查看通知</a></article>';
         overlay.querySelector('strong, h2').textContent = notification.title || (isAnnouncement ? '网站通告' : '新通知');
-        overlay.querySelector('p').innerHTML = isAnnouncement ? (notification.message_html || '') : ('你收到了 ' + unreadCount + ' 条新消息');
-        const dismiss = function () { fetch('/notifications/' + encodeURIComponent(notification.id) + '/dismiss', { method: 'POST' }).finally(function () { overlay.remove(); }); };
+        const renderAnnouncement = function () {
+          if (!isAnnouncement) return;
+          const english = document.documentElement.getAttribute('data-language') === 'en';
+          overlay.querySelector('h2').textContent = english && notification.title_en ? notification.title_en : notification.title;
+          overlay.querySelector('[data-announcement-body]').innerHTML = english ? (notification.message_html_en || notification.message_html || '') : (notification.message_html || '');
+        };
+        if (isAnnouncement) { renderAnnouncement(); window.addEventListener('site-language-change', renderAnnouncement); }
+        else overlay.querySelector('p').textContent = '你收到了 ' + unreadCount + ' 条新消息';
+        const dismiss = function () { fetch('/notifications/' + encodeURIComponent(notification.id) + '/dismiss', { method: 'POST' }).finally(function () { window.removeEventListener('site-language-change', renderAnnouncement); overlay.remove(); }); };
         overlay.querySelector('.announcement-card button, .notification-toast__header button').addEventListener('click', dismiss);
         (isAnnouncement ? document.body : getNoticeLayer()).appendChild(overlay);
       };
@@ -508,7 +515,7 @@
         resultLinks.push(link);
       };
 
-      const render = function (query, orders, loading) {
+      const render = function (query, orders, loading, documents = []) {
         const normalizedQuery = query.trim();
         const pages = getPageEntries().filter(function (entry) { return matches(entry, normalizedQuery); });
         resultLinks = [];
@@ -520,7 +527,7 @@
           const common = pages.filter(function (entry) { return entry.href.indexOf('/dashboard') !== -1 || entry.href.indexOf('/orders') !== -1 || entry.href.indexOf('/devices') !== -1; }).slice(0, 8);
           appendHeading('常用功能', common.length);
           common.forEach(function (entry) { appendResult({ href: entry.href, title: entry.label, detail: entry.group, icon: entry.icon }, 'page', resultLinks.length); });
-          meta.textContent = '输入名称、订单号或关键词开始搜索';
+          meta.textContent = '输入名称、订单号、单据号或关键词开始搜索';
         } else {
           if (pages.length) {
             appendHeading('功能入口', pages.length);
@@ -538,13 +545,19 @@
               appendResult({ href: order.target, title: order.orderNo, detail: [order.customerName, order.deviceName, order.statusLabel].filter(Boolean).join(' · ') }, 'order', resultLinks.length);
             });
           }
-          if (!pages.length && !orders.length && !loading) {
+          if (documents.length) {
+            appendHeading('单据', documents.length);
+            documents.forEach(function (document) {
+              appendResult({ href: document.target, title: document.number, detail: [document.typeLabel, document.orderNo, document.customerName, document.statusLabel].filter(Boolean).join(' · ') }, 'document', resultLinks.length);
+            });
+          }
+          if (!pages.length && !orders.length && !documents.length && !loading) {
             const empty = document.createElement('p');
             empty.className = 'global-search__empty';
-            empty.textContent = '没有找到匹配内容，试试订单号、客户名或功能名称。';
+            empty.textContent = '没有找到匹配内容，试试订单号、单据号或客户名。';
             results.appendChild(empty);
           }
-          meta.textContent = loading ? '正在搜索工作台…' : (pages.length + orders.length ? '找到 ' + (pages.length + orders.length) + ' 个结果' : '没有匹配结果');
+          meta.textContent = loading ? '正在搜索工作台…' : (pages.length + orders.length + documents.length ? '找到 ' + (pages.length + orders.length + documents.length) + ' 个结果' : '没有匹配结果');
         }
       };
 
@@ -595,7 +608,7 @@
             .then(function (response) { return response.ok ? response.json() : Promise.reject(new Error('search failed')); })
             .then(function (payload) {
               if (token !== requestToken || input.value.trim() !== query) return;
-              render(query, Array.isArray(payload.orders) ? payload.orders : [], false);
+              render(query, Array.isArray(payload.orders) ? payload.orders : [], false, Array.isArray(payload.documents) ? payload.documents : []);
             })
             .catch(function () {
               if (token !== requestToken || input.value.trim() !== query) return;
@@ -614,6 +627,16 @@
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (search.getAttribute('aria-hidden') === 'true') open(event); else close(event); }
         else if (event.key === 'Escape' && search.getAttribute('aria-hidden') !== 'true') close(event);
       });
+    });
+
+    // 通告源码自动换行并随内容展开；折叠历史记录打开时重新测量。
+    document.addEventListener('DOMContentLoaded', function () {
+      const resize = function (area) { if (!area.getClientRects().length) return; area.style.height = 'auto'; area.style.height = (area.scrollHeight + 2) + 'px'; };
+      const resizeAll = function () { document.querySelectorAll('textarea.announcement-source').forEach(resize); };
+      document.addEventListener('input', function (event) { if (event.target.matches('textarea.announcement-source')) resize(event.target); });
+      document.addEventListener('toggle', resizeAll, true);
+      window.addEventListener('resize', resizeAll);
+      resizeAll();
     });
 
     // 移动端导航抽屉：汉堡按钮滑出侧栏，点遮罩 / 链接 / Esc 关闭。

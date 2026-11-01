@@ -5,6 +5,7 @@
 
 import { buildLayout, formatCurrency, formatDate, sanitizePlainText } from '../../site';
 import { escapeHtml } from '../../lib/html';
+import { renderAnnouncementTitle, renderAnnouncementMessage } from '../../domain/announcement';
 
 export function renderCustomerDashboard(user: any, allOrders: any[], devices: any[], announcementData: { items: any[], page: number, pageCount: number } = { items: [], page: 1, pageCount: 1 }) {
   const announcements = announcementData.items || []
@@ -92,7 +93,7 @@ export function renderCustomerDashboard(user: any, allOrders: any[], devices: an
       </div>
       <div class="card dashboard-announcements">
         <div class="section-title"><h3>历史通告</h3><a class="link-button" href="/notifications">通知中心 →</a></div>
-        ${announcements.length ? `<div class="notification-list">${announcements.map(item => `<a class="dashboard-announcement" href="/notifications/${encodeURIComponent(item.id)}"><strong>${sanitizePlainText(item.title, 160)}</strong><span>${sanitizePlainText(item.created_at, 40)}</span><p>${sanitizePlainText(item.message, 300)}</p></a>`).join('')}</div>${announcementData.pageCount > 1 ? `<nav class="pagination" aria-label="历史通告分页">${Array.from({ length: announcementData.pageCount }, (_, index) => `<a class="button button-sm ${index + 1 === announcementData.page ? 'button-primary' : 'button-secondary'}" href="/customer/dashboard?announcementPage=${index + 1}">${index + 1}</a>`).join('')}</nav>` : ''}` : '<p class="empty-state">暂无通告</p>'}
+        ${announcements.length ? `<div class="notification-list">${announcements.map(item => `<a class="dashboard-announcement" href="/notifications/${encodeURIComponent(item.id)}"><strong>${renderAnnouncementTitle(item)}</strong><span>${sanitizePlainText(item.created_at, 40)}</span><div class="announcement-preview">${renderAnnouncementMessage({ ...item, message: sanitizePlainText(item.message, 300), message_en: sanitizePlainText(item.message_en || item.message, 300) })}</div></a>`).join('')}</div>${announcementData.pageCount > 1 ? `<nav class="pagination" aria-label="历史通告分页">${Array.from({ length: announcementData.pageCount }, (_, index) => `<a class="button button-sm ${index + 1 === announcementData.page ? 'button-primary' : 'button-secondary'}" href="/customer/dashboard?announcementPage=${index + 1}">${index + 1}</a>`).join('')}</nav>` : ''}` : '<p class="empty-state">暂无通告</p>'}
       </div>
     </div>
     <div class="panel" style="margin-top: 20px;">

@@ -8,6 +8,7 @@ import { buildLayout, getDeviceById, getDeviceRentalRules, formatCurrency } from
 import { escapeHtml as esc } from '../../lib/html'
 import { getRentalLink, expireRentalLinkDrafts } from '../../services/rentalLinks'
 import { renderRentalLinkDatePicker } from '../partials/rentalLinkDatePicker'
+import { pickupClosureConfig } from '../../domain/pickupTimeSlots'
 
 export async function renderPublicRentalLink(c: Context) {
   c.header('Cache-Control', 'private, no-store')
@@ -21,7 +22,7 @@ export async function renderPublicRentalLink(c: Context) {
   bookingCutoff.setUTCDate(bookingCutoff.getUTCDate() - rules.bufferDays)
   const bookings = ((await c.env.RENT.prepare("SELECT startDate, endDate, startPeriod, endPeriod FROM orders WHERE deviceId = ? AND status NOT IN ('completed', 'cancelled') AND (endDate >= ? OR startDate IS NULL OR endDate IS NULL) ORDER BY startDate").bind(device.id, bookingCutoff.toISOString().slice(0, 10)).all()).results || []) as any[]
   const unknownDates = bookings.some(booking => !booking.startDate || !booking.endDate)
-  const datePicker = renderRentalLinkDatePicker({ today, minutes: 0, minimumRentalDays: rules.minimumRentalDays, bufferDays: rules.bufferDays, unavailableDates: rules.unavailableDates, unavailableTimeSlots: rules.unavailableTimeSlots || {}, bookings })
+  const datePicker = renderRentalLinkDatePicker({ today, minutes: 0, minimumRentalDays: rules.minimumRentalDays, bufferDays: rules.bufferDays, unavailableDates: rules.unavailableDates, unavailableTimeSlots: rules.unavailableTimeSlots || {}, pickupClosure: pickupClosureConfig(rules), bookings })
   const body = `<div class="rental-link-shell"><div class="entity-header"><div class="identity-strip mono"><span>自助租赁</span><span>选择租期 → 填写资料并签约 → 付款</span></div><div class="entity-heading"><div><h2>${esc(link.title)}</h2><p>${esc(device.name)}${device.model ? ` · ${esc(device.model)}` : ''}</p></div><span class="badge badge-info">最短 ${rules.minimumRentalDays} 天</span></div></div>
     ${c.req.query('error') ? `<div data-flash-notice class="page-notification page-notification--error" role="alert">${esc(c.req.query('error'))}</div>` : ''}
     <div class="grid grid-2"><section class="panel"><h3>选择您的租期</h3><p class="section-note">选好租期后 30 分钟内完成签约。</p>

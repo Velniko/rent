@@ -57,6 +57,7 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
     serviceFeeHours: payload.rentalRules?.serviceFeeHours ?? getSystemSettings().rentalRules.serviceFeeHours,
     businessHours: payload.rentalRules?.businessHours ?? getSystemSettings().rentalRules.businessHours,
     unavailablePickupHours: payload.rentalRules?.unavailablePickupHours ?? getSystemSettings().rentalRules.unavailablePickupHours,
+    unavailablePickupRanges: payload.rentalRules?.unavailablePickupRanges ?? getSystemSettings().rentalRules.unavailablePickupRanges,
   })
   const serviceFeeRate = Number(payload.rentalRules?.serviceFeeRate ?? getSystemSettings().rentalRules.serviceFeeRate ?? 0.1)
   if (!hasValidPickupTimeSettings(pickupHours)) throw new Error('服务费时段与营业时段必须依次排列，且每段结束时间要晚于开始时间')
@@ -142,6 +143,7 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
       serviceFeeHours: pickupHours.serviceFeeHours,
       businessHours: pickupHours.businessHours,
       unavailablePickupHours: pickupHours.unavailablePickupHours,
+      unavailablePickupRanges: pickupHours.unavailablePickupRanges,
       serviceFeeRate,
       minimumRentalDays: Math.max(1, Math.floor(Number(payload.rentalRules?.minimumRentalDays ?? getSystemSettings().rentalRules.minimumRentalDays) || 1)),
       bufferDays: Math.max(0, Math.floor(Number(payload.rentalRules?.bufferDays ?? getSystemSettings().rentalRules.bufferDays) || 0)),

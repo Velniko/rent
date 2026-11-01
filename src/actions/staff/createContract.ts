@@ -9,6 +9,7 @@ import { findEligibleCoupon, calculateCouponDiscount } from '../coupons';
 import { nanoid } from 'nanoid';
 import { calculateRentalFee } from '../../domain/rentalPricing';
 import { depositPaymentModeForRental } from '../../domain/paymentPlan';
+import { isPickupPeriodClosed, pickupClosureConfig } from '../../domain/pickupTimeSlots';
 
 export async function handleCreateContractAction(c: Context, user: User, body: Record<string, string>, options: { errorPath?: string; rentalLinkId?: string; directSigning?: boolean } = {}): Promise<Response> {
   const errorPath = options.errorPath || '/staff/contracts/new'
@@ -63,6 +64,8 @@ export async function handleCreateContractAction(c: Context, user: User, body: R
   const normalizedStatus = String(device?.status || '').toLowerCase();
   if (!device || ['maintenance', 'retired'].includes(normalizedStatus)) return failRedirect('维修或退役设备不能新建合同')
   const rentalRules = await getDeviceRentalRules(c, deviceId)
+  const closure = pickupClosureConfig(rentalRules)
+  if (isPickupPeriodClosed(startDate, startPeriod, closure) || isPickupPeriodClosed(endDate, endPeriod, closure)) return failRedirect('所选时间不营业，请重新选择取还时间')
   const start = new Date(startDate);
   const end = new Date(endDate);
   const todayValue = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())

@@ -764,7 +764,7 @@ export async function reconcileOrderPayments(c: Context, orderId: string): Promi
   const [payments, refunds] = await Promise.all([
     db.prepare(`SELECT p.id, p.amount, p.processing_fee, p.status,
       CASE WHEN p.status = 'pending' AND p.payment_method = 'card' AND p.stripe_payment_intent_id = o.stripe_deposit_payment_intent_id
-        AND o.deposit_payment_mode = 'PREAUTH' AND o.deposit_status = 'HELD' THEN 1 ELSE 0 END AS is_authorization
+        AND o.deposit_payment_mode = 'PREAUTH' AND o.deposit_status IN ('HELD', 'REFUND_PENDING') THEN 1 ELSE 0 END AS is_authorization
       FROM payments p LEFT JOIN orders o ON o.id = p.rental_id WHERE p.rental_id = ?`).bind(orderId).all().then((r: any) => (r.results || []) as any[]),
     db.prepare('SELECT id, payment_id, refund_amount, status FROM payment_refunds WHERE order_id = ?').bind(orderId).all().then((r: any) => (r.results || []) as any[]),
   ])
@@ -1701,22 +1701,33 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
     : ''
 
   const navIcons: Record<string, string> = {
-    '/customer/dashboard': '⌂', '/customer/rentals': '▤', '/customer/orders': '▦',
+    '/customer/dashboard': 'rental-console', '/customer/rentals': '▤', '/customer/orders': '▦',
     '/customer/profile': '◎', '/customer/security': '⚿', '/customer/referral': '✦', '/customer/devices': 'laptop', '/customer/balance': '◌', '/customer/guest': '▰', '/customer/guest/upgrade': '↥',
-    '/staff/dashboard': '◍', '/staff/orders': '◓', '/staff/orders/ongoing': '◷', '/staff/customers': '♧', '/staff/contracts': '▱',
-    '/staff/contracts/new': 'file-plus', '/staff/contracts?status=pending_sign': '✍', '/staff/inspections': '◈', '/staff/mobile/scan': 'scan', '/staff/rentals/tracking': '⌖', '/staff/devices': '▭', '/manager/staff': '♙',
+    '/staff/dashboard': 'rental-console', '/staff/orders': '◓', '/staff/orders/ongoing': '◷', '/staff/customers': '♧', '/staff/contracts': 'rental-contract',
+    '/staff/contracts/new': 'file-plus', '/staff/contracts?status=pending_sign': '✍', '/staff/inspections': 'device-inspection', '/staff/mobile/scan': 'scan', '/staff/rentals/tracking': '⌖', '/staff/devices': 'asset-register', '/manager/staff': 'people',
     '/staff/mobile': 'today', '/staff/mobile?stage=pickup': 'pickup', '/staff/mobile?stage=return': 'return',
     '/admin/notifications/settings': 'bell-settings', '/admin/rental-links': 'link', '/admin/delivery': 'truck',
     '/admin/marketing-emails/data': 'marketing-chart', '/admin/api-settings': 'code',
-    '/notifications': 'N', '/admin/notifications': 'inbox', '/admin/dashboard': 'grid', '/admin/users': '♙', '/admin/orders': '▥',
-    '/admin/refunds': '↺', '/admin/contracts': '▱', '/admin/templates/contract': '▧', '/admin/finance': '$',
-    '/admin/withdrawals': '↗', '/admin/exceptions': 'alert', '/admin/devices': 'laptop', '/admin/device-agent-bindings': '⌁', '/admin/inspections': '◈', '/admin/calendar': '◫', '/admin/coupons': '%', '/admin/templates': '◇', '/admin/email-templates': '✉', '/admin/in-app-notification-templates': 'message-template', '/admin/tax-invoice-template': 'receipt', '/admin/marketing-emails': '⚑', '/admin/settings': '⚙',
-    '/admin/devices/reports': 'chart', '/admin/reports': 'trend', '/admin/data-retention': '⧗', '/admin/monitoring': 'activity', '/admin/connectivity': '⌘', '/admin/referrals': 'gift',
+    '/notifications': 'N', '/admin/notifications': 'inbox', '/admin/dashboard': 'rental-console', '/admin/users': 'people', '/admin/orders': '▥',
+    '/admin/refunds': 'deposit-return', '/admin/contracts': 'rental-contract', '/admin/templates/contract': '▧', '/admin/finance': 'rental-finance',
+    '/admin/withdrawals': '↗', '/admin/exceptions': 'alert', '/admin/devices': 'asset-register', '/admin/devices/relist': 'device-listing', '/admin/device-agent-bindings': 'device-binding', '/admin/inspections': 'device-inspection', '/admin/calendar': '◫', '/admin/coupons': '%', '/admin/templates': '◇', '/admin/email-templates': '✉', '/admin/in-app-notification-templates': 'message-template', '/admin/tax-invoice-template': 'receipt', '/admin/documents': 'receipt', '/admin/marketing-emails': '⚑', '/admin/settings': '⚙',
+    '/admin/devices/reports': 'device-reports', '/admin/reports': 'trend', '/admin/data-retention': 'data-retention', '/admin/monitoring': 'activity', '/admin/connectivity': '⌘', '/admin/referrals': 'gift',
     '/admin/order-review': 'order-review', '/admin/orders/balance-topups': '↥', '/admin/feedback-rewards': 'feedback-reward', '/admin/feedback-gift-cards': 'gift-card'
   }
 
   const navIconSvg = (kind: string) => {
     const paths: Record<string, string> = {
+      'rental-console': '<rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M3 9h18M9 9v12M13 13h4M13 17h2M7 6h.01M10 6h.01"></path>',
+      'people': '<rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="9" cy="10" r="2"></circle><path d="M5 17c.5-2 1.8-3 4-3s3.5 1 4 3M16 8h2M16 12h2M16 16h2"></path>',
+      'rental-contract': '<path d="M14 3H5v18h14V8l-5-5ZM14 3v5h5M8 11h7M8 14h3M8 18l2-2 2 2 3-3M15 18h1"></path>',
+      'asset-register': '<rect x="3" y="4" width="13" height="11" rx="1.5"></rect><path d="M2 19h15M7 15v4M12 15v4M6 8h6M6 11h3"></path><rect x="18" y="8" width="4" height="13" rx="1"></rect><path d="M20 17h.01"></path>',
+      'device-listing': '<path d="M12 5H4v12h16v-5M2 21h20M16 9V2m-4 4 4-4 4 4"></path>',
+      'device-binding': '<rect x="2" y="3" width="12" height="10" rx="1.5"></rect><path d="M8 13v4M5 17h6M14 8h5v4"></path><rect x="15" y="12" width="7" height="10" rx="1.5"></rect><path d="m17 16 1.5 1.5L21 15M18 20h1"></path>',
+      'device-inspection': '<rect x="3" y="4" width="18" height="13" rx="1.5"></rect><path d="m8 10 3 3 5-5M8 21h8M12 17v4"></path>',
+      'device-reports': '<path d="M14 3H4v18h16V9l-6-6ZM14 3v6h6M8 17v-3M12 17v-6M16 17v-4"></path>',
+      'rental-finance': '<path d="M12 21H4V3h13v6M7 7h6M7 11h3M7 15h2"></path><circle cx="17" cy="16" r="5"></circle><path d="M18.5 14h-2a1 1 0 0 0 0 2h1a1 1 0 0 1 0 2h-2M17 13v6"></path>',
+      'deposit-return': '<path d="M4 9a8 8 0 1 1 0 7M4 4v5h5"></path><path d="M14.5 9h-3a1.5 1.5 0 0 0 0 3h1a1.5 1.5 0 0 1 0 3h-3M12 7v10"></path>',
+      'data-retention': '<path d="M4 8v13h7M3 3h18v5H3V3ZM8 12h3"></path><circle cx="17" cy="16" r="5"></circle><path d="M17 13v3l2 1"></path>',
       '◉': '<circle cx="12" cy="12" r="7"></circle><circle cx="12" cy="12" r="2"></circle>',
       '▤': '<rect x="5" y="4" width="14" height="17" rx="2"></rect><path d="M9 4V2h6v2M8 9h8M8 13h8M8 17h5"></path>',
       '▦': '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z"></path><path d="M9 7h6M9 11h6M9 15h3"></path>',
@@ -1848,8 +1859,8 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
         <div class="global-search__scrim" data-global-search-close></div>
         <section class="global-search__panel" role="dialog" aria-modal="true" aria-labelledby="global-search-title">
           <div class="global-search__head"><div><span class="section-code">QUICK NAVIGATION</span><h2 id="global-search-title">去哪里？</h2></div><button class="global-search__close" type="button" data-global-search-close aria-label="关闭搜索">Esc</button></div>
-          <label class="global-search__input-wrap" for="global-search-input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg><input id="global-search-input" type="search" autocomplete="off" spellcheck="false" placeholder="查找订单、客户、设备或设置功能" aria-controls="global-search-results" aria-autocomplete="list"></label>
-          <div class="global-search__meta" id="global-search-meta">搜索页面与订单</div>
+          <label class="global-search__input-wrap" for="global-search-input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg><input id="global-search-input" type="search" autocomplete="off" spellcheck="false" placeholder="查找订单、单据、客户或设置功能" aria-controls="global-search-results" aria-autocomplete="list"></label>
+          <div class="global-search__meta" id="global-search-meta">搜索页面、订单与单据</div>
           <div class="global-search__results" id="global-search-results" role="listbox" aria-label="搜索结果"></div>
           <div class="global-search__foot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 打开</span><span><kbd>Esc</kbd> 关闭</span></div>
         </section>
@@ -1883,7 +1894,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
             ${renderNavGroup('租赁管理', [['/admin/order-review', '网站订单审核'], ['/admin/orders', '租赁订单'], ['/admin/delivery', '配送管理'], ['/admin/calendar', '租赁日历']])}
             ${renderNavGroup('合同管理', [['/admin/contracts', '合同列表'], ['/admin/templates/contract', '合同模板'], ['/admin/templates', '协议模板']])}
             ${renderNavGroup('设备管理', [['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
-            ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}
+            ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/documents', '单据中心'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}
             ${renderNavGroup('营销增长', [['/admin/coupons', '优惠码管理'], ['/admin/marketing-emails', '营销邮件'], ['/admin/marketing-emails/data', '营销数据'], ['/admin/referrals', '推荐奖励管理'], ['/admin/feedback-rewards', '反馈奖励记录'], ['/admin/feedback-gift-cards', '礼品卡库存']])}
             ${renderNavGroup('系统设置', [['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/tax-invoice-template', 'Tax Invoice PDF 模板'], ['/admin/settings', '系统设置'], ['/admin/api-settings', 'API 设置'], ['/admin/connectivity', '通讯检测'], ['/admin/exceptions', '异常任务中心'], ['/admin/monitoring', '系统健康监控'], ['/admin/data-retention', '数据保留策略']])}
           ` : ''}

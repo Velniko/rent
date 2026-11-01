@@ -5,6 +5,7 @@
 
 import { buildLayout, getDevices, getSystemSettings, loadSystemSettingsFromDB, sanitizePlainText } from '../../site'
 import type { Context } from 'hono'
+import { pickupClosureConfig, isPickupPeriodClosed } from '../../domain/pickupTimeSlots'
 
 export type NewContractPrefill = Record<string, string>
 
@@ -192,6 +193,7 @@ export async function renderNewContractPage(c: Context, user: any, prefill: NewC
       const rentalRules = ${rentalRulesData};
       const deviceRentalRules = ${deviceRentalRulesData};
       const currentRentalRules = () => deviceRentalRules[deviceSelect.value] || rentalRules;
+      const closure=${JSON.stringify(pickupClosureConfig(rentalRules))},isClosed=(${isPickupPeriodClosed.toString()});
       const inspectionRecords = ${inspectionRecordsData};
       const inspectionSelect = document.getElementById('inspection-select');
       const inspectionSummary = document.getElementById('inspection-summary');
@@ -273,7 +275,7 @@ export async function renderNewContractPage(c: Context, user: any, prefill: NewC
           const value = isoDate(date);
           const isPast = value < todayValue;
           const rules = currentRentalRules();
-          const blocked = rules.unavailableDates.includes(value) || ranges.some(item => item.startDate <= value && item.endDate > value);
+          const blocked = (isClosed(value,'AM',closure)&&isClosed(value,'PM',closure)) || rules.unavailableDates.includes(value) || ranges.some(item => item.startDate <= value && item.endDate > value);
           const inRange = startDateInput.value && endDateInput.value && startDateInput.value <= value && value < endDateInput.value;
           const cell = document.createElement('button');
           cell.type = 'button';
@@ -325,7 +327,7 @@ export async function renderNewContractPage(c: Context, user: any, prefill: NewC
             const occupied = selectedBookings().some(item => (item.startDate === date && item.startPeriod === option.value) || (item.endDate === date && item.endPeriod === option.value));
             const past = date === todayValue && nowMinutes >= (option.value === 'AM' ? 12 * 60 : 23 * 60);
             const slots = option.value === 'AM' ? ['morning_service', 'morning'] : ['afternoon', 'evening_service'];
-            const unavailable = slots.every(slot => (currentRentalRules().unavailableTimeSlots?.[date] || []).includes(slot));
+            const unavailable = isClosed(date,option.value,closure) || slots.every(slot => (currentRentalRules().unavailableTimeSlots?.[date] || []).includes(slot));
             option.disabled = occupied || past || unavailable;
           });
           if (select.selectedOptions[0]?.disabled) select.value = Array.from(select.options).find(option => !option.disabled)?.value || '';

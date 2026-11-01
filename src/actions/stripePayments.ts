@@ -534,6 +534,7 @@ export async function createOrderPaymentIntent(c: Context, user: any, orderId: s
   if (authorized) {
     await c.env.RENT.prepare("UPDATE orders SET status = 'paid', order_status = 'CONFIRMED', payment_status = 'PAID', rental_status = 'READY_FOR_PICKUP', stripe_deposit_payment_intent_id = ?, deposit_status = 'HELD', deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), deposit_held_amount = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending_payment'").bind(intent.id, depositAmount, order.id).run()
     await ensureOrderNumber(c, order.id, intent.id)
+    await issueInvoiceSafely(c, order.id, 'createOrderPaymentIntent authorization')
     await recordDeviceLifecycle(c, order.deviceId, 'RESERVED', { orderId: order.id, reason: '信用卡预授权成功' })
     await refreshStripePaymentDescriptions(c, order.id)
     await enqueueRentalUserCreation(c, await getOrderById(c, order.id))
@@ -973,6 +974,8 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
       const paymentMethodId = typeof session?.payment_method === 'string' ? session.payment_method : String(session?.payment_method?.id || '')
       if (!order || session.status !== 'requires_capture' || session.capture_method !== 'manual' || String(session.currency).toLowerCase() !== 'aud' || String(session.metadata?.order_id || '') !== order.id || String(session.metadata?.customer_id || '') !== String(order.userId) || payment.customer_id !== String(order.userId) || payment.rental_id !== order.id || cents(payment.amount) !== expectedAuthorization || Number(session.amount) !== expectedAuthorization || capturableCents !== expectedAuthorization) return c.text('Stripe 订单预授权数据不匹配', 400)
       statements.push(
+        c.env.RENT.prepare("UPDATE orders SET deposit_payment_mode = 'PREAUTH', stripe_deposit_payment_intent_id = ?, deposit_status = CASE WHEN deposit_status = 'PENDING' THEN 'HELD' ELSE deposit_status END, deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), deposit_held_amount = ? WHERE id = ? AND deposit_refund_at IS NULL AND deposit_status IN ('PENDING', 'HELD', 'REFUND_PENDING') AND status NOT IN ('cancelled', 'completed')")
+          .bind(session.id, Number(payment.deposit_amount), order.id),
         c.env.RENT.prepare("UPDATE orders SET status = 'paid', order_status = 'CONFIRMED', payment_status = 'PAID', rental_status = 'READY_FOR_PICKUP', paymentMethod = 'card', stripe_payment_method_id = COALESCE(NULLIF(?, ''), stripe_payment_method_id), stripe_deposit_payment_intent_id = ?, deposit_status = 'HELD', deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), deposit_held_amount = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending_payment'")
           .bind(paymentMethodId, session.id, Number(payment.deposit_amount), order.id),
       )
@@ -1150,6 +1153,7 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
     }
   }
   if (authorizedOrderId) {
+    await issueInvoiceSafely(c, authorizedOrderId, 'webhook authorization')
     try {
       const authorizedOrder = await getOrderById(c, authorizedOrderId)
       if (authorizedOrder) {
@@ -1274,7 +1278,7 @@ async function settlePreauthorizedDeposit(c: Context, admin: any, order: any, fo
   if (intent.status === 'requires_capture') {
     if (Number(intent.amount_capturable || 0) < cents(captureAmount)) return c.text('信用卡可捕获金额不足，无法结算', 409)
     if (captureAmount > 0) {
-      intent = await stripeRequest(c, `payment_intents/${authorizationId}/capture`, new URLSearchParams({ amount_to_capture: String(cents(captureAmount)), final_capture: 'true' }), `deposit-capture-${order.id}`)
+      intent = await stripeRequest(c, `payment_intents/${authorizationId}/capture`, new URLSearchParams({ amount_to_capture: String(cents(captureAmount)) }), `deposit-capture-${order.id}`)
     } else {
       intent = await stripeRequest(c, `payment_intents/${authorizationId}/cancel`, new URLSearchParams(), `deposit-release-${order.id}`)
     }

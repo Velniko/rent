@@ -23,6 +23,7 @@ export interface ReceiptPdfData {
   invoiceNumber?: string
   issuedAt: string
   paidAt?: string
+  paymentStatus?: string
   paymentMethod: string
   transactionId?: string
   deviceName: string
@@ -220,7 +221,7 @@ export function buildReceiptPdf(data: ReceiptPdfData): Uint8Array {
   text(lines, 213, 517, data.rentalPeriod ? `${data.rentalPeriod} days` : '', 8.5, 'F1', muted)
 
   text(lines, 400, 590, template.paymentLabel, 9, 'F2', ink)
-  text(lines, 400, 568, `${template.paidLabel}: ${displayText(data.paidAt || data.issuedAt, 22)}`, 8.5, 'F1', muted)
+  text(lines, 400, 568, data.paymentStatus || `${template.paidLabel}: ${displayText(data.paidAt || data.issuedAt, 22)}`, 8.5, 'F1', muted)
   text(lines, 400, 551, displayText(data.paymentMethod, 28), 8.5, 'F1', muted)
   text(lines, 400, 534, data.transactionId ? `${template.paymentReferenceLabel}: ${displayText(data.transactionId, 18)}` : '', 8.5, 'F1', muted)
 

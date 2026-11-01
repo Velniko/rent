@@ -6,6 +6,7 @@
 export interface RentalLinkAvailabilityConfig {
   today: string; minutes: number; minimumRentalDays: number; bufferDays: number;
   unavailableDates: string[]; unavailableTimeSlots: Record<string, string[]>;
+  pickupClosure?: { ranges: { start: string; end: string }[]; weekly: { start: string; end: string; weekday: number }[]; periodTimes: Record<string, string[]> };
   bookings: { startDate: string | null; endDate: string | null; startPeriod?: string; endPeriod?: string }[];
 }
 
@@ -13,13 +14,20 @@ export interface RentalLinkAvailabilityConfig {
 export function createRentalLinkAvailability(config: RentalLinkAvailabilityConfig) {
   const unknownDates = config.bookings.some(booking => !booking.startDate || !booking.endDate)
   // 使用对象方法，避免 Wrangler 的 keepNames 为具名函数变量注入外部 __name 依赖，破坏 toString() 内联。
-  const { index, dateAt, validDate, periodBlocked, overlapsBooking, canStart, canEnd } = {
+  const { index, dateAt, validDate, periodBlocked, pickupClosed, overlapsBooking, canStart, canEnd } = {
     index(date: string, period: string) { return Date.parse(`${date}T00:00:00Z`) / 86400000 * 2 + (period === 'PM' ? 1 : 0) },
     dateAt(value: number) { return new Date(Math.floor(value / 2) * 86400000).toISOString().slice(0, 10) },
     validDate(date: string) { return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date },
     periodBlocked(date: string, period: string) {
       const slots = config.unavailableTimeSlots[date] || []
       return (period === 'AM' ? ['morning_service', 'morning'] : ['afternoon', 'evening_service']).every(slot => slots.includes(slot))
+    },
+    pickupClosed(date: string, period: string) {
+      const closure = config.pickupClosure
+      if (!closure) return false
+      const weekday = new Date(`${date}T00:00:00Z`).getUTCDay()
+      return (closure.periodTimes[period] || []).every(time => closure.ranges.some(range => range.start <= `${date}T${time}` && `${date}T${time}` < range.end)
+        || closure.weekly.some(range => range.weekday === weekday && range.start <= time && time < range.end))
     },
     overlapsBooking(start: number, end: number) {
       const buffer = Math.max(0, config.bufferDays)
@@ -28,7 +36,7 @@ export function createRentalLinkAvailability(config: RentalLinkAvailabilityConfi
       return config.bookings.some(booking => !booking.startDate || !booking.endDate || (from < index(booking.endDate, booking.endPeriod || 'AM') && index(booking.startDate, booking.startPeriod || 'AM') < until))
     },
     canStart(date: string, period: string) {
-      if (unknownDates || !validDate(date) || !['AM', 'PM'].includes(period) || date < config.today || config.unavailableDates.includes(date) || periodBlocked(date, period)) return false
+      if (unknownDates || !validDate(date) || !['AM', 'PM'].includes(period) || date < config.today || config.unavailableDates.includes(date) || periodBlocked(date, period) || pickupClosed(date, period)) return false
       if (date === config.today && config.minutes >= (period === 'AM' ? 720 : 1380)) return false
       const value = index(date, period)
       const endpointUsed = config.bookings.some(booking => (booking.startDate === date && (booking.startPeriod || 'AM') === period) || (booking.endDate === date && (booking.endPeriod || 'AM') === period))

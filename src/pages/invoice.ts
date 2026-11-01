@@ -4,7 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import type { Context } from 'hono'
-import { buildLayout, formatCurrency, generateReferenceNumber, getContractByOrderId, getOrderById, getUserById, getSystemSettings, isContractFinalized } from '../site'
+import { buildLayout, formatCurrency, generateReferenceNumber, getContractByOrderId, getOrderById, getUserById, getSystemSettings, isContractFinalized, issueInvoice } from '../site'
 
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c))
 const websiteLogo = '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#0A0A0F"/><g transform="translate(10 10)"><path d="M24 10 42 39 33 39 24 25 15 39 6 39Z" fill="#2563EB"/><path d="M5 39 14 39 33 4 24 4Z" fill="#fff"/></g></svg>'
@@ -28,6 +28,8 @@ export async function renderInvoice(c: Context, user: any, orderId: string, prin
   if (!order || (user.role === 'CUSTOMER' && order.userId !== user.id)) return buildLayout('发票未找到', '<div class="panel"><h2>发票不存在或无权查看</h2></div>', user)
   const contract = await getContractByOrderId(c, order.id)
   if (!isContractFinalized(contract)) return buildLayout('收据尚未生成', '<div class="panel"><h2>收据尚未开放</h2><p>完成合同签署及付款后，客户和员工才可下载收据。</p></div>', user)
+  const authorized = order.deposit_payment_mode === 'PREAUTH' && ['HELD', 'REFUND_PENDING'].includes(String(order.deposit_status))
+  if (authorized) await issueInvoice(c, order.id)
   const invoices = (await c.env.RENT.prepare('SELECT * FROM invoices WHERE order_id = ? ORDER BY issued_at').bind(order.id).all()).results as any[]
   for (const invoice of invoices) {
     if (invoice.type === 'credit_note' && /^CN-INV-/.test(String(invoice.invoice_number || ''))) {
@@ -41,6 +43,10 @@ export async function renderInvoice(c: Context, user: any, orderId: string, prin
   const company = getSystemSettings().companyDetails
   const paidPayments = (await c.env.RENT.prepare('SELECT payment_method, payment_provider, paid_at, transaction_id, stripe_payment_intent_id FROM payments WHERE rental_id = ? AND status = \'paid\' ORDER BY paid_at DESC').bind(order.id).all()).results as any[]
   const payment = paidPayments[0]
+  if (!payment) {
+    const invoice = invoices.find(item => item.type === 'invoice')
+    return buildLayout('发票', `<section class="panel"><div class="section-title"><h2>发票</h2><span class="badge">${authorized ? '已预授权' : '未付款'}</span></div><p class="mono">${escape(invoice?.invoice_number)}</p><p>${formatCurrency(invoice?.total_amount || 0)}</p><a class="button button-primary" href="/orders/${encodeURIComponent(order.id)}/invoice/pdf">下载 English Tax Invoice PDF</a></section>`, user)
+  }
   const refunds = (await c.env.RENT.prepare("SELECT type, refund_number, refund_amount, refunded_processing_fee, deduction_amount, deduction_reason, refund_method, created_at FROM payment_refunds WHERE order_id = ? AND status = 'succeeded' ORDER BY created_at").bind(order.id).all()).results as any[]
   const refundTotal = refunds.reduce((sum, refund) => sum + Number(refund.refund_amount || 0), 0)
   // 退款凭证（credit note）只在确有成功退款时展示。历史遗留、或退款后来被撤销 /

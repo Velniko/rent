@@ -12,7 +12,7 @@ import { createHmac } from 'node:crypto'
 import { Hono } from 'hono'
 import { createOrderPaymentIntent, handleStripeWebhook, refundDeposit, settleCompletedOrderAuthorization } from '../src/actions/stripePayments'
 import { saveStripeConfig } from '../src/stripe'
-import { createAuthSession, formatMelbourneDateTime, reconcileOrderPayments, runDataConsistencyChecks } from '../src/site'
+import { createAuthSession, formatMelbourneDateTime, getOrderById, reconcileOrderPayments, runDataConsistencyChecks } from '../src/site'
 import worker from '../src/index'
 import { renderAdminOrderDetail } from '../src/pages/admin/orderDetail'
 import { renderCustomerOrderDetail } from '../src/pages/customer/orderDetail'
@@ -23,6 +23,9 @@ import { getStaffDashboardData } from '../src/services/staffDashboard'
 import { getAdminOrderStats } from '../src/pages/admin/orders'
 import { getRevenueData, renderAdminRevenueStats } from '../src/pages/admin/revenueStats'
 import { renderAdminFinance } from '../src/pages/admin/finance'
+import { listBusinessDocuments, searchBusinessDocuments } from '../src/services/documents'
+import { renderInvoice } from '../src/pages/invoice'
+import { buildPaymentReceiptDocument, buildTaxInvoiceDocument } from '../src/services/notifications'
 import { extractInlineScripts } from './helpers'
 
 async function setup(t: any, options: { rental?: number; status?: string; mode?: string } = {}) {
@@ -66,7 +69,10 @@ async function setup(t: any, options: { rental?: number; status?: string; mode?:
     if (path.startsWith('customers?')) return Response.json({ data: [] })
     if (path.startsWith('customers')) return Response.json({ id: 'cus_test' })
     if (path.startsWith('payment_methods/')) return Response.json({ id: 'pm_card', customer: 'cus_test', card: { brand: 'visa' } })
-    if (path === 'payment_intents/pi_auth/capture') intent = { ...intent, status: 'succeeded', amount_received: Number(params.get('amount_to_capture')), amount_capturable: 0 }
+    if (path === 'payment_intents/pi_auth/capture') {
+      if (params.has('final_capture')) return Response.json({ error: { message: "The PaymentIntent doesn't support multi-capture. When capturing this PaymentIntent, you can't pass the `final_capture` parameter." } }, { status: 400 })
+      intent = { ...intent, status: 'succeeded', amount_received: Number(params.get('amount_to_capture')), amount_capturable: 0 }
+    }
     else if (path === 'payment_intents/pi_auth/cancel') intent = { ...intent, status: 'canceled', amount_capturable: 0 }
     else assert.ok(path.startsWith('payment_intents'), `Unexpected Stripe request: ${path}`)
     return Response.json(intent)
@@ -94,6 +100,101 @@ const inspectionForm = (damage = 0) => ({
   screenCondition: '正常', keyboardCondition: '正常', trackpadCondition: '正常', bodyCondition: '正常',
   cameraCondition: '正常', wifiCondition: '正常', powerTest: '正常', replacementCost: String(damage),
   ...(damage ? { damageDescription: '设备损坏', damagePhotoFiles: new File(['image'], 'damage.png', { type: 'image/png' }) } : {}),
+})
+
+test('a failed capture awaiting settlement remains authorized rather than awaiting payment', async t => {
+  const { sqlite, context, setIntent } = await setup(t)
+  setIntent({ status: 'requires_capture', amount_capturable: 0 })
+  const app = new Hono()
+  app.post('/', async c => (await settleCompletedOrderAuthorization(c, { id: 'admin' }, 'order')) || c.text('done'))
+  assert.equal((await app.request('https://example.test/', { method: 'POST' }, context.env)).status, 409)
+  assert.equal(sqlite.prepare('SELECT deposit_status FROM orders').get()?.deposit_status, 'REFUND_PENDING')
+  const reconciliation = await reconcileOrderPayments(context, 'order')
+  assert.equal(reconciliation.authorizedTotal, 302.5)
+  assert.equal(reconciliation.pendingTotal, 0)
+  const html = await renderAdminOrderDetail(context, { id: 'admin', role: 'ADMIN' }, 'order')
+  assert.match(html, /已预授权 AUD\$302\.50/)
+  assert.doesNotMatch(html, /笔付款待确认|状态为待确认/)
+  sqlite.exec("UPDATE orders SET deposit_status = 'PENDING'")
+  assert.equal((await reconcileOrderPayments(context, 'order')).pendingTotal, 302.5)
+})
+
+test('authorization invoice is available before capture and retains its number after capture', async t => {
+  const { sqlite, context, calls, settle } = await setup(t)
+  sqlite.exec("INSERT INTO contracts (id, orderId, contractNumber, content, signed_content, status, signedAt) VALUES ('contract', 'order', 'CONTRACT1', '<p>合同</p>', '<p>已签署</p>', 'signed', CURRENT_TIMESTAMP)")
+  const html = await renderInvoice(context, { id: 'admin', role: 'ADMIN' }, 'order')
+  const invoice = sqlite.prepare('SELECT * FROM invoices').get() as any
+  assert.equal(invoice.total_amount, 302.5)
+  assert.match(html, /已预授权/)
+  assert.doesNotMatch(html, /已付款|打印.*付款收据/)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM receipts').get()?.count, 0)
+  const order = await getOrderById(context, 'order')
+  const documentContext = { ...context, req: { url: 'https://example.test/' } }
+  assert.equal(await buildPaymentReceiptDocument(documentContext, order), null)
+  const taxInvoice = await buildTaxInvoiceDocument(documentContext, order)
+  assert.ok(taxInvoice)
+  assert.match(new TextDecoder().decode(taxInvoice.pdf), /Authorized/)
+  assert.doesNotMatch(new TextDecoder().decode(taxInvoice.pdf), /\(Paid:/)
+  assert.ok(!calls.some(call => call.path.endsWith('/capture')))
+  assert.equal((await settle({ refundAmount: '200', refundMethod: 'original' })).status, 303)
+  const capturedInvoice = sqlite.prepare('SELECT * FROM invoices').get() as any
+  assert.equal(capturedInvoice.invoice_number, invoice.invoice_number)
+  assert.equal(capturedInvoice.receipt_number, invoice.receipt_number)
+  assert.equal(capturedInvoice.total_amount, 102.5)
+  assert.equal(sqlite.prepare('SELECT total_paid FROM receipts').get()?.total_paid, 102.5)
+})
+
+test('quick search and document center retrieve settlement, invoice, receipt and payment records', async t => {
+  const { sqlite, context } = await setup(t)
+  const app = new Hono()
+  app.post('/', async c => (await settleCompletedOrderAuthorization(c, { id: 'admin' }, 'order')) || c.text('done'))
+  assert.equal((await app.request('https://example.test/', { method: 'POST' }, context.env)).status, 303)
+  sqlite.exec("UPDATE deposit_settlements SET settlement_number = 'DST-20261101-HOQV9M'")
+  const settlement = sqlite.prepare('SELECT id FROM deposit_settlements').get() as any
+  const session = await createAuthSession(context, 'admin')
+  const get = (path: string) => worker.fetch(new Request(`https://example.test${path}`, { headers: { Cookie: `session=${session.token}` } }), context.env, { waitUntil() {} } as any)
+  const response = await get('/api/search?q=DST-20261101-HOQV9M')
+  assert.equal(response.status, 200)
+  const payload = await response.json() as any
+  assert.equal(payload.documents.length, 1)
+  assert.equal(payload.documents[0].number, 'DST-20261101-HOQV9M')
+  assert.equal(payload.documents[0].target, `/admin/documents/settlement/${settlement.id}`)
+  const detail = await get(payload.documents[0].target)
+  assert.equal(detail.status, 200)
+  assert.match(await detail.text(), /DST-20261101-HOQV9M/)
+  const listing = await get('/admin/documents?q=HOQV9M&type=settlement')
+  assert.equal(listing.status, 200)
+  assert.match(await listing.text(), /DST-20261101-HOQV9M/)
+  const all = await listBusinessDocuments(context, '', '', '1')
+  for (const kind of ['settlement', 'invoice', 'receipt', 'payment', 'transaction']) assert.ok(all.documents.some(doc => doc.kind === kind), kind)
+  for (const doc of all.documents) {
+    assert.ok((await searchBusinessDocuments(context, doc.number)).some(result => result.id === doc.id && result.kind === doc.kind))
+  }
+  assert.equal((await get('/admin/documents/settlement/missing')).status, 404)
+  assert.equal((await get('/admin/documents/constructor/missing')).status, 404)
+  sqlite.prepare('UPDATE deposit_settlements SET deduction_reason = ?').run('<img src=x onerror=alert(1)>')
+  const safeDetail = await (await get(payload.documents[0].target)).text()
+  assert.match(safeDetail, /&lt;img src=x onerror=alert\(1\)&gt;/)
+  assert.doesNotMatch(safeDetail, /<img src=x/)
+})
+
+test('document search escapes wildcards, paginates and does not expose admin documents to customers', async t => {
+  const { sqlite, context } = await setup(t)
+  for (let i = 0; i < 55; i++) sqlite.prepare("INSERT INTO payments (id, rental_id, customer_id, payment_method, amount, rental_amount, deposit_amount, status) VALUES (?, 'order', 'customer', 'card', 1, 1, 0, 'pending')").run(`payment-${i}`)
+  const first = await listBusinessDocuments(context, 'payment-', 'payment', 1)
+  const second = await listBusinessDocuments(context, 'payment-', 'payment', 2)
+  assert.equal(first.meta.total, 55)
+  assert.equal(first.documents.length, 50)
+  assert.equal(second.documents.length, 5)
+  assert.ok(second.documents.every(doc => !first.documents.some(previous => previous.id === doc.id)))
+  assert.equal((await searchBusinessDocuments(context, '%')).length, 0)
+  assert.equal((await searchBusinessDocuments(context, "' OR 1=1 --")).length, 0)
+  const session = await createAuthSession(context, 'customer')
+  const get = (path: string) => worker.fetch(new Request(`https://example.test${path}`, { headers: { Cookie: `session=${session.token}` } }), context.env, { waitUntil() {} } as any)
+  assert.equal((await get('/admin/documents')).status, 403)
+  assert.equal((await get('/admin/documents/payment/payment')).status, 403)
+  const payload = await (await get('/api/search?q=payment')).json() as any
+  assert.deepEqual(payload.documents, [])
 })
 
 for (const damage of [0, 25, 200]) {
@@ -211,7 +312,7 @@ for (const deduction of [0, 25, 200]) {
     assert.equal(response.status, 303, await response.text())
     const capture = calls.find(c => c.path.endsWith('/capture'))!
     assert.equal(capture.params.get('amount_to_capture'), String(10250 + deduction * 100))
-    assert.equal(capture.params.get('final_capture'), 'true')
+    assert.equal(capture.params.has('final_capture'), false)
     assert.equal(sqlite.prepare("SELECT balance FROM users WHERE id='customer'").get()?.balance, 12)
     const order = sqlite.prepare("SELECT * FROM orders WHERE id='order'").get() as any
     assert.equal(order.deposit_deduction_amount, deduction)
@@ -316,7 +417,8 @@ test('approval confirms an existing full authorization without a second hold or 
   assert.equal(result.alreadyPaid, true)
   assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status, 'paid')
   assert.equal(sqlite.prepare('SELECT status FROM payments').get()?.status, 'pending')
-  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM invoices').get()?.count, 0)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM invoices').get()?.count, 1)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM receipts').get()?.count, 0)
   assert.ok(!calls.some(call => call.path === 'payment_intents' && call.method === 'POST' || call.path.endsWith('/capture')))
 })
 
@@ -502,7 +604,8 @@ test('signed authorization webhook confirms the booking without capturing funds'
   assert.equal(response.status, 200, await response.text())
   assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status, 'paid')
   assert.equal(sqlite.prepare('SELECT status FROM payments').get()?.status, 'pending')
-  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM invoices').get()?.count, 0)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM invoices').get()?.count, 1)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM receipts').get()?.count, 0)
   assert.ok(!calls.some(c => c.path.endsWith('/capture')))
 })
 

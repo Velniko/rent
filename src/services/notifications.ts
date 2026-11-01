@@ -236,6 +236,8 @@ export async function ensureNotificationsTable(c: Context): Promise<void> {
     type TEXT NOT NULL,
     title TEXT NOT NULL,
     message TEXT NOT NULL,
+    title_en TEXT,
+    message_en TEXT,
     order_id TEXT,
     sender_id TEXT REFERENCES users(id) ON DELETE SET NULL,
     read_at TEXT,
@@ -248,6 +250,8 @@ export async function ensureNotificationsTable(c: Context): Promise<void> {
     try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN deleted_at TEXT').run() } catch (_) { /* column already exists */ }
     try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN expires_at TEXT').run() } catch (_) { /* column already exists */ }
     try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN dedupe_key TEXT').run() } catch (_) { /* column already exists */ }
+    try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN title_en TEXT').run() } catch (_) { /* column already exists */ }
+    try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN message_en TEXT').run() } catch (_) { /* column already exists */ }
     await c.env.RENT.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_recipient_created ON notifications(recipient_id, read_at, created_at DESC)').run()
     await c.env.RENT.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_sender_created ON notifications(sender_id, deleted_at, created_at DESC)').run()
     await c.env.RENT.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications(recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL').run()
@@ -390,11 +394,11 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
   return queued.length
 }
 
-export async function createNotification(c: Context, notification: { recipientId: string; type: string; title: string; message: string; orderId?: string; senderId?: string; expiresAt?: string | null; dedupeKey?: string | null; notifyByEmail?: boolean }): Promise<boolean> {
+export async function createNotification(c: Context, notification: { recipientId: string; type: string; title: string; message: string; titleEn?: string; messageEn?: string; orderId?: string; senderId?: string; expiresAt?: string | null; dedupeKey?: string | null; notifyByEmail?: boolean }): Promise<boolean> {
   await ensureNotificationsTable(c)
   const id = `nt-${crypto.randomUUID()}`
-  const result = await c.env.RENT.prepare('INSERT OR IGNORE INTO notifications (id, recipient_id, type, title, message, order_id, sender_id, expires_at, dedupe_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, notification.recipientId, notification.type, notification.title, notification.message, notification.orderId || null, notification.senderId || null, notification.expiresAt || null, notification.dedupeKey || null).run() as any
+  const result = await c.env.RENT.prepare('INSERT OR IGNORE INTO notifications (id, recipient_id, type, title, message, order_id, sender_id, expires_at, dedupe_key, title_en, message_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, notification.recipientId, notification.type, notification.title, notification.message, notification.orderId || null, notification.senderId || null, notification.expiresAt || null, notification.dedupeKey || null, notification.titleEn || null, notification.messageEn || null).run() as any
   const inserted = Number(result.meta?.changes ?? result.changes ?? 0) > 0
 
   // 员工/管理员收到的通知同步广播到已启用的推送渠道；尽力而为，绝不影响站内信。
@@ -475,6 +479,7 @@ async function buildFinancialDocument(c: Context, order: any, contract: { contra
   const invoice = await c.env.RENT.prepare("SELECT * FROM invoices WHERE order_id = ? AND type = 'invoice' ORDER BY issued_at DESC LIMIT 1").bind(order.id).first() as any
   if (!invoice) return null
   const payment = await c.env.RENT.prepare("SELECT paid_at, payment_method, payment_provider, transaction_id, stripe_payment_intent_id FROM payments WHERE rental_id = ? AND status = 'paid' ORDER BY paid_at DESC LIMIT 1").bind(order.id).first() as any
+  if (kind === 'payment-receipt' && !payment) return null
   const documentNumber = kind === 'payment-receipt'
     ? String(invoice.receipt_number || invoice.invoice_number || order.orderNo || order.id)
     : String(invoice.invoice_number || invoice.receipt_number || order.orderNo || order.id)
@@ -504,6 +509,7 @@ async function buildFinancialDocument(c: Context, order: any, contract: { contra
     invoiceNumber: String(invoice.invoice_number || ''),
     issuedAt: String(invoice.issued_at || ''),
     paidAt: String(payment?.paid_at || ''),
+    paymentStatus: payment ? undefined : order.deposit_payment_mode === 'PREAUTH' && ['HELD', 'REFUND_PENDING'].includes(String(order.deposit_status)) ? 'Authorized' : 'Unpaid',
     paymentMethod: payment?.payment_provider === 'square' ? 'Gift card' : String(payment?.payment_method || order.paymentMethod || ''),
     transactionId: String(payment?.transaction_id || payment?.stripe_payment_intent_id || ''),
     deviceName: String(context.device?.name || order.deviceName || 'Rental device'),
