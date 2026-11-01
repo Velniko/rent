@@ -8,6 +8,7 @@ import { createOrderPaymentIntent, getStripeProcessingFeeRate } from '../../acti
 import { depositPaymentModeForOrder, depositPaymentModeForRental } from '../../domain/paymentPlan';
 import { Context } from 'hono';
 import { calculateRentalFee } from '../../domain/rentalPricing';
+import { renderRentalPaymentPlan } from '../partials/rentalPaymentPlan';
 import { renderRentalDiscounts } from '../partials/rentalDiscounts';
 import { buildMonthlyRentalInstallments, isMonthlyRental } from '../../domain/monthlyRental';
 import { stripeJsTag, stripePaymentHelperScript } from '../partials/stripePaymentSection';
@@ -498,7 +499,7 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
                 if (balanceRadio) {
                   const funds = Number(balanceRadio.dataset.accountBalance || 0);
                   const enough = funds >= stripePrincipalNow;
-                  balanceRadio.disabled = !enough;
+                  balanceRadio.disabled = !enough || ${Number(order.rentalPeriod) >= 60 && JSON.parse(order.rental_pricing_json || '{}').billingMode === 'MONTHLY' ? 'true' : 'false'};
                   if (!enough && balanceRadio.checked) balanceRadio.checked = false;
                   if (balanceShort) balanceShort.hidden = enough;
                 }
@@ -528,6 +529,9 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
               couponInput?.addEventListener('input', previewCoupon);
               const bankProofInputs = Array.from(document.querySelectorAll('.bank-proof-input'));
               const bankInputs = fields.querySelectorAll('input');
+              if (${Number(order.rentalPeriod) >= 60 && JSON.parse(order.rental_pricing_json || '{}').billingMode === 'MONTHLY' ? 'true' : 'false'}) {
+                form.querySelectorAll('input[type="radio"][name="paymentMethod"]').forEach(input => { input.disabled = input.value !== 'stripe'; if (input.value === 'stripe') input.checked = true; });
+              }
               const getPaymentMethod = () => form.querySelector('input[name="paymentMethod"]:checked')?.value || form.querySelector('input[name="paymentMethod"][type="hidden"]')?.value || '';
               const update = () => {
                 const payment = getPaymentMethod();
@@ -829,6 +833,8 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
       content = `<div class="panel"><h2>无效的步骤</h2><p>请从第一步开始签署合同。 <a href="/contract/sign?${tokenOrNumber === contract.contractNumber ? `number=${tokenOrNumber}` : `token=${tokenOrNumber}`}&step=1">点击这里返回第一步</a></p></div>`;
       break;
   }
+
+  if (viewStep === 4 && contract.signToken && ['draft', 'pending_sign'].includes(contract.status)) content = renderRentalPaymentPlan(order, device, `/contract/sign/payment-plan?token=${encodeURIComponent(contract.signToken)}`) + content
 
   const signingPage = `<main class="signing-shell"><div class="entity-header signing-page-header"><div class="identity-strip mono"><span>E-SIGN / ${escapeAttribute(contract.contractNumber)}</span><span>SECURE SIGNING</span></div><div class="entity-heading"><div><p class="section-code">RENTAL AGREEMENT</p><h2 id="signing-page-title">租赁协议签署</h2><p>${escapeAttribute(device?.name || '租赁设备')} · ${escapeAttribute(order.startDate)} 至 ${escapeAttribute(order.endDate)}</p></div><span class="badge badge-warning">待签署</span></div></div>${content}</main>`
   return buildLayout(title, signingPage, viewerUser);

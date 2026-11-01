@@ -5,6 +5,7 @@
 
 import { buildLayout, getUsers, getDevices, formatCurrency } from '../../site';
 import { Context } from 'hono';
+import { renderCustomerRefundReview } from './customerRefunds';
 
 export async function renderAdminRefunds(c: Context, user: any) {
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
@@ -12,7 +13,7 @@ export async function renderAdminRefunds(c: Context, user: any) {
   const pageSize = 10;
   const countResult = await c.env.RENT.prepare(`
     SELECT COUNT(*) AS total FROM orders o
-    WHERE o.deleted_at IS NULL AND o.refund_ignored_at IS NULL AND (o.status = 'completed' OR o.status = 'cancelled' OR (o.status = 'paid' AND o.startDate > ?))
+    WHERE o.deleted_at IS NULL AND o.refund_ignored_at IS NULL AND NOT EXISTS (SELECT 1 FROM customer_refund_requests cr WHERE cr.order_id = o.id AND cr.status <> 'rejected') AND (o.status = 'completed' OR o.status = 'cancelled' OR (o.status = 'paid' AND o.startDate > ?))
       AND NOT (o.status = 'completed' AND o.settlement_status = 'SETTLED')
       AND NOT EXISTS (SELECT 1 FROM payment_refunds r WHERE r.order_id = o.id AND r.status = 'succeeded')
   `).bind(today).first() as any;
@@ -22,7 +23,7 @@ export async function renderAdminRefunds(c: Context, user: any) {
   const result = await c.env.RENT.prepare(`
     SELECT o.*, pending.id AS pending_refund_id, pending.refund_amount AS pending_refund_amount, pending.refund_bsb AS pending_refund_bsb, pending.refund_account_number AS pending_refund_account_number, pending.refund_account_name AS pending_refund_account_name, pending.deduction_reason AS pending_refund_reason, pending.type AS pending_refund_type, (SELECT COALESCE(SUM(a.amount), 0) FROM order_price_adjustments a WHERE a.order_id = o.id AND a.direction = 'decrease' AND a.status = 'succeeded' AND a.refund_method = 'pending_deposit' AND a.deposit_refunded = 0) AS pending_price_refund FROM orders o
     LEFT JOIN payment_refunds pending ON pending.order_id = o.id AND pending.type IN ('early_return', 'cancellation') AND pending.status = 'pending'
-    WHERE o.deleted_at IS NULL AND o.refund_ignored_at IS NULL AND (o.status = 'completed' OR o.status = 'cancelled' OR (o.status = 'paid' AND o.startDate > ?))
+    WHERE o.deleted_at IS NULL AND o.refund_ignored_at IS NULL AND NOT EXISTS (SELECT 1 FROM customer_refund_requests cr WHERE cr.order_id = o.id AND cr.status <> 'rejected') AND (o.status = 'completed' OR o.status = 'cancelled' OR (o.status = 'paid' AND o.startDate > ?))
       AND NOT (o.status = 'completed' AND o.settlement_status = 'SETTLED')
       AND NOT EXISTS (SELECT 1 FROM payment_refunds r WHERE r.order_id = o.id AND r.status = 'succeeded')
     ORDER BY o.updatedAt DESC
@@ -40,6 +41,7 @@ export async function renderAdminRefunds(c: Context, user: any) {
   }));
 
   const body = `
+    ${await renderCustomerRefundReview(c)}
     <div class="panel">
       <div class="section-title">
         <div>

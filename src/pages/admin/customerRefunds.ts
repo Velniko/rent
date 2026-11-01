@@ -1,0 +1,20 @@
+/* Copyright (c) 2026 jiongjiong123441. All rights reserved.
+ * Licensed under PolyForm Noncommercial 1.0.0.
+ * Noncommercial use, modification, and distribution are permitted.
+ * Keep this notice and the LICENSE file with all copies and modified versions. */
+
+import type { Context } from 'hono'
+import { formatCurrency, formatMelbourneDateTime } from '../../site'
+import { escapeHtml } from '../../lib/html'
+import { REFUND_METHOD_LABELS, type CustomerRefundQuote } from '../../services/customerRefunds'
+
+// Rendered above the existing manual-refund queue, with separate review and payout states.
+export async function renderCustomerRefundReview(c: Context): Promise<string> {
+  const requests = ((await c.env.RENT.prepare("SELECT r.*, o.orderNo, u.name AS customer_name FROM customer_refund_requests r JOIN orders o ON o.id = r.order_id JOIN users u ON u.id = r.customer_id WHERE r.status IN ('pending', 'processing') ORDER BY r.created_at").all()).results || []) as any[]
+  const refunds = ((await c.env.RENT.prepare("SELECT r.*, o.orderNo, u.name AS customer_name FROM payment_refunds r JOIN orders o ON o.id = r.order_id JOIN customer_refund_requests cr ON cr.id = r.customer_request_id JOIN users u ON u.id = cr.customer_id WHERE r.status = 'pending' AND r.refund_method IN ('bank_transfer', 'alipay', 'wechat') ORDER BY r.created_at").all()).results || []) as any[]
+  return `<section class="panel"><h2>客户退款审核</h2>${requests.length ? `<div class="table-wrapper"><table><thead><tr><th>订单 / 客户</th><th>金额</th><th>退款原因</th><th>操作</th></tr></thead><tbody>${requests.map(r => {
+    const quote = JSON.parse(r.quote_json) as CustomerRefundQuote
+    return `<tr><td><a href="/admin/orders/${encodeURIComponent(r.order_id)}">${escapeHtml(r.orderNo || r.order_id)}</a><br>${escapeHtml(r.customer_name)}<br>${escapeHtml(formatMelbourneDateTime(r.created_at))}</td><td><dl class="data-list"><div><dt>订单总额</dt><dd>${formatCurrency(r.order_total)}</dd></div><div><dt>服务费</dt><dd>${formatCurrency(r.service_fee)}</dd></div><div><dt>已付款金额</dt><dd>${formatCurrency(r.paid_amount)}</dd></div><div><dt>退款手续费（订单总额的 5%）</dt><dd>${formatCurrency(r.fee_amount)}</dd></div><div><dt>预计退款金额</dt><dd>${formatCurrency(r.refund_amount)}</dd></div></dl>${quote.payments.map(p => `<div>${REFUND_METHOD_LABELS[p.channel]} ${formatCurrency(p.refundAmount + p.releaseAmount)}${p.authorization ? '（释放预授权）' : ''}</div>`).join('')}</td><td>${escapeHtml(r.reason)}</td><td><form method="post" action="/admin/refund-requests/${encodeURIComponent(r.id)}/approve" data-site-confirm="确认批准这笔退款申请？" data-confirm-label="审核通过"><button class="button button-primary" type="submit">${r.status === 'processing' ? '重试自动退款' : '审核通过'}</button></form>${r.status === 'pending' ? `<form method="post" action="/admin/refund-requests/${encodeURIComponent(r.id)}/reject"><input class="form-control" name="note" maxlength="300" required placeholder="驳回原因"><button class="button button-danger" type="submit">驳回</button></form>` : '<span class="badge badge-warning">退款处理中</span>'}</td></tr>`
+  }).join('')}</tbody></table></div>` : '<p>暂无待审核退款申请</p>'}</section>
+  ${refunds.length ? `<section class="panel"><h2>客户退款待处理</h2><div class="table-wrapper"><table><thead><tr><th>订单 / 客户</th><th>退款方式</th><th>退款金额</th><th>操作</th></tr></thead><tbody>${refunds.map(r => `<tr><td><a href="/admin/orders/${encodeURIComponent(r.order_id)}">${escapeHtml(r.orderNo || r.order_id)}</a><br>${escapeHtml(r.customer_name)}</td><td>${REFUND_METHOD_LABELS[r.refund_method]}${r.refund_method === 'bank_transfer' ? `<br>BSB: ${escapeHtml(r.refund_bsb)}<br>${escapeHtml(r.refund_account_number)}<br>${escapeHtml(r.refund_account_name)}` : ''}</td><td>${formatCurrency(r.refund_amount)}<br><small>退款手续费 ${formatCurrency(r.deduction_amount)}</small></td><td><form method="post" action="/admin/refunds/${encodeURIComponent(r.id)}/complete-customer-refund" data-site-confirm="请确认退款已转出。" data-confirm-label="确认已退款"><button class="button button-primary" type="submit">确认已退款</button></form></td></tr>`).join('')}</tbody></table></div></section>` : ''}`
+}

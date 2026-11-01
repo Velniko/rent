@@ -337,6 +337,8 @@ export async function handleSignContractStep(c: Context, identifier: string, ste
         const storedPaymentProvider = String((order as any).paymentProvider || (order as any).payment_provider || '').toLowerCase()
         const squarePaymentSelected = paymentMethod === 'square' || storedPaymentProvider === 'square'
         const stripePaymentSelected = !squarePaymentSelected && (paymentMethod === 'stripe' || paymentMethod === 'card')
+        const chosenBillingMode = order.rental_pricing_json ? JSON.parse(order.rental_pricing_json).billingMode : ''
+        if (Number(order.rentalPeriod) >= 60 && chosenBillingMode === 'MONTHLY' && !stripePaymentSelected) throw new Error('月付请选择信用卡支付')
         const depositCardSelected = stripePaymentSelected || Boolean((order as any).stripe_payment_method_id || (order as any).stripe_deposit_payment_intent_id)
         // 押金处理方式不再由客户手选：跟着支付方式自动走——信用卡预授权 / SetupIntent，否则银行转账。
         // 礼品卡支付租金时，如果官网申请已经验证了押金信用卡，也沿用该卡处理押金。

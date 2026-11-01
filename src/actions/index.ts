@@ -10,6 +10,8 @@ export * from './admin/rentalRules';
 export * from './admin/manualOrders';
 export * from './admin/rentalLinks';
 export * from './admin/devices';
+export * from './customer/refunds';
+export * from './admin/customerRefunds';
 export * from './public/rentalLink';
 export * from './staff/cancelContract';
 export * from './coupons';

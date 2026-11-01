@@ -140,6 +140,8 @@ import { ensureInAppNotificationTemplates } from './services/inAppNotificationTe
 import { notifyAgreementUpdate } from './actions/admin/saveSettings'
 import { rentalPricingSnapshot } from './domain/monthlyRental'
 import { chargeDueRentalInstallments } from './services/monthlyRentalPayments'
+import { setRentalPaymentPlan } from './services/rentalPaymentPlan'
+import { getOrCreateSignSession } from './site'
 import { createOrderPaymentIntent, createOrderInstallmentPaymentIntent, createBalanceTopUpIntent, handleStripeWebhook, refundDeposit, executeApprovedDepositSettlement, settleCompletedOrderAuthorization, cancelAndRefund, retryCancellationRefund, ignorePendingRefund, refundUnusedRentalDays, completeBankTransferRefund, createOrderPriceAdjustmentIntent, createOrderPriceAdjustmentTransferPayment, applyOrderPriceAdjustment, applyBalanceOrderPriceIncrease, settleBalancePriceAdjustment, cancelPendingPaymentOrderByCustomer, expireMissedPickupOrders, chargeOverdueReturns } from './actions/stripePayments'
 import { getSquareGiftCardConfigForOrder, createSquareGiftCardPayment, completeSquareGiftCardPayment, getSquareGiftCardConfigForBalanceTopUp, createSquareGiftCardBalanceTopUp, getSquareGiftCardConfigForPriceAdjustment, createSquareGiftCardPriceAdjustmentPayment, handleSquareWebhook } from './actions/squarePayments'
 import { findEligibleCoupon, calculateCouponDiscount, checkCustomerCouponEligibility, reserveCouponForOrder, releaseCouponForOrder, couponDiscountableBase } from './actions/coupons'
@@ -766,7 +768,7 @@ app.use('*', async (c, next) => {
     }
     const path = c.req.path
     const allowedExact = new Set(['/customer/guest', '/customer/guest/upgrade', '/logout', '/payment/result', '/notifications', '/notifications/unread', '/api/search'])
-    const orderMatch = path.match(/^\/customer\/orders\/([^/]+)(?:\/(?:installments\/[^/]+\/stripe\/intent|stripe\/(?:checkout|intent)|square\/(?:config|payment)|bank-transfer-proof))?$/)
+    const orderMatch = path.match(/^\/customer\/orders\/([^/]+)(?:\/(?:refund-request|payment-plan|installments\/[^/]+\/stripe\/intent|stripe\/(?:checkout|intent)|square\/(?:config|payment)|bank-transfer-proof))?$/)
     const invoiceMatch = path.match(/^\/orders\/([^/]+)\/invoice$/)
     const invoicePdfMatch = path.match(/^\/orders\/([^/]+)\/invoice\/pdf$/)
     if (orderMatch && orderMatch[1] !== user.guestOrderId) return c.html(renderForbidden(), 403)
@@ -839,10 +841,12 @@ app.use('*', async (c, next) => {
     : c.req.path === '/forgot-password' && c.req.method === 'POST' ? ['forgot', 5, 3600] as const
     : c.req.path === '/reset-password' && c.req.method === 'POST' ? ['reset-password', 10, 900] as const
     : c.req.path === '/contract/sign' ? ['contract-sign', 60, 900] as const
+    : c.req.path === '/contract/sign/payment-plan' || /^\/customer\/orders\/[^/]+\/payment-plan$/.test(c.req.path) ? ['rental-payment-plan', 15, 600] as const
     : /^\/customer\/orders\/[^/]+\/(?:installments\/[^/]+\/)?stripe\/(?:checkout|intent)$/.test(c.req.path) ? ['stripe-checkout', 10, 600] as const
     : /^\/customer\/orders\/[^/]+\/bank-transfer-proof$/.test(c.req.path) ? ['bank-proof', 10, 3600] as const
     : /^\/staff\/orders\/[^/]+\/inspection$/.test(c.req.path) ? ['inspection-upload', 10, 3600] as const
     : c.req.method === 'POST' && (/^\/staff\/orders\/[^/]+\/cancel$/.test(c.req.path) || /^\/admin\/orders\/[^/]+\/(?:cancel-and-refund|retry-cancellation-refund)$/.test(c.req.path)) ? ['cancellation-refund', 10, 600] as const
+    : c.req.method === 'POST' && (/^\/customer\/orders\/[^/]+\/refund-request$/.test(c.req.path) || /^\/admin\/refund-requests\//.test(c.req.path) || /^\/admin\/refunds\/[^/]+\/complete-customer-refund$/.test(c.req.path)) ? ['customer-refund', 10, 600] as const
     : c.req.path === '/admin/settings/upload-image' ? ['admin-settings-image', 10, 3600] as const
     : c.req.method === 'POST' && ['/admin/users/new', '/staff/customers/new'].includes(c.req.path) ? ['managed-user-create', 30, 600] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/rent/') ? ['rental-link-booking', 10, 900] as const
@@ -1620,6 +1624,14 @@ app.get('/customer/orders', async (c) => {
   return c.html(await pages.renderCustomerOrders(c, user))
 })
 
+app.use('/customer/orders/:id/*', async (c, next) => {
+  if (c.req.method === 'POST' && !c.req.path.endsWith('/refund-request')) {
+    const user = c.get('user')
+    if (user?.role === 'CUSTOMER' && await c.env.RENT.prepare("SELECT id FROM customer_refund_requests WHERE order_id = ? AND customer_id = ? AND status <> 'rejected'").bind(c.req.param('id'), user.id).first()) return c.text('退款申请已提交，请等待审核', 409)
+  }
+  await next()
+})
+
 app.get('/customer/orders/:id', async (c) => {
   const user = c.get('user')
   if (!user) {
@@ -1655,6 +1667,21 @@ app.post('/customer/orders/:id/time-slots', async (c) => {
   await c.env.RENT.prepare("INSERT INTO order_change_history (id, order_id, change_type, before_json, after_json, reason, changed_by) VALUES (?, ?, 'PRICE_ADJUSTMENT', ?, ?, ?, ?)").bind(`och-${nanoid(12)}`, order.id, JSON.stringify({ pickupTimeSlot: order.pickupTimeSlot, returnTimeSlot: order.returnTimeSlot, serviceFee: oldFee, totalAmount: order.totalAmount }), JSON.stringify({ pickupTimeSlot: pickup, returnTimeSlot: returned, serviceFee: newFee, totalAmount: Number(order.totalAmount) + additionalFee }), '客户修改取还时段', user.id).run()
   const message = additionalFee > 0 ? `预约时间已更新，新增服务费 ${additionalFee.toFixed(2)} AUD；已收取的服务费不退款。` : '预约时间已更新；已收取的服务费不退款。'
   return c.redirect(`/customer/orders/${order.id}?success=${encodeURIComponent(message)}`)
+})
+
+app.get('/customer/orders/:id/refund-request', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'CUSTOMER') return c.redirect(`/login?redirect=${encodeURIComponent(c.req.path)}`)
+  return c.html(await pages.renderCustomerRefundConfirm(c, user, c.req.param('id')))
+})
+
+app.post('/customer/orders/:id/refund-request', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'CUSTOMER') return c.redirect('/login')
+  try {
+    await actions.submitCustomerRefund(c, user, c.req.param('id'), await c.req.parseBody())
+    return c.redirect(`/customer/orders/${encodeURIComponent(c.req.param('id'))}?success=${encodeURIComponent('退款申请已提交')}`, 303)
+  } catch (error: any) { return c.text(error.message || '退款申请提交失败', 409) }
 })
 
 app.post('/customer/orders/:id/cancel', async (c) => {
@@ -2775,6 +2802,7 @@ app.post('/staff/orders/:orderId/pickup', async (c) => {
   }
   const orderId = c.req.param('orderId')
   const pickupOrder = await getOrderById(c, orderId)
+  if (await c.env.RENT.prepare("SELECT id FROM customer_refund_requests WHERE order_id = ? AND status IN ('pending', 'processing', 'approved')").bind(orderId).first()) return c.text('退款申请待处理，不能交付设备', 409)
   const pickupContract = pickupOrder ? await getContractByOrderId(c, pickupOrder.id) : null
   const squareDepositUnconfirmedForPickup = String(pickupOrder?.paymentProvider || pickupOrder?.payment_provider || '') === 'square' && Number(pickupOrder?.depositAmount || pickupOrder?.deposit_amount || 0) > 0 && String(pickupOrder?.deposit_status || '').toUpperCase() !== 'PAID'
   if (!pickupOrder || squareDepositUnconfirmedForPickup || !(['paid', 'pending_pickup'].includes(String(pickupOrder.status)) || (pickupOrder.status === 'approved' && pickupContract?.status === 'signed'))) return c.json({ success: false, message: squareDepositUnconfirmedForPickup ? '礼品卡订单的押金尚未审核到账，不能交付设备' : '只有已签署合同的待交付订单可以确认交付' }, 409)
@@ -3342,6 +3370,24 @@ app.get('/api/payment/status', async (c) => {
   return c.json({ state, orderNo: order.orderNo || null, redirectTarget: `/customer/orders/${order.id}` }, 200, { 'Cache-Control': 'no-store' })
 })
 
+app.post('/contract/sign/payment-plan', async (c) => {
+  const token = String(c.req.query('token') || '')
+  if (!/^[A-Za-z0-9_-]{32}$/.test(token)) return c.html(renderForbidden(), 403)
+  const contract = await getContractBySignToken(c, token)
+  if (!contract || contract.signToken !== token || !['draft', 'pending_sign'].includes(contract.status) || isContractExpired(contract)) return c.html(renderForbidden(), 403)
+  const order = await getOrderById(c, contract.rentalId || contract.rental_id)
+  if (!order) return c.text('订单不存在', 404)
+  const session = await getOrCreateSignSession(c, token, token)
+  if (!session.agreedToTerms || !session.userInfo?.name) return c.html(renderForbidden(), 403)
+  try {
+    const form = await c.req.parseBody()
+    await setRentalPaymentPlan(c, order, form.billingMode)
+    return c.redirect(`/contract/sign?token=${encodeURIComponent(token)}&step=4`, 303)
+  } catch (error: any) {
+    return c.redirect(`/contract/sign?token=${encodeURIComponent(token)}&step=4&error=${encodeURIComponent(error?.message || '付款计划更新失败')}`, 303)
+  }
+})
+
 app.post('/contract/sign', async (c) => {
   const token = c.req.query('token') || c.req.query('number') || '';
   const step = Number(c.req.query('step') || '1');
@@ -3497,6 +3543,20 @@ app.post('/customer/orders/:id/installments/:installmentId/stripe/intent', async
   try {
     return c.json(await createOrderInstallmentPaymentIntent(c, user, c.req.param('id'), c.req.param('installmentId')))
   } catch (error: any) { return c.json({ error: error?.message || '无法创建 Stripe 支付' }, 400) }
+})
+
+app.post('/customer/orders/:id/payment-plan', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'CUSTOMER') return c.html(renderForbidden(), 403)
+  const order = await getOrderById(c, c.req.param('id'))
+  if (!order || order.userId !== user.id) return c.html(renderForbidden(), 403)
+  try {
+    const form = await c.req.parseBody()
+    await setRentalPaymentPlan(c, order, form.billingMode)
+    return c.redirect(`/customer/orders/${encodeURIComponent(order.id)}`, 303)
+  } catch (error: any) {
+    return c.redirect(`/customer/orders/${encodeURIComponent(order.id)}?error=${encodeURIComponent(error?.message || '付款计划更新失败')}`, 303)
+  }
 })
 
 app.post('/customer/orders/:id/stripe/intent', async (c) => {
@@ -4831,6 +4891,27 @@ app.post('/manager/deposit-settlements/:id/reject', async (c) => {
   await c.env.RENT.prepare("UPDATE deposit_settlements SET status = 'REJECTED', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP, review_note = ? WHERE id = ?").bind(manager.id, note, settlement.id).run()
   await createAuditLog(c, { actor: manager, action: 'DEPOSIT_SETTLEMENT_REJECTED', targetType: 'DEPOSIT_SETTLEMENT', targetId: settlement.id, before: { status: settlement.status }, after: { status: 'REJECTED' }, reason: note })
   return c.redirect('/manager/deposit-settlements')
+})
+
+app.post('/admin/refund-requests/:id/:decision', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'ADMIN') return c.html(renderForbidden(), 403)
+  try {
+    const decision = c.req.param('decision')
+    if (decision === 'approve') await actions.approveCustomerRefund(c, user, c.req.param('id'))
+    else if (decision === 'reject') await actions.rejectCustomerRefund(c, user, c.req.param('id'), sanitizePlainText((await c.req.parseBody()).note, 300))
+    else return c.notFound()
+    return c.redirect('/admin/refunds', 303)
+  } catch (error: any) { return c.text(error.message || '退款申请处理失败', 409) }
+})
+
+app.post('/admin/refunds/:id/complete-customer-refund', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'ADMIN') return c.html(renderForbidden(), 403)
+  try {
+    await actions.completeCustomerManualRefund(c, user, c.req.param('id'))
+    return c.redirect('/admin/refunds', 303)
+  } catch (error: any) { return c.text(error.message || '退款处理失败', 409) }
 })
 
 app.post('/admin/orders/:id/cancel-and-refund', async (c) => {

@@ -986,6 +986,17 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
   // UPDATEs / INSERT OR IGNORE), so a safe retry cannot double-apply.
 
   const session = event.data?.object
+  if (['refund.created', 'refund.updated', 'refund.failed'].includes(event.type)) {
+    try {
+      const { handleCustomerRefundWebhook } = await import('../services/customerRefunds')
+      await handleCustomerRefundWebhook(c, session)
+      await markWebhookProcessed(c, claim.recordId)
+      return c.json({ received: true })
+    } catch (error: any) {
+      await markWebhookFailed(c, claim.recordId, error.message)
+      throw error
+    }
+  }
   if (String(event.type).startsWith('checkout.session.') && session?.metadata?.integration === CHECKOUT_INTEGRATION && !['checkout.session.expired', 'checkout.session.async_payment_failed'].includes(event.type)) {
     await markWebhookProcessed(c, claim.recordId)
     return c.json({ received: true })
@@ -1628,6 +1639,7 @@ export async function refundUnusedRentalDays(c: Context, admin: any, order: any,
 export async function cancelPendingPaymentOrderByCustomer(c: Context, user: any, orderId: string): Promise<void> {
   const order = await getOrderById(c, orderId)
   if (!order || order.userId !== user.id) throw new Error('订单不存在或无权访问')
+  if (await c.env.RENT.prepare("SELECT id FROM customer_refund_requests WHERE order_id = ? AND status <> 'rejected'").bind(order.id).first()) throw new Error('退款申请已提交，请等待审核')
   if (order.status !== 'pending_payment') throw new Error('该订单当前不是待支付状态，不能取消')
   const cancelled = await applyPendingPaymentCancellation(c, order as any)
   if (!cancelled) throw new Error('订单状态已变化，请刷新后重试')
@@ -1684,6 +1696,7 @@ async function requestCancellationRefund(c: Context, order: any, payment: any, r
 export async function cancelAndRefund(c: Context, admin: any, orderId: string, reason?: string, options: { deductionAmount?: number; deductionReason?: string; allowedStatuses?: string[] } = {}): Promise<Response> {
   const order = await getOrderById(c, orderId)
   if (!order) return c.text('订单不存在', 404)
+  if (await c.env.RENT.prepare("SELECT id FROM customer_refund_requests WHERE order_id = ? AND status <> 'rejected'").bind(order.id).first()) return c.text('请先处理客户退款申请', 409)
   if (options.allowedStatuses?.length && !options.allowedStatuses.includes(String(order.status))) return c.text('订单状态已变化，不能自动取消', 409)
   const mayReleasePendingAuthorization = order.status === 'pending_payment' && String((order as any).deposit_payment_mode || '') === 'PREAUTH'
   const canCancelBeforeHandover = !order.handover_completed_at && !['cancelled', 'completed', 'returned', 'pending_return'].includes(String(order.status))
@@ -1912,6 +1925,11 @@ export async function ignorePendingRefund(c: Context, admin: any, orderId: strin
 }
 
 export async function completeBankTransferRefund(c: Context, admin: any, refundId: string): Promise<void> {
+  const requested = await c.env.RENT.prepare('SELECT customer_request_id FROM payment_refunds WHERE id = ?').bind(refundId).first() as any
+  if (requested?.customer_request_id) {
+    const { completeCustomerManualRefund } = await import('./admin/customerRefunds')
+    return completeCustomerManualRefund(c, admin, refundId)
+  }
   const pending = await c.env.RENT.prepare("SELECT * FROM payment_refunds WHERE id = ? AND type IN ('cancellation', 'early_return', 'deposit') AND refund_method = 'bank_transfer' AND status = 'pending'").bind(refundId).first() as any
   if (!pending) throw new Error('退款记录不存在或已经处理')
   if (await hasOpenPaymentDispute(c, String(pending.payment_id || ''))) throw new Error('该笔付款存在未解决的拒付争议，暂不能放款')

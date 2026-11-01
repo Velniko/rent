@@ -27,6 +27,9 @@ import { listBusinessDocuments, searchBusinessDocuments } from '../src/services/
 import { renderInvoice } from '../src/pages/invoice'
 import { buildPaymentReceiptDocument, buildTaxInvoiceDocument } from '../src/services/notifications'
 import { extractInlineScripts } from './helpers'
+import { setRentalPaymentPlan } from '../src/services/rentalPaymentPlan'
+import { renderRentalPaymentPlan } from '../src/pages/partials/rentalPaymentPlan'
+import { getOrCreateSignSession, updateSignSession } from '../src/site'
 import { chargeDueRentalInstallments, settleRentalInstallment } from '../src/services/monthlyRentalPayments'
 import { buildMonthlyRentalInstallments, rentalPricingSnapshot } from '../src/domain/monthlyRental'
 import { renderRentalDiscounts } from '../src/pages/partials/rentalDiscounts'
@@ -1118,4 +1121,79 @@ test('cancellation releases a manual authorization without creating a cash refun
   assert.equal(sqlite.prepare('SELECT status FROM payments').get()?.status,'failed')
   assert.equal(calls.filter(call=>call.path.endsWith('/cancel')).length,1)
   assert.equal(calls.filter(call=>call.path==='refunds').length,0)
+})
+
+
+test('a long rental can switch between full payment without deposit and monthly payments before charging', async t => {
+  const {sqlite,context,sessions}=await setup(t,{status:'pending_payment',mode:'SETUP_INTENT'})
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET startDate='2026-01-01',endDate='2026-04-26',rentalPeriod=115,totalAmount=2040,depositAmount=200,deposit_status='PENDING',stripe_deposit_payment_intent_id=NULL")
+  sqlite.prepare('UPDATE orders SET rental_pricing_json=?').run(rentalPricingSnapshot({pricePerDay:20,weeklyDiscountPercent:10,monthlyDiscountPercent:20}))
+  const customer={id:'customer',role:'CUSTOMER',email:'customer@example.test'}
+  await createOrderPaymentIntent(context,customer,'order')
+  assert.equal(sessions.get('cs_test_1').status,'open')
+  sessions.get('cs_test_1').status='complete'
+  await assert.rejects(()=>setRentalPaymentPlan(context,{...(sqlite.prepare('SELECT * FROM orders').get() as any)},'FULL'),/正在确认付款/)
+  assert.equal(sqlite.prepare('SELECT depositAmount FROM orders').get()?.depositAmount,200)
+  sessions.get('cs_test_1').status='open'
+  let order=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'FULL')
+  assert.equal(sessions.get('cs_test_1').status,'expired')
+  assert.equal(order.depositAmount,0);assert.equal(order.totalAmount,1840);assert.equal(order.deposit_status,'NOT_REQUIRED')
+  assert.equal(order.billing_mode,'FULL');assert.equal(JSON.parse(order.rental_pricing_json!).billingMode,'FULL')
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM rental_installments').get()?.n,0)
+  const full=await createOrderPaymentIntent(context,customer,'order')
+  assert.equal(full.amountCents,188600)
+  assert.equal(sqlite.prepare("SELECT deposit_amount FROM payments WHERE status='pending'").get()?.deposit_amount,0)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM rental_installments').get()?.n,0)
+  sqlite.exec('UPDATE devices SET depositAmount=999')
+  order=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'MONTHLY')
+  assert.equal(order.depositAmount,200);assert.equal(order.totalAmount,2040)
+  const monthly=await createOrderPaymentIntent(context,customer,'order')
+  assert.equal(monthly.amountCents,69700)
+  assert.deepEqual(sqlite.prepare('SELECT rental_amount FROM rental_installments ORDER BY installment_number').all().map(row=>row.rental_amount),[480,480,480,400])
+  const html=renderRentalPaymentPlan(order,{pricePerDay:20,depositAmount:999},'/customer/orders/order/payment-plan')
+  assert.match(html,/一次性付清（免押金）/);assert.match(html,/AUD\$1886\.00/)
+})
+
+test('full-payment eligibility starts at 60 days and a paid rental cannot change its plan',async t=>{
+  const {sqlite,context}=await setup(t,{status:'pending_payment'})
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod=59')
+  const shortOrder=await getOrderById(context,'order')
+  await assert.rejects(()=>setRentalPaymentPlan(context,shortOrder,'FULL'),/60天/)
+  sqlite.exec('UPDATE orders SET rentalPeriod=60')
+  const order=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'FULL')
+  assert.equal(order.depositAmount,0)
+  sqlite.exec("INSERT INTO payments(id,rental_id,customer_id,payment_method,amount,rental_amount,deposit_amount,status) VALUES('charged','order','customer','card',100,100,0,'paid')")
+  await assert.rejects(()=>setRentalPaymentPlan(context,order,'MONTHLY'),/已有付款/)
+  assert.equal(sqlite.prepare('SELECT depositAmount FROM orders').get()?.depositAmount,0)
+})
+
+test('only the customer who owns an unpaid long rental can update the plan',async t=>{
+  const {sqlite,context}=await setup(t,{status:'pending_payment'})
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod=60')
+  assert.equal((await requestAsAdmin(context,'/customer/orders/order/payment-plan',{billingMode:'FULL',depositAmount:'0',totalAmount:'1'})).status,403)
+  const session=await createAuthSession(context,'customer')
+  const response=await worker.fetch(new Request('https://rent.example.test/customer/orders/order/payment-plan',{method:'POST',body:new URLSearchParams({billingMode:'FULL',depositAmount:'999',totalAmount:'1'}),headers:{Cookie:`session=${session.token}`,Origin:'https://rent.example.test','Sec-Fetch-Site':'same-origin'}}),context.env,{waitUntil(){}} as any)
+  assert.equal(response.status,303)
+  assert.equal(sqlite.prepare('SELECT totalAmount FROM orders').get()?.totalAmount,100)
+  assert.equal(sqlite.prepare('SELECT depositAmount FROM orders').get()?.depositAmount,0)
+})
+
+test('a signing token can select full payment only before signing with a completed sign session',async t=>{
+  const {sqlite,context}=await setup(t,{status:'draft'})
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod=60')
+  const token='q'.repeat(32)
+  sqlite.prepare("INSERT INTO contracts(id,orderId,contractNumber,content,status,signToken,signExpiresAt) VALUES('plan-contract','order','CTR-PLAN','<p>合同</p>','pending_sign',?,'2099-01-01')").run(token)
+  await getOrCreateSignSession(context,token,token)
+  await updateSignSession(context,token,{agreedToTerms:true,userInfo:{name:'客户'}})
+  const page=await worker.fetch(new Request(`https://rent.example.test/contract/sign?token=${token}&step=4`),context.env,{waitUntil(){}} as any)
+  assert.equal(page.status,200)
+  const html=await page.text()
+  assert.match(html,/一次性付清（免押金）/)
+  for(const script of extractInlineScripts(html)) assert.doesNotThrow(()=>new Function(script))
+
+  const send=()=>worker.fetch(new Request(`https://rent.example.test/contract/sign/payment-plan?token=${token}`,{method:'POST',body:new URLSearchParams({billingMode:'FULL'}),headers:{Origin:'https://rent.example.test','Sec-Fetch-Site':'same-origin'}}),context.env,{waitUntil(){}} as any)
+  assert.equal((await send()).status,303)
+  assert.equal(sqlite.prepare('SELECT depositAmount FROM orders').get()?.depositAmount,0)
+  sqlite.exec("UPDATE contracts SET status='signed'")
+  assert.equal((await send()).status,403)
 })

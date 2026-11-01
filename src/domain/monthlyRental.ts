@@ -12,7 +12,14 @@ export interface RentalInstallment {
   status: string; payment_id?: string; stripe_payment_intent_id?: string; last_error?: string;
 }
 
-export function isMonthlyRental(order: { billing_mode?: string; rentalPeriod?: number; paymentProvider?: unknown; payment_provider?: unknown }): boolean {
+export function isMonthlyRental(order: { billing_mode?: string; rental_pricing_json?: string | null; rentalPeriod?: number; paymentProvider?: unknown; payment_provider?: unknown }): boolean {
+  // An explicit full-payment choice is stored in the immutable pricing snapshot.
+  // Older orders defaulted to FULL even when they were intended for monthly billing.
+  if (order.billing_mode === 'FULL' && order.rental_pricing_json) {
+    try {
+      if (JSON.parse(order.rental_pricing_json).billingMode === 'FULL') return false
+    } catch { /* Preserve the legacy billing decision for older snapshots. */ }
+  }
   return order.billing_mode === 'MONTHLY' || (Number(order.rentalPeriod) >= LONG_TERM_RENTAL_DAYS && String(order.paymentProvider || order.payment_provider || 'stripe') === 'stripe')
 }
 

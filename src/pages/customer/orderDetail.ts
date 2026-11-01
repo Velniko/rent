@@ -5,6 +5,7 @@
 
 import { buildLayout, getOrderById, getDeviceById, formatCurrency, formatMelbourneDateTime, getContractByOrderId, ensureContractForOrder, getCustomerRiskAssessment, systemSettings, diffOrderSnapshots, ORDER_CHANGE_TYPE_LABELS } from '../../site';
 import { Context } from 'hono';
+import { renderRentalPaymentPlan } from '../partials/rentalPaymentPlan';
 import { renderRentalDiscounts } from '../partials/rentalDiscounts';
 import { renderRentalInstallments } from '../partials/rentalInstallments';
 import { renderStripePaymentBox } from '../partials/stripePaymentSection';
@@ -16,18 +17,20 @@ import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl, type DeliveryBook
 import { decryptSecret } from '../../lib/secretBox';
 import { pickupTimeSlots } from '../../domain/pickupTimeSlots';
 import { renderOrderStatusBadge } from '../partials/orderStatusBadge';
+import { canRequestCustomerRefund, getCustomerRefundRequest, CUSTOMER_REFUND_STATUSES } from '../../services/customerRefunds';
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
   stripe: '信用卡（Stripe）', card: '信用卡（Stripe）', square: '礼品卡', bank_transfer: '银行转账', alipay: '支付宝', wechat: '微信',
   customer_balance: '账户余额', balance: '账户余额', deposit: '押金', credit: '信用额度 / 调整',
 };
-const REFUND_TYPE_LABELS: Record<string, string> = { deposit: '押金退还', rent: '租金退款', order: '订单退款', service_fee: '服务费退款' };
+const REFUND_TYPE_LABELS: Record<string, string> = { deposit: '押金退还', rent: '租金退款', order: '订单退款', service_fee: '服务费退款', cancellation: '取消订单退款', early_return: '提前归还租金退款' };
 
 export async function renderCustomerOrderDetail(c: Context, user: any, orderId: string, message?: string, type: 'success' | 'error' = 'error') {
   const order = await getOrderById(c, orderId)
   if (!order || order.userId !== user.id) {
     return buildLayout('订单详情 - 电脑租赁管理系统', '<div class="panel"><h2>订单未找到</h2><p>您请求的订单不存在或无权访问。</p></div>', user)
   }
+  const customerRefundRequest = await getCustomerRefundRequest(c, order.id)
   const deliveryBookings = await getDeliveryBookingsForOrder(c, order.id)
   const [device, existingContract, transferProof, timeChanges, preInspection, returnInspection, depositRefund, refundStatus, changeHistory, paymentSources, refundRows, priceAdjustmentSummary, priceAdjustmentProof, account] = await Promise.all([getDeviceById(c, order.deviceId), getContractByOrderId(c, order.id), (['bank_transfer', 'alipay', 'wechat'].includes(String(order.paymentMethod)) || String(order.paymentProvider || order.payment_provider || '') === 'square') ? c.env.RENT.prepare("SELECT pp.status, pp.reference_number, pp.rejection_reason, pp.note FROM payment_proofs pp JOIN payments p ON p.id = pp.payment_id WHERE p.rental_id = ? AND p.id NOT IN (SELECT COALESCE(payment_id, '') FROM order_price_adjustments WHERE order_id = ?) ORDER BY pp.uploaded_at DESC LIMIT 1").bind(order.id, order.id).first() : Promise.resolve(null), c.env.RENT.prepare('SELECT * FROM order_time_change_history WHERE order_id = ? ORDER BY created_at DESC LIMIT 10').bind(order.id).all(), c.env.RENT.prepare("SELECT snapshot_json, created_at FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first(), c.env.RENT.prepare("SELECT snapshot_json, created_at FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first(), c.env.RENT.prepare("SELECT deduction_amount, deduction_reason FROM payment_refunds WHERE order_id = ? AND type = 'deposit' AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1").bind(order.id).first(), c.env.RENT.prepare("SELECT status, refundable_amount, refund_amount FROM payment_refunds WHERE order_id = ? ORDER BY created_at DESC LIMIT 1").bind(order.id).first(), c.env.RENT.prepare("SELECT change_type, before_json, after_json, created_at FROM order_change_history WHERE order_id = ? ORDER BY created_at DESC LIMIT 20").bind(order.id).all(), c.env.RENT.prepare("SELECT payment_method, payment_provider, amount, deposit_amount, rental_amount, processing_fee, status, square_paid_amount FROM payments WHERE rental_id = ? AND status IN ('pending','paid','refunded') ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]), c.env.RENT.prepare("SELECT type, refund_amount, refund_method, status, created_at FROM payment_refunds WHERE order_id = ? AND status = 'succeeded' ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]), getOrderPriceAdjustmentSummary(c, order), c.env.RENT.prepare("SELECT pp.status, pp.reference_number, pp.rejection_reason FROM payment_proofs pp JOIN payments p ON p.id = pp.payment_id JOIN order_price_adjustments a ON a.payment_id = p.id WHERE a.order_id = ? AND a.direction = 'increase' ORDER BY pp.uploaded_at DESC LIMIT 1").bind(order.id).first(), c.env.RENT.prepare('SELECT balance FROM users WHERE id = ?').bind(user.id).first()]) as any[]
   const shouldEnsureContract = order.is_manual !== 1 && ['approved', 'paid', 'pending_pickup', 'active', 'extended', 'overdue', 'suspended', 'pending_return', 'returned', 'completed'].includes(String(order.status))
@@ -108,12 +111,16 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
         ? transferAdjustmentPayment
         : cardAdjustmentPayment
 
+  let chosenBillingMode = ''
+  try { chosenBillingMode = JSON.parse(order.rental_pricing_json || '{}').billingMode || '' } catch {}
   const installmentSection = await renderRentalInstallments(c, order, true)
   const body = `
     <div class="panel order-detail-shell customer-order-detail">
       <script>(function(){window.addEventListener('square-payment-updated',function(event){var detail=event.detail||{};if(Number(detail.squarePaidAmountCents||0)>0&&Number(detail.remainingAmountCents||0)>=0){window.setTimeout(function(){window.location.reload()},250)}})})();</script>
       <div class="section-title"><h2>${order.orderNo ? `订单详情 #${order.orderNo}` : '订单详情'}</h2>${order.orderNo ? '' : '<span class="section-note">订单编号将在付款确认后生成。</span>'}<a class="button button-secondary" href="/customer/orders">返回我的订单</a></div>
       ${alertMessage}
+      ${customerRefundRequest ? `<section class="panel"><h3>${CUSTOMER_REFUND_STATUSES[customerRefundRequest.status]}</h3><dl class="data-list"><div><dt>退款手续费（订单总额的 5%）</dt><dd>${formatCurrency(customerRefundRequest.fee_amount)}</dd></div><div><dt>申请退款金额</dt><dd>${formatCurrency(customerRefundRequest.refund_amount)}</dd></div></dl>${customerRefundRequest.review_note ? `<p>${esc(customerRefundRequest.review_note)}</p>` : ''}</section>` : ''}
+      ${canRequestCustomerRefund(order) && (!customerRefundRequest || customerRefundRequest.status === 'rejected') ? `<p><a class="button button-danger" href="/customer/orders/${encodeURIComponent(order.id)}/refund-request">申请退款</a></p>` : ''}
       <div class="order-detail-grid">
         <div class="order-info-card">
           <h3>订单信息</h3>
@@ -126,6 +133,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           ${renderRentalDiscounts(order, device || {})}
           <p><strong>押金:</strong> ${formatCurrency(deposit)}（${securityDepositMethodLabel(depositMethod)}；${depositMode === 'PREAUTH' ? '预授权' : depositMode === 'SETUP_INTENT' ? 'SetupIntent 保存卡片，不预扣' : order.billing_mode === 'MONTHLY' ? '随首期收取' : '单独处理'}）</p>
           <p><strong>订单合计:</strong> ${formatCurrency(order.totalAmount)}</p>
+          ${['MONTHLY', 'FULL'].includes(chosenBillingMode) ? `<p><strong>付款计划:</strong> ${isMonthlyRental(order) ? '月付' : '一次性付清（免押金）'}</p>` : ''}
           <p id="square-payment-summary"${squarePaidAmount > 0 ? '' : ' hidden'}><strong>礼品卡已扣:</strong> ${formatCurrency(squarePaidAmount)}${squareRemainingAmount > 0 ? `；Stripe 剩余 ${formatCurrency(squareRemainingAmount)}` : ''}</p>
           ${squarePaymentSelected && squarePaidAmount > 0 ? `<p><strong>礼品卡扣减后待支付:</strong> ${formatCurrency(squareRemainingAmount)}</p>` : ''}
           ${refundLabel ? `<p><strong>退款状态:</strong> ${esc(refundLabel)}</p>` : ''}
@@ -139,6 +147,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           <p><strong>日租金:</strong> ${formatCurrency(device?.pricePerDay ?? device?.dailyRate ?? 0)}</p>
         </div>
       </div>
+      ${renderRentalPaymentPlan(order, device, `/customer/orders/${encodeURIComponent(order.id)}/payment-plan`)}
       ${installmentSection}
       ${deliveryBlock}
 
@@ -160,7 +169,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
         <p class="form-text" style="margin-top:12px">如对付款或退款金额有疑问，请联系您的专属客服。</p>
       </section>` : ''}
 
-      ${['paid', 'pending_pickup'].includes(String(order.status)) ? `<div class="panel" style="margin-top:20px;"><h3>更改预约时间</h3><p class="form-text">已收服务费不退款；更高时段将补收差额。</p><form method="post" action="/customer/orders/${order.id}/time-slots"><div class="grid grid-2"><div class="form-group"><label class="form-label">领取/送货时间</label><select class="form-control" name="pickupTimeSlot" required>${(String(order.deliveryMethod || order.delivery_method || 'Pickup') === 'Delivery' ? [['delivery_morning','9:00–12:00'],['delivery_afternoon','13:00–19:00']] : pickupTimeSlots(systemSettings.rentalRules)).map(([v,l]) => `<option value="${v}" ${v === order.pickupTimeSlot ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">归还时间</label><select class="form-control" name="returnTimeSlot" required>${(String(order.deliveryMethod || order.delivery_method || 'Pickup') === 'Delivery' ? [['delivery_morning','9:00–12:00'],['delivery_afternoon','13:00–19:00']] : pickupTimeSlots(systemSettings.rentalRules)).map(([v,l]) => `<option value="${v}" ${v === order.returnTimeSlot ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div><button class="button button-primary" type="submit">保存预约时间</button></form></div>` : ''}
+      ${['paid', 'pending_pickup'].includes(String(order.status)) && (!customerRefundRequest || customerRefundRequest.status === 'rejected') ? `<div class="panel" style="margin-top:20px;"><h3>更改预约时间</h3><p class="form-text">已收服务费不退款；更高时段将补收差额。</p><form method="post" action="/customer/orders/${order.id}/time-slots"><div class="grid grid-2"><div class="form-group"><label class="form-label">领取/送货时间</label><select class="form-control" name="pickupTimeSlot" required>${(String(order.deliveryMethod || order.delivery_method || 'Pickup') === 'Delivery' ? [['delivery_morning','9:00–12:00'],['delivery_afternoon','13:00–19:00']] : pickupTimeSlots(systemSettings.rentalRules)).map(([v,l]) => `<option value="${v}" ${v === order.pickupTimeSlot ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">归还时间</label><select class="form-control" name="returnTimeSlot" required>${(String(order.deliveryMethod || order.delivery_method || 'Pickup') === 'Delivery' ? [['delivery_morning','9:00–12:00'],['delivery_afternoon','13:00–19:00']] : pickupTimeSlots(systemSettings.rentalRules)).map(([v,l]) => `<option value="${v}" ${v === order.returnTimeSlot ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div><button class="button button-primary" type="submit">保存预约时间</button></form></div>` : ''}
       ${timeChanges?.results?.length ? `<div class="panel" style="margin-top:20px;"><h3>预约时间变更记录</h3>${timeChanges.results.map((change: any) => `<p>${melbourneTime(change.created_at)}：${change.previous_pickup_slot || '未设置'} / ${change.previous_return_slot || '未设置'} → ${change.pickup_slot} / ${change.return_slot}${Number(change.additional_service_fee) > 0 ? `，新增服务费 ${formatCurrency(change.additional_service_fee)}` : ''}</p>`).join('')}</div>` : ''}
 
       ${['paid', 'active', 'completed'].includes(order.status) || String(order.status) === 'pending_return' ? `<p><a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>${order.status === 'active' ? (order.early_return_requested_at ? ' <span class="badge badge-warning">提前归还申请待审批</span>' : `<form method="post" action="/customer/orders/${order.id}/early-return" style="display:inline-block;margin-left:10px" data-site-confirm="确定申请提前归还此设备吗？将通知绑定员工和管理员。"><button class="button button-warning" type="submit">申请提前归还</button></form>`) : String(order.status) === 'pending_return' ? ' <span class="badge badge-warning">提前归还已批准，等待归还验机</span>' : ''}</p>` : ''}
@@ -175,7 +184,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
         ${['signed', 'completed'].includes(String(contract.status)) ? `<section class="panel" style="margin-top:16px"><h3>Windows 登录账户</h3><p class="form-text">设备登录密码，不是网站登录密码，不支持修改。</p><div class="form-group"><label class="form-label" for="windowsPassword">Windows 登录密码</label><code id="windowsPassword" class="form-control mono" style="display:block;user-select:all;word-break:break-all;">${esc(windowsPassword || '暂未生成')}</code></div></section>` : ''}
       ` : '<p style="margin-top: 24px;">暂无相关租赁合同。</p>'}
 
-      ${order.status === 'pending_payment' ? `
+      ${order.status === 'pending_payment' && (!customerRefundRequest || customerRefundRequest.status === 'rejected') ? `
         ${transferProof ? `<div class="payment-review-status payment-review-status--${transferProof.status === 'submitted' ? 'pending' : transferProof.status === 'rejected' ? 'failed' : 'success'}"><span class="payment-review-status__icon" aria-hidden="true"></span><div><strong>${transferProof.status === 'submitted' ? '转账凭证待审核' : transferProof.status === 'rejected' ? '转账审核未通过' : '转账审核已通过'}</strong><p>${transferProof.status === 'submitted' ? '管理员正在核对付款信息，请耐心等待。' : transferProof.status === 'rejected' ? `已驳回（${String(transferProof.rejection_reason || '').replace(/[&<>"']/g, '')}）` : '付款已确认，订单正在继续处理。'}</p></div></div>` : ''}
         <div class="section-title" style="margin-top: 24px;"><h3>支付信息</h3></div>
         <div class="alert"><div><strong>收款明细</strong>${monthlyPayment ? `<p>首期租金及服务费 ${formatCurrency(firstMonthly!.rental_amount)} ＋ 押金 ${formatCurrency(deposit)} ＋ 支付手续费 ${formatCurrency(stripeFee)} ＝ ${formatCurrency(stripeTotal)}。</p><p>继续付款即同意每 30 天自动扣取下一期租金。</p>` : depositMode === 'PREAUTH' ? `

@@ -18,6 +18,7 @@ export * from './partials/orderStatusBadge';
 
 export * from './customer/dashboard';
 export * from './customer/orders';
+export * from './customer/refundConfirm';
 export * from './customer/rentals';
 export * from './customer/profile';
 export * from './customer/orderDetail';
