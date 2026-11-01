@@ -1278,7 +1278,9 @@ async function settlePreauthorizedDeposit(c: Context, admin: any, order: any, fo
   if (intent.status === 'requires_capture') {
     if (Number(intent.amount_capturable || 0) < cents(captureAmount)) return c.text('信用卡可捕获金额不足，无法结算', 409)
     if (captureAmount > 0) {
-      intent = await stripeRequest(c, `payment_intents/${authorizationId}/capture`, new URLSearchParams({ amount_to_capture: String(cents(captureAmount)) }), `deposit-capture-${order.id}`)
+      const amountToCapture = String(cents(captureAmount))
+      // v2 不再传 final_capture；同一授权和金额的重试仍复用同一键。
+      intent = await stripeRequest(c, `payment_intents/${authorizationId}/capture`, new URLSearchParams({ amount_to_capture: amountToCapture }), `deposit-capture-v2-${order.id}-${authorizationId}-${amountToCapture}`)
     } else {
       intent = await stripeRequest(c, `payment_intents/${authorizationId}/cancel`, new URLSearchParams(), `deposit-release-${order.id}`)
     }

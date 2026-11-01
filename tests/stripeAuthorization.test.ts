@@ -292,6 +292,51 @@ test('automatic settlement retries a captured authorization after a database fai
   assert.equal(sqlite.prepare('SELECT settlement_status FROM orders').get()?.settlement_status, 'SETTLED')
 })
 
+test('capture avoids a legacy idempotency key cached with final_capture', async t => {
+  const { sqlite, settle } = await setup(t)
+  const stripeFetch = globalThis.fetch
+  const keys: string[] = []
+  globalThis.fetch = (async (url: any, init: any) => {
+    if (String(url).endsWith('/capture')) {
+      const key = new Headers(init?.headers).get('Idempotency-Key') || ''
+      keys.push(key)
+      if (key === 'deposit-capture-order') return Response.json({ error: { message: 'Keys for idempotent requests can only be used with the same parameters they were first used with.' } }, { status: 400 })
+    }
+    return stripeFetch(url, init)
+  }) as typeof fetch
+  const response = await settle({ refundAmount: '200', refundMethod: 'original' })
+  assert.equal(response.status, 303, await response.text())
+  assert.equal(keys.length, 1)
+  assert.notEqual(keys[0], 'deposit-capture-order')
+  assert.ok(keys[0].includes('pi_auth'))
+  assert.equal(sqlite.prepare('SELECT status, amount FROM payments').get()?.amount, 102.5)
+})
+
+test('capture retries retain the same key after a connection failure and settle only once', async t => {
+  const { sqlite, context, calls } = await setup(t)
+  sqlite.exec("UPDATE orders SET refundMethod = 'original'")
+  const stripeFetch = globalThis.fetch
+  const attempts: Array<{ key: string; body: string }> = []
+  globalThis.fetch = (async (url: any, init: any) => {
+    if (String(url).endsWith('/capture')) {
+      attempts.push({ key: new Headers(init?.headers).get('Idempotency-Key') || '', body: String(init?.body || '') })
+      if (attempts.length === 1) throw new Error('Connection failed before capture')
+    }
+    return stripeFetch(url, init)
+  }) as typeof fetch
+  const app = new Hono()
+  app.post('/', async c => (await settleCompletedOrderAuthorization(c, { id: 'admin' }, 'order')) || c.text('done'))
+  assert.equal((await app.request('https://example.test/', { method: 'POST' }, context.env)).status, 502)
+  assert.equal(sqlite.prepare('SELECT status FROM deposit_settlements').get()?.status, 'APPROVED')
+  assert.equal((await app.request('https://example.test/', { method: 'POST' }, context.env)).status, 303)
+  assert.equal(attempts.length, 2)
+  assert.ok(attempts[0].key)
+  assert.deepEqual(attempts[0], attempts[1])
+  assert.equal((await app.request('https://example.test/', { method: 'POST' }, context.env)).status, 200)
+  assert.equal(calls.filter(call => call.path.endsWith('/capture')).length, 1)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM payment_refunds').get()?.count, 1)
+})
+
 test('concurrent automatic settlements capture and credit the balance only once', async t => {
   const { sqlite, calls, context } = await setup(t)
   const app = new Hono()
