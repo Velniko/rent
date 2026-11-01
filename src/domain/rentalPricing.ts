@@ -11,6 +11,21 @@ export interface RentalPricingDeviceLike {
   weekly_discount_percent?: number | string | null
   monthlyDiscountPercent?: number | string | null
   monthly_discount_percent?: number | string | null
+  weeklyDiscountOverride?: number | string | null
+  weekly_discount_override?: number | string | null
+  monthlyDiscountOverride?: number | string | null
+  monthly_discount_override?: number | string | null
+}
+
+export function resolveRentalDiscounts(device: RentalPricingDeviceLike, defaults: { weeklyDiscountPercent: number; monthlyDiscountPercent: number }) {
+  const weeklyDiscountOverride = device.weeklyDiscountOverride !== undefined ? device.weeklyDiscountOverride : device.weekly_discount_override !== undefined ? device.weekly_discount_override : device.weeklyDiscountPercent ?? device.weekly_discount_percent ?? null
+  const monthlyDiscountOverride = device.monthlyDiscountOverride !== undefined ? device.monthlyDiscountOverride : device.monthly_discount_override !== undefined ? device.monthly_discount_override : device.monthlyDiscountPercent ?? device.monthly_discount_percent ?? null
+  return {
+    weeklyDiscountOverride: weeklyDiscountOverride == null ? null : Number(weeklyDiscountOverride),
+    monthlyDiscountOverride: monthlyDiscountOverride == null ? null : Number(monthlyDiscountOverride),
+    weeklyDiscountPercent: Number(weeklyDiscountOverride ?? defaults.weeklyDiscountPercent),
+    monthlyDiscountPercent: Number(monthlyDiscountOverride ?? defaults.monthlyDiscountPercent),
+  }
 }
 
 export function parseDeviceDiscountPercent(value: unknown): number | null {

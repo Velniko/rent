@@ -9,9 +9,12 @@ import { DatabaseSync } from 'node:sqlite'
 import { readFileSync, readdirSync } from 'node:fs'
 import { URL } from 'node:url'
 import { createHash } from 'node:crypto'
+import { runInNewContext } from 'node:vm'
 import worker from '../src/index'
 import { createAuthSession, MAINTENANCE_CHECK_TYPES, releaseDeviceIfUnbooked, updateOrderStatus } from '../src/site'
 import { renderAdminDevices } from '../src/pages/admin/devices'
+import { renderAdminDeviceCalendar } from '../src/pages/admin/deviceCalendar'
+import { extractInlineScripts } from './helpers'
 
 async function setup(t: any, depositStatus = 'HELD', mode = 'PAID') {
   const sqlite = new DatabaseSync(':memory:')
@@ -49,6 +52,49 @@ for (const depositStatus of ['HELD', 'REFUND_PENDING', 'REFUNDED']) test(`comple
   const order = sqlite.prepare("SELECT status, deposit_status FROM orders WHERE id = 'release-order'").get()!
   assert.equal(order.status, 'completed')
   assert.equal(order.deposit_status, depositStatus)
+  assert.ok(sqlite.prepare("SELECT return_received_at FROM orders WHERE id = 'release-order'").get()?.return_received_at)
+})
+
+for (const mode of ['PAID', 'PREAUTH']) for (const status of ['returned', 'completed']) test(`${status} records the return date for ${mode} orders without a deposit`, async t => {
+  const { sqlite, context } = await setup(t, 'PENDING', mode)
+  sqlite.exec('UPDATE orders SET depositAmount = 0')
+  await updateOrderStatus(context, 'release-order', status)
+  assert.ok(sqlite.prepare("SELECT return_received_at FROM orders WHERE id = 'release-order'").get()?.return_received_at)
+  sqlite.exec("UPDATE orders SET return_received_at = '2026-10-30 20:00:00'")
+  await updateOrderStatus(context, 'release-order', status)
+  assert.equal(sqlite.prepare("SELECT return_received_at FROM orders WHERE id = 'release-order'").get()?.return_received_at, '2026-10-30 20:00:00')
+})
+
+for (const legacy of [false, true]) test(`early completion frees the calendar after the Melbourne return date (${legacy ? 'legacy' : 'recorded'} return)`, async t => {
+  const { sqlite, context } = await setup(t)
+  sqlite.exec("UPDATE orders SET startDate = '2026-10-01', endDate = '2026-11-15'")
+  await updateOrderStatus(context, 'release-order', 'completed')
+  sqlite.exec('DROP TRIGGER update_orders_updated_at')
+  sqlite.prepare("UPDATE orders SET return_received_at = ?, updatedAt = '2026-10-30 20:00:00'").run(legacy ? null : '2026-10-30 20:00:00')
+  const html = await renderAdminDeviceCalendar(context, { id: 'release-admin', role: 'ADMIN' })
+  const script = extractInlineScripts(html).find(script => script.includes("getElementById('fleet-calendar')"))!
+  class Element {
+    children: Element[] = []
+    textContent = ''
+    value = ''
+    className = ''
+    replaceChildren() { this.children = [] }
+    appendChild(child: Element) { this.children.push(child) }
+    append(...children: Element[]) { this.children.push(...children) }
+    addEventListener() {}
+  }
+  const elements = new Map<string, Element>()
+  runInNewContext(script, {
+    Date: class extends Date { constructor(value?: string | number | Date) { super(value === undefined ? '2026-11-01T00:00:00Z' : value instanceof Date ? value.getTime() : value) } },
+    document: { getElementById(id: string) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id) }, createElement() { return new Element() } },
+  })
+  const cells = elements.get('fleet-calendar')!.children
+  const day = (date: string, outside = false) => cells.find(cell => cell.children[0].textContent === date && cell.className.includes('is-outside') === outside)!
+  assert.equal(day('30', true).children.length, 2, 'past rental remains visible')
+  assert.equal(day('31', true).children.length, 1, 'early return frees the original remaining dates')
+  assert.equal(day('1').children.length, 1)
+  assert.equal(sqlite.prepare("SELECT endDate FROM orders WHERE id = 'release-order'").get()?.endDate, '2026-11-15', 'contract date stays intact')
+  assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id = 'release-device'").get()?.status, 'available')
 })
 
 test('normal return inspection releases the device while the deposit is still held', async t => {

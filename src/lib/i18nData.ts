@@ -2365,6 +2365,24 @@ const status: Readonly<Record<string, string>> = {}
 
 // @domain admin —— 管理员端页面文案
 const admin: Readonly<Record<string, string>> = {
+  '全局周租折扣（%）': 'Global weekly discount (%)',
+  '取还时间规则': 'Pickup and return times',
+  '＋ 添加时段': '+ Add time range',
+  '非营业服务时段（收服务费）': 'After-hours service (service fee applies)',
+  '非营业服务费比例（%）': 'After-hours service fee (%)',
+  '按星期不可取货时段': 'Weekly unavailable pickup times',
+  '最短租赁天数': 'Minimum rental days',
+  '设备最短租赁天数必须为至少 1 天，缓冲天数必须为非负整数': 'Minimum rental days must be at least 1; buffer days must be a non-negative integer',
+  '周租和月租折扣必须是 0%–100% 之间的数字': 'Weekly and monthly discounts must be numbers between 0% and 100%',
+  '全局月租折扣（%）': 'Global monthly discount (%)',
+  '租期与折扣': 'Rental periods and discounts',
+  '满 7 天': 'Per full 7 days',
+  '满 30 天': 'Per full 30 days',
+  '保存租赁规则': 'Save rental rules',
+  '租赁规则已保存': 'Rental rules saved',
+  '租赁规则无效': 'Invalid rental rules',
+  '留空跟随全局；0 为不打折。': 'Leave blank to use global settings; 0 means no discount.',
+  '配置邮件、公司资料、支付方式和推荐分成。': 'Configure email, company details, payment methods and referral commissions.',
   '请填写中文和英文标题及内容': 'Enter the Chinese and English titles and content',
   '通告标题不能超过 120 字': 'Announcement titles cannot exceed 120 characters',
   '每种语言的通告内容不能超过 50000 字': 'Each announcement language cannot exceed 50,000 characters',
@@ -4513,6 +4531,17 @@ const legal: Readonly<Record<string, string>> = {
 
 // @domain errors —— 错误与空状态提示
 const errors: Readonly<Record<string, string>> = {
+  'Stripe 付款摘要数据不匹配': 'Stripe checkout details do not match.',
+  '付款摘要数据不匹配': 'Checkout details do not match.',
+  'Stripe 正在确认付款，请稍后重试': 'Stripe is confirming your payment. Please try again shortly.',
+  '正在确认付款，请稍后重试': 'Confirming your payment. Please try again shortly.',
+  'Stripe 付款明细与合计不匹配': 'Stripe line items do not match the total.',
+  '付款明细与合计不匹配': 'Line items do not match the total.',
+  'Stripe 付款摘要记录不存在': 'Stripe checkout record not found.',
+  '付款摘要记录不存在': 'Checkout record not found.',
+  '设备租金及服务费（礼品卡差额）': 'Equipment rental and service fees (gift card remainder)',
+  '账户余额充值（礼品卡差额）': 'Account balance top-up (gift card remainder)',
+  '订单差价补款': 'Order price adjustment payment',
   '推荐分成比例和每级加成必须在 0% 到 100% 之间': 'Referral commission and per-level increases must be between 0% and 100%',
   '最高推荐等级、升级人数和结算天数必须为正整数': 'Maximum referral level, referrals per level and settlement days must be positive integers',
   '该订单已忽略退款': 'The refund for this order has already been dismissed',

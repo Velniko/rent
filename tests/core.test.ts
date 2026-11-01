@@ -528,7 +528,7 @@ test('security deposit methods are explicit and separate from Stripe rent paymen
 test('Stripe checkout contains rent and processing fee but no deposit', () => {
   assert.deepEqual(stripeCheckoutItems({ totalAmount: 1100, depositAmount: 1000, rentalPeriod: 5, startDate: '2026-08-10', endDate: '2026-08-15' }), [
     { name: '设备租金（5 天，2026-08-10 至 2026-08-15）', amountCents: 10000 },
-    { name: 'Stripe 租金及服务费支付手续费（2.5%）', amountCents: 250 },
+    { name: '信用卡支付手续费（2.50%）', amountCents: 250 },
   ])
 })
 

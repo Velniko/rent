@@ -2363,7 +2363,7 @@ button:disabled {
 
 .announcement-editor { align-items: start; }
 .announcement-editor__language { min-width: 0; }
-textarea.form-control.announcement-source { width: 100%; height: auto; min-height: 180px; max-height: none; resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: var(--font-mono); }
+textarea.form-control.announcement-source { width: 100%; height: auto; field-sizing: content; min-height: 180px; max-height: none; resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: var(--font-mono); }
 .announcement-html { overflow-wrap: anywhere; word-break: break-word; }
 .announcement-html pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .announcement-html img, .announcement-html table { max-width: 100%; }

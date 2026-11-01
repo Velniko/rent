@@ -86,6 +86,10 @@ export interface Device {
   depositAmount: number
   weeklyDiscountPercent?: number
   monthlyDiscountPercent?: number
+  weeklyDiscountOverride?: number | null
+  monthlyDiscountOverride?: number | null
+  weekly_discount_override?: number | null
+  monthly_discount_override?: number | null
   minimumRentalDays?: number | null
   minimum_rental_days?: number | null
   bufferDays?: number | null

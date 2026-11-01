@@ -10,9 +10,9 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { URL } from 'node:url'
 import { createHmac } from 'node:crypto'
 import { Hono } from 'hono'
-import { createOrderPaymentIntent, handleStripeWebhook, refundDeposit, settleCompletedOrderAuthorization } from '../src/actions/stripePayments'
+import { createBalanceTopUpIntent, createOrderPaymentIntent, handleStripeWebhook, refundDeposit, settleCompletedOrderAuthorization } from '../src/actions/stripePayments'
 import { saveStripeConfig } from '../src/stripe'
-import { createAuthSession, formatMelbourneDateTime, getOrderById, reconcileOrderPayments, runDataConsistencyChecks } from '../src/site'
+import { createAuthSession, formatMelbourneDateTime, getOrderById, releaseStripePendingPaymentIntents, reconcileOrderPayments, runDataConsistencyChecks } from '../src/site'
 import worker from '../src/index'
 import { renderAdminOrderDetail } from '../src/pages/admin/orderDetail'
 import { renderCustomerOrderDetail } from '../src/pages/customer/orderDetail'
@@ -27,6 +27,8 @@ import { listBusinessDocuments, searchBusinessDocuments } from '../src/services/
 import { renderInvoice } from '../src/pages/invoice'
 import { buildPaymentReceiptDocument, buildTaxInvoiceDocument } from '../src/services/notifications'
 import { extractInlineScripts } from './helpers'
+import { CHECKOUT_INTEGRATION, linkStripeCheckoutIntent, upsertStripeCheckout } from '../src/services/stripeCheckout'
+import { stripePaymentHelperScript } from '../src/pages/partials/stripePaymentSection'
 
 async function setup(t: any, options: { rental?: number; status?: string; mode?: string } = {}) {
   const sqlite = new DatabaseSync(':memory:')
@@ -55,10 +57,11 @@ async function setup(t: any, options: { rental?: number; status?: string; mode?:
     },
   }
   const env = { RENT: db, SETTINGS_ENCRYPTION_KEY: 'test-only-encryption-key', CLOUDINARY_CLOUD_NAME: 'demo', CLOUDINARY_API_KEY: 'test-key', CLOUDINARY_API_SECRET: 'test-secret' }
-  const context = { env } as any
+  const context = { env, req: { url: 'https://rent.example.test/' } } as any
   await saveStripeConfig(context, { publishableKey: 'pk_test_example', secretKey: 'sk_test_example', webhookSecret: 'whsec_example' })
   const calls: Array<{ path: string; params: URLSearchParams; method: string }> = []
   let intent: any = { id: 'pi_auth', status: 'requires_capture', currency: 'aud', amount: Math.round((rental * 1.025 + 200) * 100), amount_capturable: Math.round((rental * 1.025 + 200) * 100), amount_received: 0, capture_method: 'manual', metadata: { order_id: 'order', customer_id: 'customer', type: 'rental_authorization' }, client_secret: 'pi_auth_secret_test' }
+  const sessions = new Map<string, any>()
   const fetchBefore = globalThis.fetch
   globalThis.fetch = (async (url: any, init: any) => {
     if (String(url) === 'https://api.cloudinary.com/v1_1/demo/image/upload') return Response.json({ secure_url: 'https://res.cloudinary.com/demo/image/upload/damage.jpg' })
@@ -66,6 +69,22 @@ async function setup(t: any, options: { rental?: number; status?: string; mode?:
     const params = new URLSearchParams(init?.body)
     calls.push({ path, params, method: init?.method || 'GET' })
     assert.ok(String(url).startsWith('https://api.stripe.com/'), `Unexpected request: ${url}`)
+    if (path === 'checkout/sessions' && init?.method === 'POST') {
+      const id = `cs_test_${sessions.size + 1}`
+      const metadata = Object.fromEntries([...params].filter(([key]) => /^metadata\[.+\]$/.test(key)).map(([key, value]) => [key.slice(9, -1), value]))
+      const amount = [...params].filter(([key]) => key.endsWith('[unit_amount]')).reduce((sum, [, value]) => sum + Number(value), 0)
+      const session = { id, status: 'open', currency: 'aud', client_secret: `${id}_secret_test`, amount_total: amount, customer: params.get('customer'), metadata, payment_intent: null }
+      sessions.set(id, session)
+      return Response.json(session)
+    }
+    if (path.startsWith('checkout/sessions/')) {
+      const id = path.split('/')[2].split('?')[0]
+      const session = sessions.get(id)
+      assert.ok(session, `Unknown Checkout Session: ${id}`)
+      if (path.endsWith('/expire')) session.status = 'expired'
+      const expanded = path.includes('expand') && session.payment_intent === intent.id
+      return Response.json(expanded ? { ...session, payment_intent: intent } : session)
+    }
     if (path.startsWith('customers?')) return Response.json({ data: [] })
     if (path.startsWith('customers')) return Response.json({ id: 'cus_test' })
     if (path.startsWith('payment_methods/')) return Response.json({ id: 'pm_card', customer: 'cus_test', card: { brand: 'visa' } })
@@ -83,7 +102,7 @@ async function setup(t: any, options: { rental?: number; status?: string; mode?:
     settlementApp.post('/', c => refundDeposit(c, { id: 'admin' }, 'order', form))
     return settlementApp.request('https://example.test/', { method: 'POST' }, env)
   }
-  return { sqlite, db, context, calls, settle, intent, setIntent: (value: any) => { intent = { ...intent, ...value } } }
+  return { sqlite, db, context, calls, settle, intent, sessions, setIntent: (value: any) => { intent = { ...intent, ...value } } }
 }
 
 async function requestAsAdmin(context: any, path: string, form: Record<string, string | File>) {
@@ -541,11 +560,13 @@ test('old deposit-only authorization is released before creating the full rental
   const result = await createOrderPaymentIntent(context, { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test' }, 'order')
   assert.equal(result.amountCents, 105125)
   const cancel = calls.findIndex(call => call.path === 'payment_intents/pi_auth/cancel')
-  const create = calls.findIndex(call => call.path === 'payment_intents' && call.method === 'POST')
+  const create = calls.findIndex(call => call.path === 'checkout/sessions' && call.method === 'POST')
   assert.ok(cancel >= 0 && create > cancel)
-  assert.equal(calls[create].params.get('amount'), '105125')
+  assert.equal(calls[create].params.get('line_items[0][price_data][unit_amount]'), '5000')
+  assert.equal(calls[create].params.get('line_items[1][price_data][unit_amount]'), '125')
+  assert.equal(calls[create].params.get('line_items[2][price_data][unit_amount]'), '100000')
   assert.equal(sqlite.prepare("SELECT status FROM payments WHERE id = 'payment'").get()?.status, 'failed')
-  assert.equal(sqlite.prepare("SELECT amount FROM payments WHERE stripe_payment_intent_id = 'pi_combined'").get()?.amount, 1051.25)
+  assert.equal(sqlite.prepare("SELECT amount FROM payments WHERE stripe_checkout_session_id = 'cs_test_1'").get()?.amount, 1051.25)
 })
 
 test('staff and customer order details display the stored creation time in Melbourne', async t => {
@@ -601,12 +622,14 @@ test('new combined authorization requests manual card capture and extended valid
   sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments;')
   setIntent({ status: 'requires_payment_method' })
   await createOrderPaymentIntent(context, { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test' }, 'order')
-  const created = calls.find(c => c.path === 'payment_intents' && c.method === 'POST')!
-  assert.equal(created.params.get('amount'), '30250')
-  assert.equal(created.params.get('capture_method'), 'manual')
+  const created = calls.find(c => c.path === 'checkout/sessions' && c.method === 'POST')!
+  assert.equal(created.params.get('line_items[0][price_data][unit_amount]'), '10000')
+  assert.equal(created.params.get('line_items[1][price_data][unit_amount]'), '250')
+  assert.equal(created.params.get('line_items[2][price_data][unit_amount]'), '20000')
+  assert.equal(created.params.get('payment_intent_data[capture_method]'), 'manual')
   assert.equal(created.params.get('payment_method_types[0]'), 'card')
   assert.equal(created.params.get('payment_method_options[card][request_extended_authorization]'), 'if_available')
-  assert.equal(created.params.get('metadata[type]'), 'rental_authorization')
+  assert.equal(created.params.get('payment_intent_data[metadata][type]'), 'rental_authorization')
 })
 
 test('long rental still charges rent without holding the deposit', async t => {
@@ -617,9 +640,11 @@ test('long rental still charges rent without holding the deposit', async t => {
   globalThis.fetch = (async (url: any, init: any) => String(url).includes('/payment_methods/') ? Response.json({ id: 'pm_saved', customer: 'cus_test', card: { brand: 'visa' } }) : fetchBefore(url, init)) as typeof fetch
   setIntent({ status: 'requires_payment_method' })
   await createOrderPaymentIntent(context, { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test', stripe_customer_id: 'cus_test' }, 'order')
-  const created = calls.find(c => c.path === 'payment_intents' && c.method === 'POST')!
-  assert.equal(created.params.get('amount'), '10250')
-  assert.equal(created.params.get('capture_method'), null)
+  const created = calls.find(c => c.path === 'checkout/sessions' && c.method === 'POST')!
+  assert.equal(created.params.get('line_items[0][price_data][unit_amount]'), '10000')
+  assert.equal(created.params.get('line_items[1][price_data][unit_amount]'), '250')
+  assert.equal(created.params.get('line_items[2][price_data][unit_amount]'), null)
+  assert.equal(created.params.get('payment_intent_data[capture_method]'), null)
   assert.equal(created.params.get('metadata[deposit_amount]'), '0')
 })
 
@@ -694,4 +719,171 @@ test('retry of full capture credits the deposit to balance once', async t => {
   assert.equal(sqlite.prepare("SELECT balance FROM users WHERE id='customer'").get()?.balance, 212)
   assert.equal((await settle({ refundAmount: '200' })).status, 409)
   assert.equal(sqlite.prepare("SELECT balance FROM users WHERE id='customer'").get()?.balance, 212)
+})
+
+test('new balance top-up uses Checkout line items, customer identity and a separate surcharge', async t => {
+  const { sqlite, context, calls } = await setup(t)
+  sqlite.exec("INSERT INTO balance_topups (id, user_id, amount, payment_method, status) VALUES ('topup', 'customer', 10, 'card', 'pending'); INSERT INTO addresses (id, user_id, address_line1, city, state, postcode, country, is_default) VALUES ('address', 'customer', '18 Test Street', 'Carlton', 'VIC', '3053', 'AU', 1)")
+  const result = await createBalanceTopUpIntent(context, { id: 'customer', name: 'Test Customer', email: 'customer@example.test' }, 'topup')
+  assert.match(result.clientSecret, /^cs_test_/)
+  assert.equal(result.amountCents, 1025)
+  const create = calls.find(call => call.path === 'checkout/sessions')!
+  assert.equal(create.params.get('ui_mode'), 'elements')
+  assert.equal(create.params.get('customer'), 'cus_test')
+  assert.equal(create.params.get('line_items[0][price_data][product_data][name]'), '账户余额充值')
+  assert.equal(create.params.get('line_items[0][price_data][unit_amount]'), '1000')
+  assert.equal(create.params.get('line_items[1][price_data][product_data][name]'), '信用卡支付手续费（2.50%）')
+  assert.equal(create.params.get('line_items[1][price_data][unit_amount]'), '25')
+  assert.equal(create.params.get('line_items[0][quantity]'), '1')
+  assert.equal(create.params.get('payment_intent_data[metadata][topup_id]'), 'topup')
+  const profile = calls.find(call => call.path === 'customers/cus_test' && call.params.has('address[line1]'))!
+  assert.equal(profile.params.get('name'), 'Test Customer')
+  assert.equal(profile.params.get('address[country]'), 'AU')
+  assert.equal(sqlite.prepare('SELECT stripe_checkout_session_id FROM balance_topups').get()?.stripe_checkout_session_id, 'cs_test_1')
+  assert.equal(sqlite.prepare('SELECT stripe_payment_intent_id FROM balance_topups').get()?.stripe_payment_intent_id, null)
+  assert.ok(!calls.some(call => call.path === 'payment_intents'))
+})
+
+test('Checkout retries reuse the session; a changed total expires the original session', async t => {
+  const { sqlite, context, calls, sessions } = await setup(t)
+  sqlite.exec("INSERT INTO balance_topups (id, user_id, amount, payment_method, status) VALUES ('topup', 'customer', 10, 'card', 'pending')")
+  const user = { id: 'customer', name: 'Test', email: 'customer@example.test', stripe_customer_id: 'cus_test' }
+  const first = await createBalanceTopUpIntent(context, user, 'topup')
+  const retry = await createBalanceTopUpIntent(context, user, 'topup')
+  assert.equal(retry.clientSecret, first.clientSecret)
+  assert.equal(calls.filter(call => call.path === 'checkout/sessions').length, 1)
+  sqlite.exec("UPDATE balance_topups SET amount = 20 WHERE id = 'topup'")
+  const changed = await createBalanceTopUpIntent(context, user, 'topup')
+  assert.equal(changed.amountCents, 2050)
+  assert.notEqual(changed.clientSecret, first.clientSecret)
+  assert.equal(sessions.get('cs_test_1').status, 'expired')
+  assert.equal(sqlite.prepare('SELECT stripe_checkout_session_id FROM balance_topups').get()?.stripe_checkout_session_id, 'cs_test_2')
+})
+
+test('Checkout rejects inconsistent item totals before sending a Stripe request', async t => {
+  const { context, calls } = await setup(t)
+  await assert.rejects(() => upsertStripeCheckout(context, { amountCents: 1025, customerId: 'cus_test', items: [{ name: 'Topup', amountCents: 1000 }], metadata: {}, returnUrl: 'https://rent.example.test/', idempotencyKey: 'test' }), /付款明细与合计不匹配/)
+  assert.equal(calls.length, 0)
+})
+
+async function checkoutWebhook(context: any, eventId: string, type: string, object: any) {
+  const app = new Hono()
+  app.post('/', c => handleStripeWebhook(c))
+  const body = JSON.stringify({ id: eventId, type, data: { object } })
+  const timestamp = Math.floor(Date.now() / 1000)
+  const signature = createHmac('sha256', 'whsec_example').update(`${timestamp}.${body}`).digest('hex')
+  return app.request('https://rent.example.test/', { method: 'POST', body, headers: { 'stripe-signature': `t=${timestamp},v1=${signature}` } }, context.env)
+}
+
+test('Checkout top-up links the actual PI, credits once, and ignores session completion accounting', async t => {
+  const { sqlite, context, sessions } = await setup(t)
+  sqlite.exec("INSERT INTO balance_topups (id, user_id, amount, payment_method, status) VALUES ('topup', 'customer', 10, 'card', 'pending')")
+  await createBalanceTopUpIntent(context, { id: 'customer', email: 'customer@example.test' }, 'topup')
+  const session = sessions.get('cs_test_1')
+  session.payment_intent = 'pi_topup'
+  session.status = 'complete'
+  session.payment_status = 'paid'
+  const intent = { id: 'pi_topup', amount: 1025, amount_received: 1025, currency: 'aud', status: 'succeeded', metadata: { integration: CHECKOUT_INTEGRATION, topup_id: 'topup', customer_id: 'customer' } }
+  const paid = await checkoutWebhook(context, 'evt_checkout_pi', 'payment_intent.succeeded', intent)
+  assert.equal(paid.status, 200, await paid.text())
+  assert.equal(sqlite.prepare("SELECT balance FROM users WHERE id = 'customer'").get()?.balance, 22)
+  assert.equal(sqlite.prepare('SELECT status FROM balance_topups').get()?.status, 'paid')
+  const sessionEvent = await checkoutWebhook(context, 'evt_checkout_complete', 'checkout.session.completed', session)
+  assert.equal(sessionEvent.status, 200, await sessionEvent.text())
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM balance_transactions').get()?.count, 1)
+  const duplicate = await checkoutWebhook(context, 'evt_checkout_pi', 'payment_intent.succeeded', intent)
+  assert.equal(duplicate.status, 200)
+  assert.equal(sqlite.prepare("SELECT balance FROM users WHERE id = 'customer'").get()?.balance, 22)
+})
+
+test('Checkout refuses to link a PI belonging to another session', async t => {
+  const { sqlite, context, sessions } = await setup(t)
+  sqlite.exec("INSERT INTO balance_topups (id, user_id, amount, payment_method, status) VALUES ('topup', 'customer', 10, 'card', 'pending')")
+  await createBalanceTopUpIntent(context, { id: 'customer', email: 'customer@example.test' }, 'topup')
+  sessions.get('cs_test_1').payment_intent = 'pi_real'
+  await assert.rejects(() => linkStripeCheckoutIntent(context, { id: 'pi_wrong', amount: 1025, currency: 'aud', metadata: { integration: CHECKOUT_INTEGRATION, topup_id: 'topup', customer_id: 'customer' } }), /付款摘要数据不匹配/)
+  assert.equal(sqlite.prepare('SELECT stripe_payment_intent_id FROM balance_topups').get()?.stripe_payment_intent_id, null)
+})
+
+test('Checkout authorization webhook links PI before the session completion event and still issues an invoice', async t => {
+  const { sqlite, context, sessions } = await setup(t, { status: 'pending_payment' })
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET deposit_status = 'PENDING', stripe_deposit_payment_intent_id = NULL;")
+  await createOrderPaymentIntent(context, { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test' }, 'order')
+  const session = sessions.get('cs_test_1')
+  session.payment_intent = 'pi_checkout_hold'
+  const payment = sqlite.prepare('SELECT id FROM payments').get()!
+  const intent = { id: 'pi_checkout_hold', status: 'requires_capture', currency: 'aud', amount: 30250, amount_capturable: 30250, capture_method: 'manual', payment_method: 'pm_saved', metadata: { integration: CHECKOUT_INTEGRATION, payment_record_id: payment.id, order_id: 'order', customer_id: 'customer', type: 'rental_authorization' } }
+  const response = await checkoutWebhook(context, 'evt_checkout_hold', 'payment_intent.amount_capturable_updated', intent)
+  assert.equal(response.status, 200, await response.text())
+  assert.equal(sqlite.prepare('SELECT stripe_payment_intent_id FROM payments').get()?.stripe_payment_intent_id, 'pi_checkout_hold')
+  assert.equal(sqlite.prepare('SELECT deposit_status FROM orders').get()?.deposit_status, 'HELD')
+  assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status, 'paid')
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM invoices').get()?.count, 1)
+})
+
+test('the payment helper supports Checkout confirmation and legacy PaymentIntent confirmation', async () => {
+  const script = extractInlineScripts(stripePaymentHelperScript())[0]
+  const paymentElement = { on(event: string, cb: Function) { if (event === 'ready') queueMicrotask(() => cb()) }, mount() {}, destroy() {} }
+  let checkoutConfirmed: any
+  let intentConfirmed = false
+  const windowMock: any = {
+    location: { href: 'https://rent.example.test/pay' },
+    Stripe: () => ({
+      initCheckoutElementsSdk: () => ({ createBillingAddressElement: () => paymentElement, createPaymentElement: () => paymentElement, loadActions: async () => ({ type: 'success', actions: { confirm: async (opts: any) => { checkoutConfirmed = opts; return { type: 'success' } } } }) }),
+      elements: () => ({ create: () => paymentElement }),
+      confirmPayment: async () => { intentConfirmed = true; return { paymentIntent: { status: 'succeeded' } } },
+    }),
+  }
+  const documentMock = { createElement: () => ({ style: {} }) }
+  new Function('window', 'document', script)(windowMock, documentMock)
+  const node = { appendChild() {} }
+  const checkout = windowMock.__mountStripePayment(node, { clientSecret: 'cs_test_secret', publishableKey: 'pk_test', returnUrl: '/done' })
+  await checkout.ready
+  assert.equal((await checkout.confirm()).ok, true)
+  assert.equal(checkoutConfirmed.returnUrl, 'https://rent.example.test/done')
+  assert.equal(checkoutConfirmed.redirect, 'if_required')
+  assert.equal(intentConfirmed, false)
+  const legacy = windowMock.__mountStripePayment(node, { clientSecret: 'pi_test_secret', publishableKey: 'pk_test', returnUrl: '/done' })
+  await legacy.ready
+  assert.equal((await legacy.confirm()).ok, true)
+  assert.equal(intentConfirmed, true)
+})
+
+
+test('cancelling a pending Checkout payment expires the form before a PI exists', async t => {
+  const { sqlite, context, sessions } = await setup(t, { status: 'pending_payment' })
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments;')
+  await createOrderPaymentIntent(context, { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test' }, 'order')
+  assert.equal(sqlite.prepare('SELECT stripe_payment_intent_id FROM payments').get()?.stripe_payment_intent_id, null)
+  await releaseStripePendingPaymentIntents(context, 'order')
+  assert.equal(sessions.get('cs_test_1').status, 'expired')
+})
+
+test('a bound Checkout PI remains valid after a partial capture changes the local collected amount', async t => {
+  const { sqlite, context, sessions } = await setup(t, { status: 'pending_payment' })
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments;')
+  await createOrderPaymentIntent(context, { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test' }, 'order')
+  const payment = sqlite.prepare('SELECT id FROM payments').get()!
+  sessions.get('cs_test_1').payment_intent = 'pi_checkout_hold'
+  const intent = { id: 'pi_checkout_hold', amount: 30250, currency: 'aud', metadata: { integration: CHECKOUT_INTEGRATION, payment_record_id: payment.id, customer_id: 'customer' } }
+  await linkStripeCheckoutIntent(context, intent)
+  sqlite.exec("UPDATE payments SET amount = 102.50, status = 'paid'")
+  await linkStripeCheckoutIntent(context, { ...intent, status: 'succeeded', amount_received: 10250 })
+  assert.equal(sqlite.prepare('SELECT amount FROM payments').get()?.amount, 102.5)
+})
+
+test('a completed Checkout authorization is recovered without starting another session', async t => {
+  const { sqlite, context, sessions, setIntent, calls } = await setup(t, { status: 'pending_payment' })
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET deposit_status = 'PENDING', stripe_deposit_payment_intent_id = NULL;")
+  const user = { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test' }
+  await createOrderPaymentIntent(context, user, 'order')
+  const session = sessions.get('cs_test_1')
+  session.status = 'complete'
+  session.payment_intent = 'pi_auth'
+  setIntent({ payment_method: 'pm_card', status: 'requires_capture', amount: 30250, amount_capturable: 30250 })
+  const result = await createOrderPaymentIntent(context, user, 'order')
+  assert.equal(result.alreadyPaid, true)
+  assert.equal(result.authorized, true)
+  assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status, 'paid')
+  assert.equal(calls.filter(call => call.path === 'checkout/sessions').length, 1)
 })

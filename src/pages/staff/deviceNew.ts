@@ -22,9 +22,9 @@ export function renderStaffDeviceNew(user: any, errorMessage?: string) {
         <label class="form-label">日租金</label>
         <input class="form-control" type="number" step="0.01" name="dailyRate" placeholder="例如：50.00" />
         <label class="form-label">周租折扣（%）</label>
-        <input class="form-control" type="number" min="0" max="100" step="0.01" name="weeklyDiscountPercent" value="0" />
+        <input class="form-control" type="number" min="0" max="100" step="0.01" name="weeklyDiscountPercent" value="" placeholder="跟随全局" />
         <label class="form-label">月租折扣（%）</label>
-        <input class="form-control" type="number" min="0" max="100" step="0.01" name="monthlyDiscountPercent" value="0" />
+        <input class="form-control" type="number" min="0" max="100" step="0.01" name="monthlyDiscountPercent" value="" placeholder="跟随全局" />
         <label class="form-label">设备状态</label>
         <select class="form-control" name="status">
           <option value="available">可用</option>

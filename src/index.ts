@@ -3090,7 +3090,7 @@ app.post('/staff/devices/new', async (c) => {
   const monthlyDiscountPercent = parseDeviceDiscountPercent(form.monthlyDiscountPercent)
   const status = String(form.status || 'available') as any
   if (!name || !model || !serialNumber || !Number.isFinite(pricePerDay) || pricePerDay < 0 || weeklyDiscountPercent === null || monthlyDiscountPercent === null || !['available', 'rented', 'maintenance', 'retired'].includes(status)) return c.html(pages.renderStaffDeviceNew(user, '请填写完整有效的设备资料和 0%–100% 的折扣'), 400)
-  const device = await insertDevice(c, { name, category: String(form.category || '其他'), model, serialNumber, pricePerDay, depositAmount: 0, weeklyDiscountPercent, monthlyDiscountPercent, demoMode: form.demoMode === '1', status, description: '' })
+  const device = await insertDevice(c, { name, category: String(form.category || '其他'), model, serialNumber, pricePerDay, depositAmount: 0, weeklyDiscountPercent, monthlyDiscountPercent, weeklyDiscountOverride: String(form.weeklyDiscountPercent ?? '').trim() ? weeklyDiscountPercent : null, monthlyDiscountOverride: String(form.monthlyDiscountPercent ?? '').trim() ? monthlyDiscountPercent : null, demoMode: form.demoMode === '1', status, description: '' })
   return c.redirect(`/staff/devices/${device.id}`)
 })
 
@@ -3109,7 +3109,7 @@ app.post('/staff/devices/:id/edit', async (c) => {
   const monthlyDiscountPercent = parseDeviceDiscountPercent(form.monthlyDiscountPercent)
   const status = String(form.status || 'available')
   if (!String(form.name || '').trim() || !String(form.model || '').trim() || !String(form.serialNumber || '').trim() || !Number.isFinite(pricePerDay) || pricePerDay < 0 || weeklyDiscountPercent === null || monthlyDiscountPercent === null || !['available', 'rented', 'maintenance', 'retired'].includes(status)) return c.html(await pages.renderStaffDeviceEdit(c, user, c.req.param('id'), '请填写完整有效的设备资料和 0%–100% 的折扣'), 400)
-  await updateDevice(c, c.req.param('id'), { name: String(form.name), category: String(form.category || '其他'), model: String(form.model), serialNumber: String(form.serialNumber), pricePerDay, weeklyDiscountPercent, monthlyDiscountPercent, demoMode: form.demoMode === '1', status: status as any })
+  await updateDevice(c, c.req.param('id'), { name: String(form.name), category: String(form.category || '其他'), model: String(form.model), serialNumber: String(form.serialNumber), pricePerDay, weeklyDiscountPercent, monthlyDiscountPercent, weeklyDiscountOverride: String(form.weeklyDiscountPercent ?? '').trim() ? weeklyDiscountPercent : null, monthlyDiscountOverride: String(form.monthlyDiscountPercent ?? '').trim() ? monthlyDiscountPercent : null, demoMode: form.demoMode === '1', status: status as any })
   return c.redirect(`/staff/devices/${c.req.param('id')}`)
 })
 
@@ -5231,6 +5231,8 @@ app.post('/admin/devices/new', async (c) => {
       depositAmount: Number(form.depositAmount) || 0,
       weeklyDiscountPercent,
       monthlyDiscountPercent,
+      weeklyDiscountOverride: String(form.weeklyDiscountPercent ?? '').trim() ? weeklyDiscountPercent : null,
+      monthlyDiscountOverride: String(form.monthlyDiscountPercent ?? '').trim() ? monthlyDiscountPercent : null,
       demoMode: form.demoMode === '1',
       status: (form.status as any) || 'available',
       description: form.description || form.remark || '',
@@ -5563,6 +5565,8 @@ app.post('/admin/devices/:id/edit', async (c) => {
     depositAmount: Number(form.depositAmount),
     weeklyDiscountPercent,
     monthlyDiscountPercent,
+    weeklyDiscountOverride: String(form.weeklyDiscountPercent ?? '').trim() ? weeklyDiscountPercent : null,
+    monthlyDiscountOverride: String(form.monthlyDiscountPercent ?? '').trim() ? monthlyDiscountPercent : null,
     minimumRentalDays,
     bufferDays,
     demoMode: form.demoMode === '1',
@@ -5615,6 +5619,20 @@ app.get('/admin/settings', async (c) => {
   }
   await loadSystemSettingsFromDB(c)
   return c.html(pages.renderAdminSettings(user))
+})
+
+app.get('/admin/rental-rules', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'ADMIN') return c.html(renderForbidden(), 403)
+  await loadSystemSettingsFromDB(c)
+  return c.html(pages.renderAdminRentalRules(user))
+})
+
+app.post('/admin/settings/rental-rules/save', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'ADMIN') return c.json({ success: false, error: '无权限' }, 403)
+  try { return await actions.handleSaveRentalRules(c) }
+  catch (error: any) { return c.json({ success: false, error: error.message || '保存失败' }, 400) }
 })
 
 app.get('/admin/api-settings', async (c) => {

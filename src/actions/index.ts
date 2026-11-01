@@ -6,6 +6,7 @@
 export * from './staff/createContract';
 export * from './public/signContract';
 export * from './admin/saveSettings';
+export * from './admin/rentalRules';
 export * from './admin/manualOrders';
 export * from './admin/rentalLinks';
 export * from './admin/devices';

@@ -136,10 +136,11 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
     },
     referralSettings,
     rentalRules: {
+      ...getSystemSettings().rentalRules,
       unavailableDates: Array.isArray(payload.rentalRules?.unavailableDates)
         ? payload.rentalRules.unavailableDates.map((value: unknown) => String(value).trim()).filter((value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value)).slice(0, 366)
         : getSystemSettings().rentalRules.unavailableDates,
-      unavailableTimeSlots: {},
+      unavailableTimeSlots: getSystemSettings().rentalRules.unavailableTimeSlots,
       serviceFeeHours: pickupHours.serviceFeeHours,
       businessHours: pickupHours.businessHours,
       unavailablePickupHours: pickupHours.unavailablePickupHours,

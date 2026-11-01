@@ -13,7 +13,7 @@ import { handleSaveAdminSettings } from '../src/actions/admin/saveSettings'
 import { getSystemSettings, invalidateSystemSettingsCache, loadSystemSettingsFromDB } from '../src/site'
 import { isUnavailablePickupTime, pickupTimeOptions, pickupRangeYearEnd, validateUnavailablePickupRanges, pickupClosureConfig } from '../src/domain/pickupTimeSlots'
 import { createRentalLinkAvailability } from '../src/domain/rentalLinkAvailability'
-import { renderAdminSettings } from '../src/pages/admin/settings'
+import { renderAdminRentalRules } from '../src/pages/admin/rentalRules'
 import { extractInlineScripts } from './helpers'
 
 test('closed ranges validate calendar dates, half-hour times and a calendar year including leap days', () => {
@@ -74,7 +74,7 @@ test('settings persist and reload closures, preserve them on other saves and rej
   invalidateSystemSettingsCache()
   await loadSystemSettingsFromDB({ env } as any)
   assert.deepEqual(getSystemSettings().rentalRules.unavailablePickupRanges, ranges)
-  const html = renderAdminSettings({ id: 'admin', name: '管理员', role: 'ADMIN' })
+  const html = renderAdminRentalRules({ id: 'admin', name: '管理员', role: 'ADMIN' })
   assert.match(html, /添加不营业时间/)
   assert.match(html, /2090-01-04T19:00/)
   for (const script of extractInlineScripts(html)) assert.doesNotThrow(() => new Function(script))

@@ -23,6 +23,8 @@ import { syncSquareCatalogItem, syncSquareCustomerProfile } from '../square'
 import { canTransitionDeviceLifecycle } from '../domain/deviceLifecycle'
 import type { ManualOrderData } from '../domain/manualOrders'
 import { createDemoAvailableFrom } from '../domain/deviceDemo'
+import { resolveRentalDiscounts } from '../domain/rentalPricing'
+import { getSystemSettings } from '../settings/systemSettings'
 
 // ---------------------------------------------------------------------------
 // 私有：设备生命周期映射 + 行归一化
@@ -815,8 +817,8 @@ export async function getDeviceById(cOrContext: Context | string, id?: string): 
   // 统一处理snake_case和camelCase字段
   const pricePerDay = deviceRow.pricePerDay ?? deviceRow.price_per_day
   const depositAmount = deviceRow.depositAmount ?? deviceRow.deposit_amount
-  const weeklyDiscountPercent = Number(deviceRow.weeklyDiscountPercent ?? deviceRow.weekly_discount_percent ?? 0)
-  const monthlyDiscountPercent = Number(deviceRow.monthlyDiscountPercent ?? deviceRow.monthly_discount_percent ?? 0)
+  const discounts = resolveRentalDiscounts(deviceRow, getSystemSettings().rentalRules)
+  const { weeklyDiscountPercent, monthlyDiscountPercent } = discounts
 
   // Add type validation for required fields
   if (typeof pricePerDay !== 'number' || typeof depositAmount !== 'number') {
@@ -826,6 +828,7 @@ export async function getDeviceById(cOrContext: Context | string, id?: string): 
   // 确保返回的设备对象同时包含两种格式的字段，兼容所有调用方
   return {
     ...deviceRow,
+    ...discounts,
     category: deviceRow.category || '其他',
     pricePerDay,
     price_per_day: pricePerDay,
@@ -860,11 +863,12 @@ export async function getDevices(c?: Context): Promise<Device[]> {
     const serial_number = deviceRow.serial_number ?? deviceRow.serialNumber
     const price_per_day = deviceRow.price_per_day ?? deviceRow.pricePerDay
     const deposit_amount = deviceRow.deposit_amount ?? deviceRow.depositAmount
-    const weeklyDiscountPercent = Number(deviceRow.weeklyDiscountPercent ?? deviceRow.weekly_discount_percent ?? 0)
-    const monthlyDiscountPercent = Number(deviceRow.monthlyDiscountPercent ?? deviceRow.monthly_discount_percent ?? 0)
+    const discounts = resolveRentalDiscounts(deviceRow, getSystemSettings().rentalRules)
+    const { weeklyDiscountPercent, monthlyDiscountPercent } = discounts
 
     return {
       ...deviceRow,
+      ...discounts,
       category: deviceRow.category || '其他',
       pricePerDay,
       depositAmount,
@@ -917,7 +921,7 @@ export async function insertDevice(c: Context, device: Omit<Device, 'id'> & { id
 
   // 构建插入字段和值
   const insertFields = ['id', 'name', 'model', 'status', 'description'];
-  const insertValues = [
+  const insertValues: Array<string | null> = [
     deviceId,
     sanitizePlainText(device.name, 120),
     sanitizePlainText(device.model, 120),
@@ -984,6 +988,11 @@ export async function insertDevice(c: Context, device: Omit<Device, 'id'> & { id
     insertValues.push(String((device as any).monthlyDiscountPercent ?? (device as any).monthly_discount_percent ?? 0));
   }
 
+  const overrides = resolveRentalDiscounts(device, getSystemSettings().rentalRules)
+  for (const [column, value] of [['weekly_discount_override', overrides.weeklyDiscountOverride], ['monthly_discount_override', overrides.monthlyDiscountOverride]] as const) {
+    if (deviceColumns.has(column)) { insertFields.push(column); insertValues.push(value == null ? null : String(value)) }
+  }
+
   if (device.demoMode) {
     insertFields.push('demo_available_from')
     insertValues.push(createDemoAvailableFrom())
@@ -1015,6 +1024,8 @@ export async function updateDevice(c: Context, deviceId: string, data: Partial<D
     depositAmount: 'depositAmount', deposit_amount: 'deposit_amount',
     weeklyDiscountPercent: 'weekly_discount_percent', weekly_discount_percent: 'weekly_discount_percent',
     monthlyDiscountPercent: 'monthly_discount_percent', monthly_discount_percent: 'monthly_discount_percent',
+    weeklyDiscountOverride: 'weekly_discount_override', weekly_discount_override: 'weekly_discount_override',
+    monthlyDiscountOverride: 'monthly_discount_override', monthly_discount_override: 'monthly_discount_override',
     minimumRentalDays: 'minimum_rental_days', minimum_rental_days: 'minimum_rental_days',
     bufferDays: 'buffer_days', buffer_days: 'buffer_days',
     agentStatus: 'agent_status', agent_status: 'agent_status',

@@ -5,6 +5,7 @@
 
 import { Context } from 'hono'
 import { stripeRequest } from './stripe'
+import { expireStripeCheckout } from './services/stripeCheckout'
 import rawLayoutTemplate from './layout.html'
 import { styleSheetHref, appScriptHref, languageScriptHref } from './lib/assetVersion'
 import { languageBootScript, i18nDomainsForRole } from './lib/i18n'
@@ -329,7 +330,7 @@ export async function cancelExpiredPendingPaymentOrders(c: Context): Promise<num
 // 沿用手动取消充值的状态约定，避免继续显示为可支付记录。
 export async function cancelExpiredPendingBalanceTopUps(c: Context): Promise<number> {
   const topups = await c.env.RENT.prepare(`
-    SELECT id, stripe_payment_intent_id FROM balance_topups
+    SELECT id, stripe_payment_intent_id, stripe_checkout_session_id FROM balance_topups
     WHERE status = 'pending'
       AND datetime(created_at) <= datetime('now', '-24 hours')
   `).all() as any
@@ -340,7 +341,7 @@ export async function cancelExpiredPendingBalanceTopUps(c: Context): Promise<num
   return cancelled
 }
 
-async function applyPendingBalanceTopUpCancellation(c: Context, topup: { id: string; stripe_payment_intent_id?: string | null }): Promise<boolean> {
+async function applyPendingBalanceTopUpCancellation(c: Context, topup: { id: string; stripe_payment_intent_id?: string | null; stripe_checkout_session_id?: string | null }): Promise<boolean> {
   const result = await c.env.RENT.prepare(`
     UPDATE balance_topups
     SET status = 'failed',
@@ -350,6 +351,7 @@ async function applyPendingBalanceTopUpCancellation(c: Context, topup: { id: str
   `).bind(topup.id).run() as any
   const changes = Number(result.meta?.changes ?? result.changes ?? 0)
   if (changes < 1) return false
+  await expireStripeCheckout(c, topup.stripe_checkout_session_id).catch(() => null)
   await releaseStripePendingIntent(c, topup.stripe_payment_intent_id, `pending-topup-cancel-${topup.id}`)
   return true
 }
@@ -377,9 +379,10 @@ export async function applyPendingPaymentCancellation(c: Context, order: { id: s
 // 尽力而为：单个 PaymentIntent 请求失败不阻断订单取消本身。
 export async function releaseStripePendingPaymentIntents(c: Context, orderId: string): Promise<void> {
   const pendingPayments = await c.env.RENT.prepare(
-    "SELECT stripe_payment_intent_id FROM payments WHERE rental_id = ? AND status = 'pending' AND stripe_payment_intent_id IS NOT NULL"
+    "SELECT stripe_payment_intent_id, stripe_checkout_session_id FROM payments WHERE rental_id = ? AND status = 'pending' AND (stripe_payment_intent_id IS NOT NULL OR stripe_checkout_session_id IS NOT NULL)"
   ).bind(orderId).all() as any
   for (const payment of (pendingPayments.results || []) as any[]) {
+    await expireStripeCheckout(c, payment.stripe_checkout_session_id).catch(() => null)
     await releaseStripePendingIntent(c, payment.stripe_payment_intent_id, `pending-payment-cancel-${orderId}`)
   }
 }
@@ -667,14 +670,11 @@ export async function updateOrderStatus(c: Context, orderId: string, status: str
   const result = await db.prepare(`UPDATE orders SET status = ?, order_status = ?, payment_status = ?, rental_status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?${options?.expectedStatus ? ' AND status = ?' : ''}`)
     .bind(status, next.order, next.payment, next.rental, orderId, ...(options?.expectedStatus ? [options.expectedStatus] : [])).run();
   if (options?.expectedStatus && !Number(result.meta?.changes ?? result.changes ?? 0)) return false
+  // 归还时间独立于押金结算，覆盖免押金、预授权和已持有押金的订单。
+  if (status === 'returned' || status === 'completed') {
+    await db.prepare("UPDATE orders SET return_received_at = COALESCE(return_received_at, CURRENT_TIMESTAMP) WHERE id = ?").bind(orderId).run()
+  }
   if (next.payment === 'PAID' && Number(previous?.depositAmount || 0) > 0 && String(previous?.deposit_payment_mode || 'PAID') === 'PAID' && ['PENDING', 'PAID'].includes(String(previous?.deposit_status || 'PENDING'))) {
-    // Any path that lands the order on RETURNED/COMPLETED must stamp return_received_at,
-    // otherwise the RETURNED_ORDER_WITHOUT_RETURN_RECORD consistency check flags it. The
-    // staff verification flow already does this; do it here too for admin force-complete
-    // and auto-transitions that come through updateOrderStatus.
-    if (status === 'returned' || status === 'completed') {
-      await db.prepare("UPDATE orders SET return_received_at = COALESCE(return_received_at, CURRENT_TIMESTAMP) WHERE id = ?").bind(orderId).run()
-    }
     await db.prepare("UPDATE orders SET deposit_status = 'HELD', deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), deposit_held_amount = depositAmount WHERE id = ?").bind(orderId).run()
   }
   if (status === 'completed') {
@@ -1710,7 +1710,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
     '/admin/marketing-emails/data': 'marketing-chart', '/admin/api-settings': 'code',
     '/notifications': 'N', '/admin/notifications': 'inbox', '/admin/dashboard': 'rental-console', '/admin/users': 'people', '/admin/orders': '▥',
     '/admin/refunds': 'deposit-return', '/admin/contracts': 'rental-contract', '/admin/templates/contract': '▧', '/admin/finance': 'rental-finance',
-    '/admin/withdrawals': '↗', '/admin/exceptions': 'alert', '/admin/devices': 'asset-register', '/admin/devices/relist': 'device-listing', '/admin/device-agent-bindings': 'device-binding', '/admin/inspections': 'device-inspection', '/admin/calendar': '◫', '/admin/coupons': '%', '/admin/templates': '◇', '/admin/email-templates': '✉', '/admin/in-app-notification-templates': 'message-template', '/admin/tax-invoice-template': 'receipt', '/admin/documents': 'receipt', '/admin/marketing-emails': '⚑', '/admin/settings': '⚙',
+    '/admin/withdrawals': '↗', '/admin/exceptions': 'alert', '/admin/devices': 'asset-register', '/admin/devices/relist': 'device-listing', '/admin/device-agent-bindings': 'device-binding', '/admin/inspections': 'device-inspection', '/admin/calendar': '◫', '/admin/rental-rules': '⚙', '/admin/coupons': '%', '/admin/templates': '◇', '/admin/email-templates': '✉', '/admin/in-app-notification-templates': 'message-template', '/admin/tax-invoice-template': 'receipt', '/admin/documents': 'receipt', '/admin/marketing-emails': '⚑', '/admin/settings': '⚙',
     '/admin/devices/reports': 'device-reports', '/admin/reports': 'trend', '/admin/data-retention': 'data-retention', '/admin/monitoring': 'activity', '/admin/connectivity': '⌘', '/admin/referrals': 'gift',
     '/admin/order-review': 'order-review', '/admin/orders/balance-topups': '↥', '/admin/feedback-rewards': 'feedback-reward', '/admin/feedback-gift-cards': 'gift-card'
   }
@@ -1835,7 +1835,8 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
 
   const searchIndex = currentUser?.role === 'ADMIN'
     ? [
-        ['/admin/settings#companyName', '公司资料与营业规则', '系统设置', '公司名称 ABN 地址 联系方式 自取地点 配送区域 不可用日期 营业规则'],
+        ['/admin/settings#companyName', '公司资料', '系统设置', '公司名称 ABN 地址 联系方式 自取地点 配送区域'],
+        ['/admin/rental-rules', '租赁规则', '租赁管理', '取还时间 营业时段 不营业 服务费 最短租期 缓冲天数 周租 月租 折扣'],
         ['/admin/settings#requireEmailVerification', '注册安全与邮箱验证', '系统设置', '注册 安全 邮箱验证 验证码'],
         ['/admin/marketing-emails#feedbackRewards', '反馈奖励与礼品卡', '营销增长', 'Tally 反馈 奖励 余额 优惠码 礼品卡'],
         ['/admin/settings#processingFeeRate', '支付方式与手续费', '系统设置', '支付 Stripe Square 银行转账 余额 手续费'],
@@ -1891,7 +1892,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
             ${renderNavLink('/admin/dashboard', '控制台')}
             ${renderNavLink('/admin/users', '用户管理')}
             ${renderNavGroup('通知中心', [['/admin/notifications', '业务通知'], ['/admin/notifications/settings', '通知设置'], ['/notifications', '发布通知']])}
-            ${renderNavGroup('租赁管理', [['/admin/order-review', '网站订单审核'], ['/admin/orders', '租赁订单'], ['/admin/delivery', '配送管理'], ['/admin/calendar', '租赁日历']])}
+            ${renderNavGroup('租赁管理', [['/admin/order-review', '网站订单审核'], ['/admin/orders', '租赁订单'], ['/admin/delivery', '配送管理'], ['/admin/calendar', '租赁日历'], ['/admin/rental-rules', '租赁规则']])}
             ${renderNavGroup('合同管理', [['/admin/contracts', '合同列表'], ['/admin/templates/contract', '合同模板'], ['/admin/templates', '协议模板']])}
             ${renderNavGroup('设备管理', [['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
             ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/documents', '单据中心'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}

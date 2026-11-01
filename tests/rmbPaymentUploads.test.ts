@@ -15,7 +15,7 @@ import { extractInlineScripts } from './helpers'
 async function setup(t: any) {
   const sqlite = new DatabaseSync(':memory:')
   for (const name of readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()) sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'))
-  sqlite.exec("INSERT INTO users (id, name, email, role, status, account_status) VALUES ('link-admin', '链接管理员', 'link-admin@example.test', 'ADMIN', 'active', 'active'), ('link-staff', '链接员工', 'link-staff@example.test', 'STAFF', 'active', 'active'); INSERT INTO devices (id, name, model, serialNumber, pricePerDay, depositAmount, weekly_discount_percent, monthly_discount_percent, status, lifecycle_status) VALUES ('link-device', '游戏笔记本', 'RTX 4060', 'LINK-SN', 30, 200, 10, 20, 'available', 'READY'), ('other-device', '其他设备', 'Other', 'OTHER-SN', 60, 500, 0, 0, 'available', 'READY');")
+  sqlite.exec("INSERT INTO users (id, name, email, role, status, account_status) VALUES ('link-admin', '链接管理员', 'link-admin@example.test', 'ADMIN', 'active', 'active'), ('link-staff', '链接员工', 'link-staff@example.test', 'STAFF', 'active', 'active'); INSERT INTO devices (id, name, model, serialNumber, pricePerDay, depositAmount, weekly_discount_percent, monthly_discount_percent, weekly_discount_override, monthly_discount_override, status, lifecycle_status) VALUES ('link-device', '游戏笔记本', 'RTX 4060', 'LINK-SN', 30, 200, 10, 20, 10, 20, 'available', 'READY'), ('other-device', '其他设备', 'Other', 'OTHER-SN', 60, 500, 0, 0, NULL, NULL, 'available', 'READY');")
   const db = {
     prepare(sql: string) {
       let values: any[] = []

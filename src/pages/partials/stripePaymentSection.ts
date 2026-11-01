@@ -13,7 +13,7 @@
 //   给订单详情页 / 余额充值页直接嵌。
 
 export function stripeJsTag(): string {
-  return '<script src="https://js.stripe.com/v3/"></script>'
+  return '<script src="https://js.stripe.com/endive/stripe.js"></script>'
 }
 
 export function stripePaymentHelperScript(): string {
@@ -26,6 +26,40 @@ export function stripePaymentHelperScript(): string {
     if (!node) throw new Error('缺少 Payment Element 容器');
     if (!window.Stripe) throw new Error('Stripe.js 未能加载');
     if (!opts || !opts.clientSecret || !opts.publishableKey) throw new Error('缺少支付凭据');
+    if (opts.clientSecret.indexOf('cs_') === 0) {
+      if (opts.deferred) opts.deferred.paymentElement.destroy();
+      var checkoutStripe = window.Stripe(opts.publishableKey);
+      var checkout = checkoutStripe.initCheckoutElementsSdk({ clientSecret: opts.clientSecret, elementsOptions: { appearance: APPEARANCE }, adaptivePricing: { allowed: false } });
+      var billingNode = document.createElement('div');
+      var paymentNode = document.createElement('div');
+      billingNode.style.marginBottom = '16px';
+      node.appendChild(billingNode);
+      node.appendChild(paymentNode);
+      var billingElement = checkout.createBillingAddressElement();
+      var checkoutPaymentElement = checkout.createPaymentElement({ layout: 'tabs' });
+      var checkoutActions = checkout.loadActions().then(function(result){
+        if (result.type === 'error') throw new Error(result.error.message);
+        return result.actions;
+      });
+      var checkoutReady = new Promise(function(resolve, reject){
+        checkoutPaymentElement.on('ready', resolve);
+        checkoutPaymentElement.on('loaderror', function(event){ reject(new Error(event.error.message)); });
+      });
+      billingElement.mount(billingNode);
+      checkoutPaymentElement.mount(paymentNode);
+      return {
+        ready: Promise.all([checkoutActions, checkoutReady]),
+        destroy: function(){ billingElement.destroy(); checkoutPaymentElement.destroy(); },
+        confirm: function(){
+          return checkoutActions.then(function(actions){
+            return actions.confirm({ returnUrl: new URL(opts.returnUrl, window.location.href).href, redirect: 'if_required' });
+          }).then(function(result){
+            if (result.type === 'error') return { ok: false, error: result.error.message };
+            return { ok: true, status: 'processing' };
+          }).catch(function(err){ return { ok: false, error: (err && err.message) || '支付请求失败，请稍后重试。' }; });
+        }
+      };
+    }
     var stripe = opts.deferred ? opts.deferred.stripe : window.Stripe(opts.publishableKey);
     var elements = opts.deferred ? opts.deferred.elements : stripe.elements({ clientSecret: opts.clientSecret, appearance: APPEARANCE });
     var paymentElement = opts.deferred ? opts.deferred.paymentElement : elements.create('payment', { layout: 'tabs' });
@@ -35,6 +69,7 @@ export function stripePaymentHelperScript(): string {
     return {
       ready: ready,
       elements: elements,
+      destroy: function(){ paymentElement.destroy(); },
       confirm: function(){
         var absoluteReturnUrl = opts.returnUrl ? new URL(opts.returnUrl, window.location.href).href : '';
         return stripe.confirmPayment({
@@ -123,7 +158,7 @@ export function renderStripePaymentBox(opts: {
                 publishableKey: res.d.publishableKey,
                 returnUrl: ${j(opts.returnUrl)}
               });
-              handle.ready.then(function(){ submitBtn.disabled = false; });
+              handle.ready.then(function(){ submitBtn.disabled = false; }).catch(function(error){ showError(error.message); });
             })
             .catch(function(){ showError('无法加载支付，请检查网络后刷新重试。'); });
         };
@@ -141,6 +176,7 @@ export function renderStripePaymentBox(opts: {
         });
         window.addEventListener('square-payment-updated', function(){
           if (handle) {
+            if (handle.destroy) handle.destroy();
             elementNode.innerHTML = '';
             handle = null;
             submitBtn.disabled = true;

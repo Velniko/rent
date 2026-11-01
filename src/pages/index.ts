@@ -98,6 +98,7 @@ export * from './admin/withdrawals';
 export * from './admin/paymentDisputes';
 export * from './admin/anomalousOrders';
 export * from './admin/deviceCalendar';
+export * from './admin/rentalRules';
 export * from './admin/deviceAgentBindings';
 export * from './admin/delivery';
 export * from './admin/manualOrder';

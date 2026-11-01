@@ -631,10 +631,12 @@
 
     // 通告源码自动换行并随内容展开；折叠历史记录打开时重新测量。
     document.addEventListener('DOMContentLoaded', function () {
-      const resize = function (area) { if (!area.getClientRects().length) return; area.style.height = 'auto'; area.style.height = (area.scrollHeight + 2) + 'px'; };
+      const contentSizing = window.CSS && window.CSS.supports('field-sizing', 'content');
+      const resize = function (area) { if (!area.getClientRects().length) return; area.style.height = 'auto'; if (!contentSizing) area.style.height = (area.scrollHeight + 2) + 'px'; };
       const resizeAll = function () { document.querySelectorAll('textarea.announcement-source').forEach(resize); };
       document.addEventListener('input', function (event) { if (event.target.matches('textarea.announcement-source')) resize(event.target); });
       document.addEventListener('toggle', resizeAll, true);
+      document.addEventListener('site:content-updated', resizeAll);
       window.addEventListener('resize', resizeAll);
       resizeAll();
     });
@@ -780,6 +782,7 @@
             pageTitle = parsed.title;
             document.title = pageTitle;
             runScripts(content);
+            document.dispatchEvent(new Event('site:content-updated'));
             setActiveLink(url.pathname);
             if (url.hash) window.setTimeout(function () {
               const target = document.getElementById(url.hash.slice(1));

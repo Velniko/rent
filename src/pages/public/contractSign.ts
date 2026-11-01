@@ -661,6 +661,7 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
               let deferredStripe = null, submitting = false;
               const showPreviewError = message => { if (previewError) { previewError.textContent = message || ''; previewError.hidden = !message; } };
               const updateStripePreview = () => {
+                if (previewMode === 'payment') { if (previewNode) previewNode.hidden = true; return; }
                 const method = form.querySelector('input[name="paymentMethod"]:checked')?.value || form.querySelector('input[name="paymentMethod"][type="hidden"]')?.value;
                 if (method !== 'stripe' || !previewNode || ${hasSavedCard ? 'true' : 'false'}) return;
                 try {
@@ -694,7 +695,7 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
                 const restoreBtn = () => { submitting = false; if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '确认并完成签约'; } };
                 try {
                   updateStripePreview();
-                  if (!${hasSavedCard ? 'true' : 'false'} && !deferredStripe) throw new Error(previewError?.textContent || '支付组件尚未加载，请重试。');
+                  if (previewMode === 'setup' && !${hasSavedCard ? 'true' : 'false'} && !deferredStripe) throw new Error(previewError?.textContent || '支付组件尚未加载，请重试。');
                   if (deferredStripe) {
                     const result = await deferredStripe.elements.submit();
                     if (result.error) throw new Error(result.error.message || '请检查银行卡信息。');
@@ -757,7 +758,7 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
                     clientSecret: stripe.clientSecret, publishableKey: stripe.publishableKey, returnUrl: window.location.href, deferred: deferredStripe
                   });
                 } catch (e) { showErr((e && e.message) || '卡片验证组件加载失败，请刷新重试。'); return; }
-                handle.ready.then(function () { payBtn.disabled = false; if (deferredStripe) payBtn.click(); });
+                handle.ready.then(function () { payBtn.disabled = false; if (deferredStripe) payBtn.click(); }).catch(function (error) { showErr(error.message); });
                 payBtn.addEventListener('click', function () {
                   showErr(''); payBtn.disabled = true; payBtn.textContent = '处理中…';
                   handle.confirm().then(function (out) {
@@ -795,7 +796,7 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
                     clientSecret: stripe.clientSecret, publishableKey: stripe.publishableKey, returnUrl: RESULT_URL, deferred: deferredStripe
                   });
                 } catch (e) { showErr((e && e.message) || '支付组件加载失败，请刷新重试。'); return; }
-                handle.ready.then(function () { payBtn.disabled = false; if (deferredStripe) payBtn.click(); });
+                handle.ready.then(function () { payBtn.disabled = false; if (deferredStripe) payBtn.click(); }).catch(function (error) { showErr(error.message); });
                 startPoll();
                 payBtn.addEventListener('click', function () {
                   showErr(''); payBtn.disabled = true; payBtn.textContent = '处理中…';

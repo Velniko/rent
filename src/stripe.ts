@@ -119,7 +119,7 @@ export async function getStripePublishableKey(c: Context): Promise<string> {
   return stored.publishableKey
 }
 
-export async function stripeRequest(c: Context, path: string, params?: URLSearchParams, idempotencyKey?: string) {
+export async function stripeRequest(c: Context, path: string, params?: URLSearchParams, idempotencyKey?: string, apiVersion?: string) {
   const { secretKey } = await getStripeRuntimeConfig(c)
   const response = await fetch(`https://api.stripe.com/v1/${path}`, {
     method: params ? 'POST' : 'GET',
@@ -127,6 +127,7 @@ export async function stripeRequest(c: Context, path: string, params?: URLSearch
       Authorization: `Bearer ${secretKey}`,
       ...(params ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
       ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+      ...(apiVersion ? { 'Stripe-Version': apiVersion } : {}),
     },
     body: params?.toString(),
   })

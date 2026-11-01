@@ -11,14 +11,20 @@ export const DOCUMENT_TYPES: Record<string, string> = {
   refund: '退款单', payment: '付款记录', transaction: '交易流水', contract: '合同',
 }
 
+// Keep each compound SELECT below D1's limit; node:sqlite permits larger UNIONs.
+// The outer query still sorts and paginates all document sources together.
 const documentRows = `
+  SELECT * FROM (
   SELECT 'settlement' AS kind, id, settlement_number AS number, order_id, deposit_amount AS amount, 'AUD' AS currency, status, requested_at AS created_at, '' AS reference FROM deposit_settlements
   UNION ALL SELECT type, id, invoice_number, order_id, total_amount, currency, status, issued_at, '' FROM invoices
   UNION ALL SELECT 'receipt', id, receipt_number, order_id, total_paid, currency, status, issued_at, '' FROM receipts
   UNION ALL SELECT 'refund', id, COALESCE(refund_number, id), order_id, refund_amount, 'AUD', status, created_at, COALESCE(stripe_refund_id, '') FROM payment_refunds
-  UNION ALL SELECT 'payment', id, COALESCE(transaction_id, id), rental_id, amount, currency, status, created_at, COALESCE(stripe_payment_intent_id, '') FROM payments
+  )
+  UNION ALL SELECT * FROM (
+  SELECT 'payment', id, COALESCE(transaction_id, id), rental_id, amount, currency, status, created_at, COALESCE(stripe_payment_intent_id, '') FROM payments
   UNION ALL SELECT 'transaction', id, transaction_number, order_id, amount, currency, status, created_at, COALESCE(provider_transaction_id, '') FROM transactions
   UNION ALL SELECT 'contract', id, contractNumber, orderId, NULL, 'AUD', status, createdAt, '' FROM contracts WHERE deleted_at IS NULL
+  )
 `
 const documentFrom = `FROM (${documentRows}) doc
   JOIN orders o ON o.id = doc.order_id

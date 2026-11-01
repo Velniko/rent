@@ -4,20 +4,14 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { buildLayout, getSystemSettings } from '../../site';
-import { HALF_HOUR_TIME_OPTIONS, pickupTimeSettings } from '../../domain/pickupTimeSlots';
-import { renderPickupClosedRanges } from '../partials/pickupClosedRanges';
 
 export function renderAdminSettings(user: any) {
   const settings = getSystemSettings(); // 获取当前系统设置
   const feedbackRewards = settings.feedbackRewards || { enabled: false, rewardType: 'BALANCE', balanceAmount: 5, balanceAmountMin: 5, balanceAmountMax: 5, couponDiscountType: 'fixed', couponDiscountValue: 5, couponDiscountValueMin: 5, couponDiscountValueMax: 5, couponMinimumOrderAmount: 0, couponExpiresDays: 30 };
-  const pickupHours = pickupTimeSettings(settings.rentalRules)
-  const timeClock = (id: string, label: string, selected: string) => `<div class="time-clock-control" data-time-clock><input${id ? ` id="${id}"` : ''} type="hidden" value="${selected}"><button type="button" class="time-clock-trigger" data-time-clock-trigger aria-label="${label}" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3.5 2"></path></svg><span>${selected}</span><i>⌄</i></button><div class="time-clock-panel" data-time-clock-panel role="dialog" aria-label="${label}" hidden><div class="time-clock-face">${HALF_HOUR_TIME_OPTIONS.map(value => `<button type="button" data-time-clock-option data-time="${value}" class="${value === selected ? 'is-selected' : ''}" aria-pressed="${value === selected}">${value}</button>`).join('')}</div></div></div>`
-  const weekdayOptions = (selected = 1) => [['0', '周日'], ['1', '周一'], ['2', '周二'], ['3', '周三'], ['4', '周四'], ['5', '周五'], ['6', '周六']].map(([value, label]) => `<option value="${value}"${Number(value) === selected ? ' selected' : ''}>${label}</option>`).join('')
-  const rangeRow = (kind: 'service' | 'unavailable', range: any) => `<div class="pickup-range-row" data-range-row="${kind}">${kind === 'unavailable' ? `<select class="form-control pickup-weekday" aria-label="星期">${weekdayOptions(Number(range.weekday))}</select>` : ''}<div><span>开始</span>${timeClock('', kind === 'service' ? '非营业服务开始时间' : '不可取货开始时间', range.start)}</div><div><span>结束</span>${timeClock('', kind === 'service' ? '非营业服务结束时间' : '不可取货结束时间', range.end)}</div><button class="button button-secondary button-sm pickup-range-remove" type="button" aria-label="删除此时段">×</button></div>`
   const escAttr = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   const body = `
     <div class="panel">
-      <div class="section-title"><h2>系统设置</h2><span class="section-note">配置邮件、公司资料、租赁规则、支付方式和推荐分成。</span></div>
+      <div class="section-title"><h2>系统设置</h2><a class="button button-secondary" href="/admin/rental-rules">租赁规则</a><span class="section-note">配置邮件、公司资料、支付方式和推荐分成。</span></div>
 
       <form id="systemSettingsForm" class="asset-editor" novalidate>
         <section class="form-section">
@@ -37,8 +31,7 @@ export function renderAdminSettings(user: any) {
               <div class="form-group"><label class="form-label" for="deliveryAreas">配送区域</label><textarea id="deliveryAreas" name="deliveryAreas" class="form-control" rows="4" placeholder="每行一个区域">${(settings.companyDetails.deliveryAreas || []).join('\n')}</textarea><small class="form-text">官网会显示这些区域；每行一个 suburb 或区域名称。</small></div>
               <div class="form-group"><label class="form-label" for="deliveryNote">配送说明</label><input id="deliveryNote" name="deliveryNote" class="form-control" value="${settings.companyDetails.deliveryNote || ''}" placeholder="例如：配送范围和运费以审核确认为准"><small class="form-text">官网申请页、租赁指南和设备详情会读取这段说明。</small></div>
           </div>
-          <div class="form-group pickup-time-settings"><label class="form-label">取还时间规则</label><div class="grid grid-3"><div class="pickup-time-settings__range"><span class="form-text">营业时段（免服务费）</span><div class="time-clock-row"><div><span>开始</span>${timeClock('businessHoursStart', '营业开始时间', pickupHours.businessHours.start)}</div><div><span>结束</span>${timeClock('businessHoursEnd', '营业结束时间', pickupHours.businessHours.end)}</div></div></div><div class="pickup-time-settings__range"><span class="form-text">非营业服务时段（收服务费）</span><div class="pickup-range-list" id="serviceRangeList">${pickupHours.serviceFeeHours.map(range => rangeRow('service', range)).join('')}</div><button class="button button-secondary button-sm pickup-range-add" type="button" data-add-range="service">＋ 添加时段</button></div><div class="pickup-time-settings__range"><span class="form-text">按星期不可取货时段</span><div class="pickup-range-list" id="unavailableRangeList">${pickupHours.unavailablePickupHours.map(range => rangeRow('unavailable', range)).join('')}</div><button class="button button-secondary button-sm pickup-range-add" type="button" data-add-range="unavailable">＋ 添加时段</button>${renderPickupClosedRanges(pickupHours.unavailablePickupRanges)}</div></div><div class="pickup-time-settings__rate"><label class="form-label" for="serviceFeeRate">非营业服务费比例（%）</label><input id="serviceFeeRate" class="form-control" type="number" min="0" max="100" step="0.01" value="${(Number(settings.rentalRules.serviceFeeRate ?? 0.1) * 100).toFixed(2)}"></div><small class="form-text">客户先选营业或非营业；非营业时间自动收取此比例。不可取货时间按星期隐藏，不会出现在客户可选项中。</small></div>
-          <div class="grid grid-2"><div><label class="form-label" for="minimumRentalDays">最短租赁天数</label><input id="minimumRentalDays" name="minimumRentalDays" type="number" min="1" step="1" class="form-control" value="${settings.rentalRules.minimumRentalDays}"></div><div><label class="form-label" for="bufferDays">设备周转缓冲天数</label><input id="bufferDays" name="bufferDays" type="number" min="0" step="1" class="form-control" value="${settings.rentalRules.bufferDays}"><small class="form-text">自动扩展订单前后不可预约的缓冲时间。</small></div></div>
+
         </section>
 
         <section class="form-section">
@@ -122,53 +115,6 @@ export function renderAdminSettings(user: any) {
         const form = document.getElementById('systemSettingsForm');
         if (!form || form.dataset.settingsReady === 'true') return;
         form.dataset.settingsReady = 'true';
-        const bindTimeClock = control => {
-          if (control.dataset.timeClockReady === 'true') return;
-          control.dataset.timeClockReady = 'true';
-          const input = control.querySelector('input');
-          const trigger = control.querySelector('[data-time-clock-trigger]');
-          const panel = control.querySelector('[data-time-clock-panel]');
-          const sync = () => control.querySelectorAll('[data-time-clock-option]').forEach(button => {
-            const selected = button.dataset.time === input.value;
-            button.classList.toggle('is-selected', selected);
-            button.setAttribute('aria-pressed', String(selected));
-          });
-          const close = () => { panel.hidden = true; trigger.setAttribute('aria-expanded', 'false'); };
-          trigger.addEventListener('click', function() {
-            const opening = panel.hidden;
-            document.querySelectorAll('[data-time-clock-panel]').forEach(other => { other.hidden = true; });
-            document.querySelectorAll('[data-time-clock-trigger]').forEach(other => { other.setAttribute('aria-expanded', 'false'); });
-            panel.hidden = !opening; trigger.setAttribute('aria-expanded', String(opening));
-          });
-          control.addEventListener('click', function(event) {
-            const button = event.target.closest('[data-time-clock-option]');
-            if (!button) return;
-            input.value = button.dataset.time; trigger.querySelector('span').textContent = input.value; sync(); close();
-          });
-          control.addEventListener('keydown', function(event) { if (event.key === 'Escape') close(); });
-          sync();
-        };
-        const bindTimeClocks = root => root.querySelectorAll('[data-time-clock]').forEach(bindTimeClock);
-        bindTimeClocks(document);
-        const clockMarkup = (label, value) => {
-          const options = Array.from({ length: 48 }, (_, index) => String(Math.floor(index / 2)).padStart(2, '0') + ':' + (index % 2 ? '30' : '00'));
-          return '<div class="time-clock-control" data-time-clock><input type="hidden" value="' + value + '"><button type="button" class="time-clock-trigger" data-time-clock-trigger aria-label="' + label + '" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3.5 2"></path></svg><span>' + value + '</span><i>⌄</i></button><div class="time-clock-panel" data-time-clock-panel role="dialog" aria-label="' + label + '" hidden><div class="time-clock-face">' + options.map(time => '<button type="button" data-time-clock-option data-time="' + time + '" class="' + (time === value ? 'is-selected' : '') + '" aria-pressed="' + String(time === value) + '">' + time + '</button>').join('') + '</div></div></div>';
-        };
-        const rangeMarkup = kind => '<div class="pickup-range-row" data-range-row="' + kind + '">' + (kind === 'unavailable' ? '<select class="form-control pickup-weekday" aria-label="星期"><option value="0">周日</option><option value="1" selected>周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option></select>' : '') + '<div><span>开始</span>' + clockMarkup(kind === 'service' ? '非营业服务开始时间' : '不可取货开始时间', kind === 'service' ? '21:00' : '12:00') + '</div><div><span>结束</span>' + clockMarkup(kind === 'service' ? '非营业服务结束时间' : '不可取货结束时间', kind === 'service' ? '23:00' : '13:00') + '</div><button class="button button-secondary button-sm pickup-range-remove" type="button" aria-label="删除此时段">×</button></div>';
-        document.querySelectorAll('[data-add-range]').forEach(button => button.addEventListener('click', function() {
-          const kind = button.dataset.addRange;
-          const list = document.getElementById(kind === 'service' ? 'serviceRangeList' : 'unavailableRangeList');
-          list.insertAdjacentHTML('beforeend', rangeMarkup(kind)); bindTimeClocks(list);
-        }));
-        document.addEventListener('click', function(event) {
-          const remove = event.target.closest('.pickup-range-remove');
-          if (remove) remove.closest('[data-range-row]').remove();
-        });
-        document.addEventListener('click', function(event) {
-          if (event.target.closest('[data-time-clock]')) return;
-          document.querySelectorAll('[data-time-clock-panel]').forEach(panel => { panel.hidden = true; });
-          document.querySelectorAll('[data-time-clock-trigger]').forEach(trigger => { trigger.setAttribute('aria-expanded', 'false'); });
-        });
         form.addEventListener('submit', async function(event) {
         event.preventDefault();
 
@@ -204,10 +150,6 @@ export function renderAdminSettings(user: any) {
           if (!document.getElementById(id).reportValidity()) return;
         }
         const inputValue = (id) => document.getElementById(id)?.value || '';
-        const timeRanges = kind => Array.from(document.querySelectorAll('[data-range-row="' + kind + '"]')).map(row => {
-          const values = Array.from(row.querySelectorAll('input')).map(input => input.value);
-          return kind === 'unavailable' ? { weekday: Number(row.querySelector('.pickup-weekday').value), start: values[0], end: values[1] } : { start: values[0], end: values[1] };
-        });
         const newSettings = {
           paymentMethods: {
             stripe: formData.has('enableStripe'),
@@ -258,16 +200,6 @@ export function renderAdminSettings(user: any) {
             pickupLocations: String(formData.get('pickupLocations') || '').split(/\\n+/).map(value => value.trim()).filter(Boolean),
                       deliveryAreas: String(formData.get('deliveryAreas') || '').split(/\\n+/).map(value => value.trim()).filter(Boolean),
                       deliveryNote: String(formData.get('deliveryNote') || '').trim(),
-          },
-          rentalRules: {
-            unavailableDates: [],
-            serviceFeeHours: timeRanges('service'),
-            businessHours: { start: inputValue('businessHoursStart'), end: inputValue('businessHoursEnd') },
-            unavailablePickupHours: timeRanges('unavailable'),
-            unavailablePickupRanges: JSON.parse(inputValue('unavailablePickupRanges') || '[]'),
-            serviceFeeRate: Number(inputValue('serviceFeeRate') || 0) / 100,
-            minimumRentalDays: Number(formData.get('minimumRentalDays') || 1),
-            bufferDays: Number(formData.get('bufferDays') || 0),
           },
           referralSettings: {
             defaultRate: Number(formData.get('defaultReferralRate')),
