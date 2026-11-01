@@ -48,20 +48,35 @@ function roundCurrency(value: number): number {
 }
 
 /**
- * Calculates rental fees using 30-day monthly blocks, then 7-day weekly
- * blocks, then any remaining daily rental days.
+ * 30 天为一个月、7 天为一周。余数达到该周期的 80% 时收整期价格，
+ * 否则继续按下一档拆分（24 天收月租、6 天收周租）。
  */
-export function calculateRentalFee(device: RentalPricingDeviceLike, rentalDays: number): number {
+export function rentalPriceBreakdown(device: RentalPricingDeviceLike, rentalDays: number) {
   const days = Math.max(0, Math.floor(Number(rentalDays) || 0))
   const dailyRate = Math.max(0, numericValue(device.pricePerDay, device.price_per_day, device.dailyRate))
   const weeklyDiscount = Math.min(100, Math.max(0, numericValue(device.weeklyDiscountPercent, device.weekly_discount_percent)))
   const monthlyDiscount = Math.min(100, Math.max(0, numericValue(device.monthlyDiscountPercent, device.monthly_discount_percent)))
-  const monthlyDays = Math.floor(days / 30) * 30
-  const remainingAfterMonthly = days - monthlyDays
-  const weeklyDays = Math.floor(remainingAfterMonthly / 7) * 7
-  const dailyDays = remainingAfterMonthly - weeklyDays
-  const monthlyFee = monthlyDays * dailyRate * (1 - monthlyDiscount / 100)
-  const weeklyFee = weeklyDays * dailyRate * (1 - weeklyDiscount / 100)
+  const monthlyDays = (Math.floor(days / 30) + (days % 30 >= 24 ? 1 : 0)) * 30
+  const remainingAfterMonthly = Math.max(0, days - monthlyDays)
+  const weeklyDays = (Math.floor(remainingAfterMonthly / 7) + (remainingAfterMonthly % 7 >= 6 ? 1 : 0)) * 7
+  const dailyDays = Math.max(0, remainingAfterMonthly - weeklyDays)
+  const monthlyFee = monthlyDays / 30 * roundCurrency(30 * dailyRate * (1 - monthlyDiscount / 100))
+  const weeklyFee = weeklyDays / 7 * roundCurrency(7 * dailyRate * (1 - weeklyDiscount / 100))
   const dailyFee = dailyDays * dailyRate
-  return roundCurrency(monthlyFee + weeklyFee + dailyFee)
+  return {
+    monthlyCount: monthlyDays / 30, weeklyCount: weeklyDays / 7, dailyDays,
+    originalAmount: roundCurrency((monthlyDays + weeklyDays + dailyDays) * dailyRate),
+    monthlyDiscountAmount: roundCurrency(monthlyDays * dailyRate - monthlyFee),
+    weeklyDiscountAmount: roundCurrency(weeklyDays * dailyRate - weeklyFee),
+    total: roundCurrency(monthlyFee + weeklyFee + dailyFee),
+  }
+}
+
+export function calculateRentalFee(device: RentalPricingDeviceLike, rentalDays: number): number {
+  return rentalPriceBreakdown(device, rentalDays).total
+}
+
+/** 页面报价复用同一个计算函数，避免客户端漏用月租或周租规则。 */
+export function rentalPricingClientScript(): string {
+  return `(() => { ${numericValue.toString()}; ${roundCurrency.toString()}; return ${rentalPriceBreakdown.toString()}; })()`
 }

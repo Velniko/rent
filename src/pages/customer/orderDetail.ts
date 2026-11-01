@@ -5,10 +5,13 @@
 
 import { buildLayout, getOrderById, getDeviceById, formatCurrency, formatMelbourneDateTime, getContractByOrderId, ensureContractForOrder, getCustomerRiskAssessment, systemSettings, diffOrderSnapshots, ORDER_CHANGE_TYPE_LABELS } from '../../site';
 import { Context } from 'hono';
+import { renderRentalDiscounts } from '../partials/rentalDiscounts';
+import { renderRentalInstallments } from '../partials/rentalInstallments';
 import { renderStripePaymentBox } from '../partials/stripePaymentSection';
 import { renderSquareGiftCardPaymentBox } from '../partials/squareGiftCardPayment';
 import { depositPaymentModeForOrder, isCardDepositSettled, normalizeSecurityDepositMethod, securityDepositMethodLabel } from '../../domain/paymentPlan';
-import { getOrderPriceAdjustmentSummary } from '../../actions/stripePayments';
+import { buildMonthlyRentalInstallments, isMonthlyRental } from '../../domain/monthlyRental';
+import { getOrderPriceAdjustmentSummary, getStripeProcessingFeeRate } from '../../actions/stripePayments';
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl, type DeliveryBookingView } from '../../services/deliveryViews';
 import { decryptSecret } from '../../lib/secretBox';
 import { pickupTimeSlots } from '../../domain/pickupTimeSlots';
@@ -39,8 +42,10 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
   const serviceFee = Number(order.serviceFee || order.service_fee || 0)
   const immediatelyPaidAmount = Math.max(0, Number(order.totalAmount) - deposit)
   const rentalAmount = Math.max(0, immediatelyPaidAmount - serviceFee)
-  const stripeFee = Math.round(immediatelyPaidAmount * 100 * 0.025) / 100
-  const stripeTotal = depositMode === 'PREAUTH' ? Number(order.totalAmount) + stripeFee : Number(order.totalAmount) - deposit + stripeFee
+  const monthlyPayment = isMonthlyRental(order) && order.paymentMethod === 'card'
+  const firstMonthly = monthlyPayment ? buildMonthlyRentalInstallments({ ...order, deposit_method: 'card_hold' }, device || {}, getStripeProcessingFeeRate())[0] : null
+  const stripeFee = firstMonthly?.processing_fee ?? Math.round(immediatelyPaidAmount * 100 * getStripeProcessingFeeRate()) / 100
+  const stripeTotal = firstMonthly?.amount ?? (depositMode === 'PREAUTH' ? Number(order.totalAmount) + stripeFee : Number(order.totalAmount) - deposit + stripeFee)
   const squareFeeRate = Math.min(1, Math.max(0, Number(systemSettings.paymentMethods.squareProcessingFeeRate ?? 0.022)))
   const squareFee = Math.round(immediatelyPaidAmount * 100 * squareFeeRate) / 100
   const squareTotal = Number((immediatelyPaidAmount + squareFee).toFixed(2))
@@ -103,6 +108,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
         ? transferAdjustmentPayment
         : cardAdjustmentPayment
 
+  const installmentSection = await renderRentalInstallments(c, order, true)
   const body = `
     <div class="panel order-detail-shell customer-order-detail">
       <script>(function(){window.addEventListener('square-payment-updated',function(event){var detail=event.detail||{};if(Number(detail.squarePaidAmountCents||0)>0&&Number(detail.remainingAmountCents||0)>=0){window.setTimeout(function(){window.location.reload()},250)}})})();</script>
@@ -117,7 +123,8 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           <p><strong>领取/归还地点:</strong> ${order.pickupLocation || '待确认'} / ${order.returnLocation || '待确认'}</p>
           <p><strong>预约时间:</strong> ${order.pickupTimeSlot || '待确认'} / ${order.returnTimeSlot || '待确认'}</p>
           <p><strong>租金及服务费:</strong> ${formatCurrency(Number(order.totalAmount) - deposit)}</p>
-          <p><strong>押金:</strong> ${formatCurrency(deposit)}（${securityDepositMethodLabel(depositMethod)}；${depositMode === 'PREAUTH' ? '预授权' : depositMode === 'SETUP_INTENT' ? 'SetupIntent 保存卡片，不预扣' : '单独处理'}）</p>
+          ${renderRentalDiscounts(order, device || {})}
+          <p><strong>押金:</strong> ${formatCurrency(deposit)}（${securityDepositMethodLabel(depositMethod)}；${depositMode === 'PREAUTH' ? '预授权' : depositMode === 'SETUP_INTENT' ? 'SetupIntent 保存卡片，不预扣' : order.billing_mode === 'MONTHLY' ? '随首期收取' : '单独处理'}）</p>
           <p><strong>订单合计:</strong> ${formatCurrency(order.totalAmount)}</p>
           <p id="square-payment-summary"${squarePaidAmount > 0 ? '' : ' hidden'}><strong>礼品卡已扣:</strong> ${formatCurrency(squarePaidAmount)}${squareRemainingAmount > 0 ? `；Stripe 剩余 ${formatCurrency(squareRemainingAmount)}` : ''}</p>
           ${squarePaymentSelected && squarePaidAmount > 0 ? `<p><strong>礼品卡扣减后待支付:</strong> ${formatCurrency(squareRemainingAmount)}</p>` : ''}
@@ -132,6 +139,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           <p><strong>日租金:</strong> ${formatCurrency(device?.pricePerDay ?? device?.dailyRate ?? 0)}</p>
         </div>
       </div>
+      ${installmentSection}
       ${deliveryBlock}
 
       <section class="panel" style="margin-top:20px"><h3>出租前验机报告</h3>${preInspection ? `${report(preSnapshot, ['screen','keyboard','touchpad','body','camera','wifi','power'])}<small class="form-text">记录时间（墨尔本时间）：${esc(melbourneTime(preInspection.created_at))}</small>` : '<p>暂无出租前验机记录。</p>'}</section>
@@ -170,7 +178,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
       ${order.status === 'pending_payment' ? `
         ${transferProof ? `<div class="payment-review-status payment-review-status--${transferProof.status === 'submitted' ? 'pending' : transferProof.status === 'rejected' ? 'failed' : 'success'}"><span class="payment-review-status__icon" aria-hidden="true"></span><div><strong>${transferProof.status === 'submitted' ? '转账凭证待审核' : transferProof.status === 'rejected' ? '转账审核未通过' : '转账审核已通过'}</strong><p>${transferProof.status === 'submitted' ? '管理员正在核对付款信息，请耐心等待。' : transferProof.status === 'rejected' ? `已驳回（${String(transferProof.rejection_reason || '').replace(/[&<>"']/g, '')}）` : '付款已确认，订单正在继续处理。'}</p></div></div>` : ''}
         <div class="section-title" style="margin-top: 24px;"><h3>支付信息</h3></div>
-        <div class="alert"><div><strong>收款明细</strong>${depositMode === 'PREAUTH' ? `
+        <div class="alert"><div><strong>收款明细</strong>${monthlyPayment ? `<p>首期租金及服务费 ${formatCurrency(firstMonthly!.rental_amount)} ＋ 押金 ${formatCurrency(deposit)} ＋ 支付手续费 ${formatCurrency(stripeFee)} ＝ ${formatCurrency(stripeTotal)}。</p><p>继续付款即同意每 30 天自动扣取下一期租金。</p>` : depositMode === 'PREAUTH' ? `
           <p style="margin:8px 0 0">信用卡一次性预授权 ${formatCurrency(stripeTotal)}（租金及服务费 ${formatCurrency(immediatelyPaidAmount)} ＋ 押金 ${formatCurrency(deposit)} ＋ 手续费 ${formatCurrency(stripeFee)}）。</p>
           <p style="margin:6px 0 0">退回余额：捕获全部预授权；原路退回：仅捕获租金、手续费及实际扣款。</p>
         ` : `
@@ -203,7 +211,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           ${systemSettings.paymentMethods.stripe && (!squarePaymentSelected || squarePaidAmount > 0) ? `<div class="payment-card">
             <h4>信用卡支付（Stripe）</h4>
             <p>${squarePaymentSelected ? '礼品卡先扣款，实际扣减额会显示在订单金额中；剩余租金及服务费使用 Stripe 支付。' : ''}在本页填写卡信息完成支付，卡号由 Stripe 处理。</p>
-            ${depositMode === 'PREAUTH' && !(squarePaymentSelected && squarePaidAmount > 0) ? `<dl class="data-list" style="margin:8px 0"><div><dt><strong>信用卡预授权总额</strong></dt><dd><strong>${formatCurrency(stripeDisplayAmount)}</strong></dd></div></dl><p class="form-text">包含租金及服务费、押金和手续费。</p><p class="form-text" style="margin-top:4px">退回余额：捕获全部预授权；原路退回：仅捕获租金、手续费及实际扣款。</p>` : `<dl class="data-list" style="margin:8px 0"><div><dt>${squarePaymentSelected && squarePaidAmount > 0 ? '礼品卡扣减后 Stripe 剩余（含礼品卡手续费）' : '租金及服务费'}</dt><dd>${formatCurrency(squarePaymentSelected && squarePaidAmount > 0 ? stripeDisplayAmount : Number(order.totalAmount) - deposit)}</dd></div>${squarePaymentSelected && squarePaidAmount > 0 ? '' : `<div><dt>Stripe 租金及服务费支付手续费（2.5%）</dt><dd>${formatCurrency(stripeFee)}</dd></div>`}<div><dt><strong>${squarePaymentSelected && squarePaidAmount > 0 ? 'Stripe 待支付金额' : '信用卡最终扣款'}</strong></dt><dd><strong>${formatCurrency(stripeDisplayAmount)}</strong></dd></div></dl><p class="form-text">${depositMode === 'SETUP_INTENT' ? `押金 ${formatCurrency(deposit)} 使用 SetupIntent 保存卡片，不预扣，仅损坏或逾期时扣款。` : '押金按订单约定处理。'}</p><p class="form-text" style="margin-top:4px">手续费不计入押金。</p>`}
+            ${monthlyPayment ? `<dl class="data-list"><div><dt>首期租金及服务费</dt><dd>${formatCurrency(firstMonthly!.rental_amount)}</dd></div><div><dt>押金</dt><dd>${formatCurrency(deposit)}</dd></div><div><dt>支付手续费</dt><dd>${formatCurrency(stripeFee)}</dd></div><div><dt>首期合计</dt><dd>${formatCurrency(stripeTotal)}</dd></div></dl>` : depositMode === 'PREAUTH' && !(squarePaymentSelected && squarePaidAmount > 0) ? `<dl class="data-list" style="margin:8px 0"><div><dt><strong>信用卡预授权总额</strong></dt><dd><strong>${formatCurrency(stripeDisplayAmount)}</strong></dd></div></dl><p class="form-text">包含租金及服务费、押金和手续费。</p><p class="form-text" style="margin-top:4px">退回余额：捕获全部预授权；原路退回：仅捕获租金、手续费及实际扣款。</p>` : `<dl class="data-list" style="margin:8px 0"><div><dt>${squarePaymentSelected && squarePaidAmount > 0 ? '礼品卡扣减后 Stripe 剩余（含礼品卡手续费）' : '租金及服务费'}</dt><dd>${formatCurrency(squarePaymentSelected && squarePaidAmount > 0 ? stripeDisplayAmount : Number(order.totalAmount) - deposit)}</dd></div>${squarePaymentSelected && squarePaidAmount > 0 ? '' : `<div><dt>Stripe 租金及服务费支付手续费（2.5%）</dt><dd>${formatCurrency(stripeFee)}</dd></div>`}<div><dt><strong>${squarePaymentSelected && squarePaidAmount > 0 ? 'Stripe 待支付金额' : '信用卡最终扣款'}</strong></dt><dd><strong>${formatCurrency(stripeDisplayAmount)}</strong></dd></div></dl><p class="form-text">${depositMode === 'SETUP_INTENT' ? `押金 ${formatCurrency(deposit)} 使用 SetupIntent 保存卡片，不预扣，仅损坏或逾期时扣款。` : '押金按订单约定处理。'}</p><p class="form-text" style="margin-top:4px">手续费不计入押金。</p>`}
             ${renderStripePaymentBox({ intentUrl: `/customer/orders/${order.id}/stripe/intent`, returnUrl: `/payment/result?orderId=${encodeURIComponent(order.id)}`, buttonLabel: `${depositMode === 'PREAUTH' && !(squarePaymentSelected && squarePaidAmount > 0) ? '预授权' : '支付'} ${formatCurrency(stripeDisplayAmount)}`, domId: 'order-stripe-pay' })}
           </div>` : ''}
         </div>

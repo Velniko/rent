@@ -138,7 +138,9 @@ import { getNotifyChannelsSummary, saveNotifyChannels, resolveEmailCredentials, 
 import { getEmailConfigSummary } from './emailConfig'
 import { ensureInAppNotificationTemplates } from './services/inAppNotificationTemplates'
 import { notifyAgreementUpdate } from './actions/admin/saveSettings'
-import { createOrderPaymentIntent, createBalanceTopUpIntent, handleStripeWebhook, refundDeposit, executeApprovedDepositSettlement, settleCompletedOrderAuthorization, cancelAndRefund, retryCancellationRefund, ignorePendingRefund, refundUnusedRentalDays, completeBankTransferRefund, createOrderPriceAdjustmentIntent, createOrderPriceAdjustmentTransferPayment, applyOrderPriceAdjustment, applyBalanceOrderPriceIncrease, settleBalancePriceAdjustment, cancelPendingPaymentOrderByCustomer, expireMissedPickupOrders, chargeOverdueReturns } from './actions/stripePayments'
+import { rentalPricingSnapshot } from './domain/monthlyRental'
+import { chargeDueRentalInstallments } from './services/monthlyRentalPayments'
+import { createOrderPaymentIntent, createOrderInstallmentPaymentIntent, createBalanceTopUpIntent, handleStripeWebhook, refundDeposit, executeApprovedDepositSettlement, settleCompletedOrderAuthorization, cancelAndRefund, retryCancellationRefund, ignorePendingRefund, refundUnusedRentalDays, completeBankTransferRefund, createOrderPriceAdjustmentIntent, createOrderPriceAdjustmentTransferPayment, applyOrderPriceAdjustment, applyBalanceOrderPriceIncrease, settleBalancePriceAdjustment, cancelPendingPaymentOrderByCustomer, expireMissedPickupOrders, chargeOverdueReturns } from './actions/stripePayments'
 import { getSquareGiftCardConfigForOrder, createSquareGiftCardPayment, completeSquareGiftCardPayment, getSquareGiftCardConfigForBalanceTopUp, createSquareGiftCardBalanceTopUp, getSquareGiftCardConfigForPriceAdjustment, createSquareGiftCardPriceAdjustmentPayment, handleSquareWebhook } from './actions/squarePayments'
 import { findEligibleCoupon, calculateCouponDiscount, checkCustomerCouponEligibility, reserveCouponForOrder, releaseCouponForOrder, couponDiscountableBase } from './actions/coupons'
 import { calculateRentalFee, parseDeviceDiscountPercent } from './domain/rentalPricing'
@@ -764,7 +766,7 @@ app.use('*', async (c, next) => {
     }
     const path = c.req.path
     const allowedExact = new Set(['/customer/guest', '/customer/guest/upgrade', '/logout', '/payment/result', '/notifications', '/notifications/unread', '/api/search'])
-    const orderMatch = path.match(/^\/customer\/orders\/([^/]+)(?:\/(?:stripe\/(?:checkout|intent)|square\/(?:config|payment)|bank-transfer-proof))?$/)
+    const orderMatch = path.match(/^\/customer\/orders\/([^/]+)(?:\/(?:installments\/[^/]+\/stripe\/intent|stripe\/(?:checkout|intent)|square\/(?:config|payment)|bank-transfer-proof))?$/)
     const invoiceMatch = path.match(/^\/orders\/([^/]+)\/invoice$/)
     const invoicePdfMatch = path.match(/^\/orders\/([^/]+)\/invoice\/pdf$/)
     if (orderMatch && orderMatch[1] !== user.guestOrderId) return c.html(renderForbidden(), 403)
@@ -837,9 +839,10 @@ app.use('*', async (c, next) => {
     : c.req.path === '/forgot-password' && c.req.method === 'POST' ? ['forgot', 5, 3600] as const
     : c.req.path === '/reset-password' && c.req.method === 'POST' ? ['reset-password', 10, 900] as const
     : c.req.path === '/contract/sign' ? ['contract-sign', 60, 900] as const
-    : /^\/customer\/orders\/[^/]+\/stripe\/(?:checkout|intent)$/.test(c.req.path) ? ['stripe-checkout', 10, 600] as const
+    : /^\/customer\/orders\/[^/]+\/(?:installments\/[^/]+\/)?stripe\/(?:checkout|intent)$/.test(c.req.path) ? ['stripe-checkout', 10, 600] as const
     : /^\/customer\/orders\/[^/]+\/bank-transfer-proof$/.test(c.req.path) ? ['bank-proof', 10, 3600] as const
     : /^\/staff\/orders\/[^/]+\/inspection$/.test(c.req.path) ? ['inspection-upload', 10, 3600] as const
+    : c.req.method === 'POST' && (/^\/staff\/orders\/[^/]+\/cancel$/.test(c.req.path) || /^\/admin\/orders\/[^/]+\/(?:cancel-and-refund|retry-cancellation-refund)$/.test(c.req.path)) ? ['cancellation-refund', 10, 600] as const
     : c.req.path === '/admin/settings/upload-image' ? ['admin-settings-image', 10, 3600] as const
     : c.req.method === 'POST' && ['/admin/users/new', '/staff/customers/new'].includes(c.req.path) ? ['managed-user-create', 30, 600] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/rent/') ? ['rental-link-booking', 10, 900] as const
@@ -2550,7 +2553,7 @@ app.post('/customer/rent/:id', async (c) => {
     depositAmount: device.depositAmount, dailyRate: device.pricePerDay, contractId: '', signedAt: null, pickupLocation: deliveryMethod === 'Pickup' ? '到店自取' : deliveryAddress, returnLocation: '到店归还',
     pickupTimeSlot: deliveryMethod === 'Pickup' ? pickupTimeSlot : undefined, returnTimeSlot: deliveryMethod === 'Pickup' ? returnTimeSlot : undefined,
     deliveryMethod, deliveryFee: 0, serviceFee, rentalNote, couponCode: appliedCouponCode, discountAmount,
-    createdAt: new Date().toISOString(), booking_buffer_days: rentalRules.bufferDays || 0
+    createdAt: new Date().toISOString(), booking_buffer_days: rentalRules.bufferDays || 0, rental_pricing_json: rentalPricingSnapshot(device)
   } as any)
   if (couponCode) {
     try {
@@ -3033,16 +3036,14 @@ app.post('/customer/orders/:orderId/inspection-dispute', async (c) => {
 app.post('/staff/orders/:orderId/cancel', async (c) => {
   const user = c.get('user')
   if (!user || user.role !== 'ADMIN') return c.html(renderForbidden(), 403)
-  const order = await getOrderById(c, c.req.param('orderId'))
   const cancelForm = await c.req.parseBody()
   const cancelReason = String(cancelForm.reason || '').trim().slice(0, 300)
-  if (order) {
-    if (!cancelReason) return c.text('请填写取消原因', 400)
-    await updateOrderStatus(c, order.id, 'cancelled', { reason: cancelReason, triggeredBy: user.id })
-    await updateDeviceStatus(c, order.deviceId, 'available')
-    await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '工作人员'}取消，原因：${cancelReason}。`, orderId: order.id })
-  }
-  return c.redirect(order ? staffOrderPath(order) : `/staff/orders/${c.req.param('orderId')}`)
+  if (!cancelReason) return c.text('请填写取消原因', 400)
+  try {
+    const response = await cancelAndRefund(c, user, c.req.param('orderId'), cancelReason)
+    if (response.status < 400) await createAuditLog(c, { actor: user, action: 'ORDER_CANCELLED', targetType: 'ORDER', targetId: c.req.param('orderId'), reason: cancelReason })
+    return response
+  } catch (error: any) { return c.text(error?.message || '全额退款失败', 502) }
 })
 
 app.get('/staff/contracts', async (c) => {
@@ -3488,6 +3489,14 @@ app.get('/orders/:id/invoice/print', async (c) => {
   const user = c.get('user')
   if (!user) return c.redirect(`/login?redirect=${encodeURIComponent(`/orders/${c.req.param('id')}/invoice/print`)}`)
   return c.html(await pages.renderInvoice(c, user, c.req.param('id'), true))
+})
+
+app.post('/customer/orders/:id/installments/:installmentId/stripe/intent', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'CUSTOMER') return c.json({ error: '无权访问' }, 403)
+  try {
+    return c.json(await createOrderInstallmentPaymentIntent(c, user, c.req.param('id'), c.req.param('installmentId')))
+  } catch (error: any) { return c.json({ error: error?.message || '无法创建 Stripe 支付' }, 400) }
 })
 
 app.post('/customer/orders/:id/stripe/intent', async (c) => {
@@ -4454,6 +4463,10 @@ app.post('/admin/orders/:id/changes', async (c) => {
   if (!reason) return c.text('订单修改必须填写原因', 400)
 
   const before = orderChangeSnapshot(order)
+  if (order.billing_mode === 'MONTHLY' && ['EXTENSION', 'DEVICE_SWAP', 'PRICE_ADJUSTMENT'].includes(type)
+      && await c.env.RENT.prepare("SELECT id FROM rental_installments WHERE order_id = ? AND status IN ('paid', 'processing') LIMIT 1").bind(order.id).first()) {
+    return c.text('月付订单收款后暂不支持修改租期、设备或金额', 409)
+  }
   const plan = buildOrderChangePlan(type, before, {
     startDate: form.startDate != null ? String(form.startDate) : undefined,
     endDate: form.endDate != null ? String(form.endDate) : undefined,
@@ -4549,13 +4562,12 @@ app.post('/admin/orders/:id/update', async (c) => {
   const isResume = status === 'active' && order?.status === 'suspended'
   if (!order || !editableStatuses.includes(status) || (status === 'active' && !isResume) || !canTransitionOrder(order.status, status)) return wantsJson ? c.json({ ok: false, error: '不允许的订单状态转换，请刷新页面查看最新状态' }, 409) : c.text('不允许的订单状态转换', 409)
   if ((status === 'suspended' || status === 'cancelled') && !reason) return wantsJson ? c.json({ ok: false, error: '请填写暂停/取消原因' }, 400) : c.text('请填写暂停/取消原因', 400)
-  const automaticCancellationPayment = status === 'cancelled'
-    ? await c.env.RENT.prepare("SELECT id FROM payments WHERE rental_id = ? AND ((status = 'paid' AND payment_method IN ('balance', 'card')) OR (status = 'pending' AND payment_method = 'card' AND stripe_payment_intent_id = (SELECT stripe_deposit_payment_intent_id FROM orders WHERE id = ?))) LIMIT 1").bind(order.id, order.id).first()
-    : null
-  if (automaticCancellationPayment) {
-    const response = await cancelAndRefund(c, user, order.id, reason)
-    if (response.status >= 400) return wantsJson ? c.json({ ok: false, error: await response.text() }, response.status as any) : response
-    return wantsJson ? c.json({ ok: true, refunded: true }) : response
+  if (status === 'cancelled') {
+    try {
+      const response = await cancelAndRefund(c, user, order.id, reason)
+      if (response.status >= 400) return wantsJson ? c.json({ ok: false, error: await response.text() }, response.status as any) : response
+      return wantsJson ? c.json({ ok: true }) : response
+    } catch (error: any) { return wantsJson ? c.json({ ok: false, error: error?.message || '全额退款失败' }, 502) : c.text(error?.message || '全额退款失败', 502) }
   }
   if (status === 'completed') {
     const contract = await c.env.RENT.prepare('SELECT contract_data FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
@@ -4563,13 +4575,11 @@ app.post('/admin/orders/:id/update', async (c) => {
   }
   await updateOrderStatus(c, order.id, status, { reason, triggeredBy: user.id })
   if (status === 'suspended') await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_suspended', title: '租赁已暂停', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}暂停，原因：${reason}。`, orderId: order.id })
-  if (status === 'cancelled') await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}取消，原因：${reason}。`, orderId: order.id })
   if (status === 'completed') {
     await enqueueRentalUserDeletion(c, order)
     const settlementResponse = await settleCompletedOrderAuthorization(c, user, order.id)
     if (settlementResponse && settlementResponse.status >= 400) return wantsJson ? c.json({ ok: false, error: await settlementResponse.text() }, settlementResponse.status as any) : settlementResponse
   }
-  if (status === 'cancelled') await releaseDeviceIfUnbooked(c, order.deviceId)
   if (status === 'paid') await ensureOrderNumber(c, order.id)
   if (wantsJson) return c.json({ ok: true })
   return c.redirect(`/admin/orders/${c.req.param('id')}`)
@@ -4703,21 +4713,17 @@ app.post('/admin/orders/bulk-update', async (c) => {
   }
   let processed = 0
   for (const order of validOrders) {
-    const automaticCancellationPayment = targetStatus === 'cancelled'
-      ? await c.env.RENT.prepare("SELECT id FROM payments WHERE rental_id = ? AND status = 'paid' AND payment_method IN ('balance', 'card') LIMIT 1").bind(order.id).first()
-      : null
-    if (automaticCancellationPayment) {
-      const response = await cancelAndRefund(c, user, order.id, reason)
+    if (targetStatus === 'cancelled') {
+      let response: Response
+      try { response = await cancelAndRefund(c, user, order.id, reason) }
+      catch (error: any) { response = c.text(error?.message || '全额退款失败', 502) }
       if (response.status >= 400) {
-        // 中途失败时不要把已成功的部分说成全部失败：回报已处理条数并停下。
         const detail = (await response.text()).slice(0, 200)
         return c.redirect(`/admin/orders?error=${encodeURIComponent(`已处理 ${processed} 条后停止：${detail}`)}`)
       }
     } else {
       await updateOrderStatus(c, order.id, targetStatus, { reason, triggeredBy: user.id })
-      if (targetStatus === 'cancelled') await releaseDeviceIfUnbooked(c, order.deviceId)
       if (targetStatus === 'suspended') await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_suspended', title: '租赁已暂停', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}暂停，原因：${reason}。`, orderId: order.id })
-      if (targetStatus === 'cancelled') await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}取消，原因：${reason}。`, orderId: order.id })
     }
     processed++
   }
@@ -6450,7 +6456,7 @@ export default {
       env,
       get: (key: string) => undefined,
       set: () => { },
-      req: { url: 'https://scheduled-event' },
+      req: { url: 'https://scheduled-event', method: 'CRON', header: () => undefined },
       text: (body: string, status = 200) => new Response(body, { status }),
       redirect: (url: string, status = 302) => new Response(null, { status, headers: { Location: url } }),
       // Expose getDB function that the site.ts functions expect
@@ -6468,6 +6474,7 @@ export default {
         await runScheduledJob(c, 'expire_missed_pickups', () => expireMissedPickupOrders(c))
         await runScheduledJob(c, 'expire_rental_link_drafts', () => expireRentalLinkDrafts(c))
         await runScheduledJob(c, 'charge_overdue_returns', () => chargeOverdueReturns(c))
+        await runScheduledJob(c, 'charge_monthly_rentals', () => chargeDueRentalInstallments(c))
       })())
       return
     }

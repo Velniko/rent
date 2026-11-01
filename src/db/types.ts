@@ -124,6 +124,8 @@ export interface Device {
 export type DeviceLifecycleStatus = 'RESERVED' | 'READY' | 'RENTED' | 'RETURNED' | 'INSPECTION' | 'MAINTENANCE' | 'DAMAGED' | 'RETIRED'
 
 export interface Order {
+  rental_pricing_json?: string | null
+  billing_mode?: 'FULL' | 'MONTHLY'
   is_manual?: number
   rental_link_id?: string | null
   booking_buffer_days?: number

@@ -22,13 +22,14 @@ export async function issueInvoice(c: Context, orderId: string): Promise<void> {
   // Keep the rental line at its original price. The coupon is shown as a
   // separate deduction on the receipt, while the payable total stays lower.
   const discountAmount = Math.max(0, Number((order as any).discountAmount || (order as any).discount_amount || 0))
-  const taxableGross = Math.max(0, Number(order.totalAmount) - Number(order.depositAmount) + discountAmount)
+  const monthlyPaid = order.billing_mode === 'MONTHLY' ? await c.env.RENT.prepare("SELECT COALESCE(SUM(rental_amount), 0) AS rental, COALESCE(SUM(deposit_amount), 0) AS deposit, COALESCE(SUM(processing_fee), 0) AS fee FROM payments WHERE rental_id = ? AND status = 'paid'").bind(order.id).first() as any : null
+  const taxableGross = Math.max(0, Number(monthlyPaid?.rental ?? Number(order.totalAmount) - Number(order.depositAmount) + discountAmount))
   const gstAmount = getSystemSettings().companyDetails.gstIncluded ? taxableGross / 11 : 0
   const payment = await c.env.RENT.prepare("SELECT processing_fee, status FROM payments WHERE rental_id = ? AND (status = 'paid' OR (status = 'pending' AND stripe_payment_intent_id = ? AND ? = 'PREAUTH' AND ? IN ('HELD', 'REFUND_PENDING'))) AND COALESCE(rental_amount, 0) > 0 ORDER BY paid_at DESC LIMIT 1").bind(order.id, order.stripe_deposit_payment_intent_id || '', order.deposit_payment_mode || '', order.deposit_status || '').first() as any
-  const processingFee = Math.max(0, Number(payment?.processing_fee || 0))
+  const processingFee = Math.max(0, Number(monthlyPaid?.fee ?? payment?.processing_fee ?? 0))
   const settledAuthorization = order.deposit_payment_mode === 'PREAUTH' && order.refundMethod === 'original' && order.status === 'completed' && ['REFUNDED', 'PARTIALLY_DEDUCTED', 'FORFEITED'].includes(String(order.deposit_status))
-  const invoiceDeposit = settledAuthorization ? Number(order.deposit_deduction_amount || 0) : Number(order.depositAmount)
-  const invoiceTotal = Number(order.totalAmount) - Number(order.depositAmount) + invoiceDeposit + processingFee
+  const invoiceDeposit = Number(monthlyPaid?.deposit ?? (settledAuthorization ? Number(order.deposit_deduction_amount || 0) : Number(order.depositAmount)))
+  const invoiceTotal = (monthlyPaid ? Number(monthlyPaid.rental) : Number(order.totalAmount) - Number(order.depositAmount)) + invoiceDeposit + processingFee
   const invoiceId = `inv-${order.id}`
   const existing = await c.env.RENT.prepare('SELECT invoice_number, receipt_number FROM invoices WHERE id = ?').bind(invoiceId).first() as any
   const invoiceNumber = existing?.invoice_number || (/^INV-[0-9]{8}-[A-Z0-9]{6}$/.test(String(data.invoice_number || '')) ? String(data.invoice_number) : generateReferenceNumber('INV'))
@@ -90,7 +91,7 @@ async function ensureReceiptAndTransactions(c: Context, order: any, invoiceId: s
     ON CONFLICT(id) DO UPDATE SET receipt_number = excluded.receipt_number, invoice_id = excluded.invoice_id,
       subtotal = excluded.subtotal, gst_amount = excluded.gst_amount, deposit_amount = excluded.deposit_amount,
       discount_amount = excluded.discount_amount, total_paid = excluded.total_paid, status = 'issued', document_url = excluded.document_url`)
-    .bind(receiptId, String(invoice.receipt_number), order.id, invoiceId, order.userId, Number(invoice.subtotal || 0), Number(invoice.gst_amount || 0), Number(invoice.deposit_amount || 0), Math.max(0, Number(order.discountAmount || order.discount_amount || 0)), paidTotal, `/orders/${order.id}/invoice`).run()
+    .bind(receiptId, String(invoice.receipt_number), order.id, invoiceId, order.userId, Number(invoice.subtotal || 0), Number(invoice.gst_amount || 0), Number(invoice.deposit_amount || 0), order.billing_mode === 'MONTHLY' ? 0 : Math.max(0, Number(order.discountAmount || order.discount_amount || 0)), paidTotal, `/orders/${order.id}/invoice`).run()
 
   for (const payment of payments) {
     const transactionNumber = /^TXN-[0-9]{8}-[A-Z0-9]{6}$/.test(String(payment.transaction_id || ''))

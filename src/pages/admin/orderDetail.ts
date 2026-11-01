@@ -4,7 +4,9 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { buildLayout, getOrderById, getUserById, getDeviceById, getContractByOrderId, ensureContractForOrder, getCustomerRiskAssessment, formatCurrency, formatMelbourneDateTime, validateHostedImageUrls, isContractFinalized, diffOrderSnapshots, ORDER_CHANGE_TYPE_LABELS, formatOrderChangeActor, reconcileOrderPayments } from '../../site';
-import { Context } from 'hono';
+import { Context } from 'hono'
+import { renderRentalDiscounts } from '../partials/rentalDiscounts';
+import { renderRentalInstallments } from '../partials/rentalInstallments';
 import { renderOrderStatusFeedback } from './orderStatusFeedback';
 import { renderReconciliationPanel } from '../partials/reconciliationPanel';
 import { isCardDepositSettled, normalizeSecurityDepositMethod, securityDepositMethodLabel } from '../../domain/paymentPlan';
@@ -120,6 +122,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   const refundStatusLabel = preauthReleased ? '预授权已结算，剩余押金已释放' : isSetupIntentDeposit && cardDepositSettled ? '押金已结算' : completedRefund?.status === 'pending' ? 'REFUND_PENDING: 退款处理中' : completedRefund?.status === 'succeeded' ? (Number(completedRefund.refund_amount || 0) < Number(completedRefund.refundable_amount || completedRefund.refund_amount || 0) ? 'PARTIALLY_REFUNDED: 部分退款' : 'REFUNDED: 已退款') : '';
   const deliveryBlock = deliveryBookings.length ? `<div class="panel" style="margin-bottom:24px"><div class="section-title"><div><h3>配送状态</h3></div></div>${deliveryBookings.map((booking: any) => { const info = deliveryStatusInfo(booking.status); const trackingUrl = safeDeliveryTrackingUrl(booking.trackingUrl); return `<div class="delivery-status-row"><div><strong>${booking.direction === 'return' ? '回收' : '派送'}：${escapeHtml(info.label)}</strong><p class="section-note">${escapeHtml(info.description)}</p>${booking.providerReference ? `<small class="section-note">配送编号：${escapeHtml(booking.providerReference)}</small>` : ''}${info.special ? '<small class="delivery-lock-note">该状态下不能更新或取消配送订单。</small>' : ''}</div>${trackingUrl ? `<a class="button button-secondary" href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">查看追踪链接</a>` : ''}</div>` }).join('')}</div>` : '';
 
+  const installmentSection = await renderRentalInstallments(c, order, false)
   const body = `
     <div class="panel hero order-detail-shell admin-order-detail" style="padding: 32px; margin-bottom: 24px;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
@@ -152,6 +155,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
     const detail = diffs.length ? diffs.map(d => `<div>${escapeHtml(d.label)}：<span class="mono">${escapeHtml(String(d.before ?? '—'))}</span> → <strong class="mono">${escapeHtml(String(d.after ?? '—'))}</strong></div>`).join('') : '—';
     return `<tr><td class="mono">${escapeHtml(formatMelbourneDateTime(item.created_at))}</td><td>${escapeHtml(ORDER_CHANGE_TYPE_LABELS[item.change_type] || item.change_type)}</td><td>${detail}</td><td>${escapeHtml(item.reason || '—')}</td><td>${escapeHtml(formatOrderChangeActor(item.changed_by_name, item.changed_by))}</td></tr>`;
   }).join('')}</tbody></table></div></section>` : ''}
+    ${installmentSection}
     ${renderReconciliationPanel({ reconciliation, paymentSources, refundRows })}
     <div class="grid grid-2" style="gap: 24px; margin-bottom: 24px;">
       <div class="panel">
@@ -167,7 +171,8 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
             <span style="color: #6b7280;">租期</span>
             <span style="font-weight: 500;">${order.startDate} ~ ${order.endDate}</span>
           </div>
-          ${isPreauthDeposit ? `<div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f9fafb; border-radius: 8px;"><span style="color: #6b7280;">信用卡预授权总额</span><span style="font-weight: 700; font-size: 1.1rem; color: #2563eb;">${formatCurrency(Number(order.totalAmount) + preauthFee)}</span></div>` : `<div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f9fafb; border-radius: 8px;"><span style="color: #6b7280;">租金（含服务费）</span><span style="font-weight: 700; font-size: 1.1rem; color: #059669;">${formatCurrency(Number(order.totalAmount) - depositAmount)}</span></div><div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f9fafb; border-radius: 8px;"><span style="color: #6b7280;">押金${isSetupIntentDeposit ? '（SetupIntent，不预扣）' : ' 预授权'}</span><span style="font-weight: 700; font-size: 1.1rem; color: #2563eb;">${formatCurrency(depositAmount)}</span></div>`}
+          ${renderRentalDiscounts(order, device || {})}
+          ${isPreauthDeposit ? `<div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f9fafb; border-radius: 8px;"><span style="color: #6b7280;">信用卡预授权总额</span><span style="font-weight: 700; font-size: 1.1rem; color: #2563eb;">${formatCurrency(Number(order.totalAmount) + preauthFee)}</span></div>` : `<div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f9fafb; border-radius: 8px;"><span style="color: #6b7280;">租金（含服务费）</span><span style="font-weight: 700; font-size: 1.1rem; color: #059669;">${formatCurrency(Number(order.totalAmount) - depositAmount)}</span></div><div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f9fafb; border-radius: 8px;"><span style="color: #6b7280;">押金${isSetupIntentDeposit ? '（SetupIntent，不预扣）' : order.billing_mode === 'MONTHLY' ? '（随首期收取）' : ' 预授权'}</span><span style="font-weight: 700; font-size: 1.1rem; color: #2563eb;">${formatCurrency(depositAmount)}</span></div>`}
           <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f9fafb; border-radius: 8px;">
             <span style="color: #6b7280;">支付方式</span>
             <span style="font-weight: 500;">${escapeHtml(paymentMethodLabel)}</span>
@@ -362,6 +367,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
       </div>
       <div style="margin-top: 24px; padding-top: 24px; border-top: 1px solid #e5e7eb; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;">
         <a href="/admin/orders" class="button button-secondary" style="padding: 12px 32px; border-radius: 10px; text-decoration: none; display: inline-flex; align-items: center; gap: 8px;">← 返回订单列表</a>
+        ${order.status === 'cancelled' && paymentSources.some((payment: any) => payment.status === 'paid') && !refundRows.some((refund: any) => refund.type === 'cancellation') ? `<form method="post" action="/admin/orders/${order.id}/retry-cancellation-refund"><button class="button button-primary" type="submit">重试自动退款</button></form>` : ''}
         <form method="POST" action="/admin/orders/${order.id}/delete" data-site-confirm="订单将从网站隐藏，付款和合同等历史记录会保留。" data-confirm-variant="danger" data-confirm-title="删除订单？" data-confirm-label="删除订单" data-confirm-text="删除订单">
           <button type="submit" class="button button-danger" style="padding: 12px 32px; border-radius: 10px;">删除订单</button>
         </form>

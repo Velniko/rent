@@ -8,6 +8,7 @@ import { User, getDeviceById, getDeviceRentalRules, getContractTemplate, getSyst
 import { findEligibleCoupon, calculateCouponDiscount } from '../coupons';
 import { nanoid } from 'nanoid';
 import { calculateRentalFee } from '../../domain/rentalPricing';
+import { rentalPricingSnapshot } from '../../domain/monthlyRental';
 import { depositPaymentModeForRental } from '../../domain/paymentPlan';
 import { isPickupPeriodClosed, pickupClosureConfig } from '../../domain/pickupTimeSlots';
 
@@ -151,6 +152,7 @@ export async function handleCreateContractAction(c: Context, user: User, body: R
     totalAmount: totalAmount,
     depositAmount: depositAmount,
     dailyRate: dailyRate,
+    rental_pricing_json: rentalPricingSnapshot(device),
     // The orders table may enforce contractId -> contracts(id). The contract
     // must exist before this field can be populated.
     contractId: null,

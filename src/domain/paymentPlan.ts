@@ -3,7 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
-/** 租期达到一个月时不再收取押金，改为仅保存可离线扣款的支付方式。 */
+/** 月付租赁首期收取押金。 */
 export const LONG_TERM_RENTAL_DAYS = 30
 
 export type DepositPaymentMode = 'PAID' | 'PREAUTH' | 'SETUP_INTENT'
@@ -30,7 +30,7 @@ export function depositAuthorizationWindowDays(cardBrand: unknown): 7 | 30 {
 export function depositPaymentModeForRental(rentalPeriod: number, cardPayment = true, cardBrand?: unknown): DepositPaymentMode {
   if (!cardPayment) return 'PAID'
   const days = Number(rentalPeriod || 0)
-  return days >= LONG_TERM_RENTAL_DAYS || days > depositAuthorizationWindowDays(cardBrand) ? 'SETUP_INTENT' : 'PREAUTH'
+  return days >= LONG_TERM_RENTAL_DAYS ? 'PAID' : days > depositAuthorizationWindowDays(cardBrand) ? 'SETUP_INTENT' : 'PREAUTH'
 }
 
 export function depositPaymentModeForOrder(order: { deposit_payment_mode?: unknown; depositPaymentMode?: unknown; rentalPeriod?: unknown; rental_period?: unknown }): DepositPaymentMode {

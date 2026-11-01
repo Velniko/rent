@@ -5,7 +5,7 @@
 
 import type { Context } from 'hono'
 import { nanoid } from 'nanoid'
-import { ensureOrderNumber, getOrderById, getUserById, getSystemSettings, loadSystemSettingsFromDB, issueInvoice, issueCreditNote, enqueueRentalUserCreation, recordBalanceTransaction, recordExternalRentalFlow, recordFinancialLedgerEntry, generateReferenceNumber, recordDeviceLifecycle, revokeReferralRewardForOrder, claimWebhookEvent, markWebhookProcessed, markWebhookFailed, buildRefundAllocation, mapStripeDisputeStatus, applyPendingPaymentCancellation, logError, updateOrderStatus, createAuditLog } from '../site'
+import { ensureOrderNumber, getOrderById, getUserById, getSystemSettings, loadSystemSettingsFromDB, issueInvoice, issueCreditNote, enqueueRentalUserCreation, recordBalanceTransaction, recordExternalRentalFlow, recordFinancialLedgerEntry, generateReferenceNumber, recordDeviceLifecycle, releaseDeviceIfUnbooked, revokeReferralRewardForOrder, claimWebhookEvent, markWebhookProcessed, markWebhookFailed, buildRefundAllocation, mapStripeDisputeStatus, applyPendingPaymentCancellation, logError, updateOrderStatus, canTransitionOrder, createAuditLog } from '../site'
 import { createNotification } from '../services/notifications'
 import { stripeRequest, verifyStripeWebhook, getStripePublishableKey } from '../stripe'
 import { squareRequest } from '../square'
@@ -14,6 +14,8 @@ import { releaseCouponForOrder } from './coupons'
 import { depositAuthorizationWindowDays, depositPaymentModeForOrder, depositPaymentModeForRental, isCardDepositSettled, normalizeSecurityDepositMethod, type DepositPaymentMode } from '../domain/paymentPlan'
 import { computeOrderSettlementStatus } from '../domain/orderSettlement'
 import { isPickupHoldExpired, returnOverdueDays } from '../domain/pickupHold'
+import { isMonthlyRental } from '../domain/monthlyRental'
+import { createMonthlyRentalCheckout, settleRentalInstallment } from '../services/monthlyRentalPayments'
 
 function cents(value: number): number {
   return Math.round(Number(value) * 100)
@@ -477,6 +479,13 @@ export async function createOrderPaymentIntent(c: Context, user: any, orderId: s
   const depositAmount = orderDeposit(order)
   const savedPaymentMethodId = String((order as any).stripe_payment_method_id || '')
   const stripeCustomerId = await ensureStripeCustomerForPaymentMethod(c, user, savedPaymentMethodId)
+  if (isMonthlyRental(order)) {
+    const legacy = await c.env.RENT.prepare("SELECT stripe_payment_intent_id FROM payments WHERE rental_id = ? AND status = 'pending' AND rental_amount > 0 AND stripe_payment_intent_id IS NOT NULL AND id NOT IN (SELECT payment_id FROM rental_installments WHERE payment_id IS NOT NULL) ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+    const legacyIntent = legacy ? await stripeRequest(c, `payment_intents/${legacy.stripe_payment_intent_id}`) : null
+    // 兼容升级前已经扣款、Webhook 尚未落库的订单，不能另建首期重复收款。
+    if (legacyIntent?.status !== 'succeeded') return createMonthlyRentalCheckout(c, user, order, stripeCustomerId, undefined, confirmNow)
+    if (legacyIntent.currency !== 'aud' || Number(legacyIntent.amount_received) !== stripePaymentAmounts(order.totalAmount, depositAmount, orderServiceFee(order)).chargedCents || legacyIntent.metadata?.order_id !== order.id || legacyIntent.metadata?.customer_id !== user.id) throw new Error('Stripe 支付数据不匹配')
+  }
   const depositMethod = normalizeSecurityDepositMethod(order.deposit_method, 'card_hold')
   const depositMode = depositMethod === 'card_hold' ? await resolveDepositPaymentMode(c, order, savedPaymentMethodId) : 'PAID'
   if (depositMode === 'SETUP_INTENT' && !savedPaymentMethodId) throw new Error('该订单需要先验证并保存信用卡')
@@ -645,6 +654,15 @@ export async function createSquareDepositPaymentIntent(c: Context, user: any, or
   return { clientSecret: intent.client_secret as string, publishableKey: await getStripePublishableKey(c), amountCents }
 }
 
+export async function createOrderInstallmentPaymentIntent(c: Context, user: any, orderId: string, installmentId: string) {
+  await loadSystemSettingsFromDB(c)
+  if (!getSystemSettings().paymentMethods.stripe) throw new Error('Stripe 支付当前未启用')
+  const order = await getOrderById(c, orderId)
+  if (user?.role !== 'CUSTOMER' || !order || order.userId !== user.id || order.billing_mode !== 'MONTHLY') throw new Error('订单不存在或无权访问')
+  const customerId = await ensureStripeCustomerForPaymentMethod(c, user, '')
+  return createMonthlyRentalCheckout(c, user, order, customerId, installmentId)
+}
+
 export function stripePaymentAmounts(orderTotal: number, depositAmount = 0, serviceFee = 0): { baseCents: number; feeCents: number; chargedCents: number } {
   const baseCents = cents(orderTotal)
   const depositCents = Math.max(0, cents(depositAmount))
@@ -712,6 +730,11 @@ export async function getOrderPriceAdjustmentSummary(c: Context, order: any): Pr
     c.env.RENT.prepare("SELECT amount, deposit_amount, rental_amount, processing_fee, status FROM payments WHERE rental_id = ?").bind(order.id).all(),
     c.env.RENT.prepare("SELECT * FROM order_price_adjustments WHERE order_id = ? ORDER BY created_at DESC").bind(order.id).all(),
   ])
+  if (order.billing_mode === 'MONTHLY') {
+    const scheduled = await c.env.RENT.prepare("SELECT COALESCE(SUM(rental_amount), 0) AS amount FROM rental_installments WHERE order_id = ? AND status != 'cancelled'").bind(order.id).first() as any
+    // 未来月租不能显示为需要一次补交的订单差价；押金不抵扣租金。
+    return summarizeOrderPriceAdjustment({ ...order, totalAmount: Number(order.depositAmount) + Math.max(0, Number(order.totalAmount) - Number(order.depositAmount) - Number(scheduled?.amount || 0)) }, [], (adjustments.results || []) as any[])
+  }
   return summarizeOrderPriceAdjustment(order, (payments.results || []) as any[], (adjustments.results || []) as any[])
 }
 
@@ -968,6 +991,16 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
     return c.json({ received: true })
   }
   if (['payment_intent.succeeded', 'payment_intent.amount_capturable_updated'].includes(event.type)) await linkStripeCheckoutIntent(c, session)
+  if (event.type === 'payment_intent.succeeded' && session?.metadata?.type === 'rental_installment') {
+    try {
+      await settleRentalInstallment(c, session)
+      await markWebhookProcessed(c, claim.recordId)
+      return c.json({ received: true })
+    } catch (error: any) {
+      await markWebhookFailed(c, claim.recordId, error.message)
+      throw error
+    }
+  }
   const statements: any[] = []
   let paidOrderId = ''
   let authorizedOrderId = ''
@@ -1075,10 +1108,14 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
       const customerId = String(session?.metadata?.customer_id || '')
       const order = await getOrderById(c, orderId)
       paidOrderId = orderId
-      const payment = await c.env.RENT.prepare('SELECT rental_id, customer_id, amount, deposit_amount, rental_amount, processing_fee, square_payment_id FROM payments WHERE stripe_payment_intent_id = ?').bind(session.id).first() as any
+      const payment = await c.env.RENT.prepare('SELECT rental_id, customer_id, amount, deposit_amount, rental_amount, processing_fee, square_payment_id, status FROM payments WHERE stripe_payment_intent_id = ?').bind(session.id).first() as any
       // 不是本站站内 Payment Element 建的 PI（例如历史 Checkout 流程遗留），静默确认，
       // 交给对应的 checkout.session.* 事件处理，避免 Stripe 反复重投。
       if (!payment) { paidOrderId = ''; return c.json({ received: true, ignored: true }) }
+      if (payment.status === 'refunded') {
+        await markWebhookProcessed(c, claim.recordId)
+        return c.json({ received: true, ignored: true })
+      }
       const isFullAuthorization = Number(payment?.deposit_amount || 0) > 0 && String(session?.metadata?.type || '') === 'rental_authorization'
       if (!order || !payment || payment.rental_id !== order.id || payment.customer_id !== customerId || String(session?.metadata?.customer_id || '') !== String(order.userId)) return c.text('Stripe 支付数据不匹配', 400)
       const paymentType = String(session?.metadata?.type || '')
@@ -1235,6 +1272,9 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
 }
 
 async function paidPayment(c: Context, order: any, component: 'rental' | 'deposit' = 'rental'): Promise<any> {
+  if (component === 'deposit' && order.billing_mode === 'MONTHLY') {
+    return c.env.RENT.prepare("SELECT * FROM payments WHERE rental_id = ? AND status = 'paid' AND deposit_amount > 0 ORDER BY paid_at LIMIT 1").bind(order.id).first()
+  }
   if (component === 'deposit' && String(order.paymentProvider || order.payment_provider || '') === 'square') {
     const depositPayment = await c.env.RENT.prepare("SELECT * FROM payments WHERE rental_id = ? AND status = 'paid' AND rental_amount = 0 AND deposit_amount > 0 ORDER BY paid_at DESC LIMIT 1").bind(order.id).first() as any
     if (depositPayment) return depositPayment
@@ -1405,6 +1445,7 @@ export async function refundDeposit(c: Context, admin: any, orderId: string, for
   }
   if (depositMode === 'SETUP_INTENT') return settleSetupIntentDeposit(c, admin, order, form)
   const payment = await paidPayment(c, order, 'deposit')
+  if (!payment) return c.text('未找到已结算付款，不能自动退款', 409)
   if (await hasOpenPaymentDispute(c, payment.id)) return c.text('该笔付款存在未解决的拒付争议，暂不能退款', 409)
   const refundedResult = await c.env.RENT.prepare(`
     SELECT COALESCE(SUM(refund_amount), 0) AS refunded_amount
@@ -1544,11 +1585,17 @@ export async function refundUnusedRentalDays(c: Context, admin: any, order: any,
   const end = new Date(`${order.endDate}T00:00:00Z`).getTime()
   const returned = new Date(`${returnedDate}T00:00:00Z`).getTime()
   const unusedDays = Math.max(0, Math.ceil((end - returned) / 86400000))
-  const amount = Number((unusedDays * Number(order.dailyRate || 0)).toFixed(2))
+  const monthlyPaid = order.billing_mode === 'MONTHLY' ? await c.env.RENT.prepare("SELECT i.*, p.id AS paid_payment_id FROM rental_installments i JOIN payments p ON p.id = i.payment_id WHERE i.order_id = ? AND i.status = 'paid' AND p.status = 'paid' AND i.period_end > ? ORDER BY i.installment_number DESC LIMIT 1").bind(order.id, returnedDate).first() as any : null
+  const monthlyDays = monthlyPaid ? (Date.parse(monthlyPaid.period_end) - Date.parse(monthlyPaid.due_date)) / 86400000 : 0
+  const monthlyUnusedDays = monthlyPaid ? Math.max(0, (Date.parse(monthlyPaid.period_end) - Math.max(Date.parse(returnedDate), Date.parse(monthlyPaid.due_date))) / 86400000) : 0
+  const monthlyExtras = monthlyPaid?.installment_number === 1 ? orderServiceFee(order) + Number(order.deliveryFee || 0) : 0
+  const amount = order.billing_mode === 'MONTHLY'
+    ? Number((monthlyDays > 0 ? Math.max(0, Number(monthlyPaid.rental_amount) - monthlyExtras) * monthlyUnusedDays / monthlyDays : 0).toFixed(2))
+    : Number((unusedDays * Number(order.dailyRate || 0)).toFixed(2))
   if (!amount) return
   const existing = await c.env.RENT.prepare("SELECT id FROM payment_refunds WHERE order_id = ? AND type = 'early_return' AND status IN ('pending', 'succeeded')").bind(order.id).first()
   if (existing) return
-  const payment = await paidPayment(c, order)
+  const payment = monthlyPaid ? await c.env.RENT.prepare('SELECT * FROM payments WHERE id = ?').bind(monthlyPaid.paid_payment_id).first() as any : await paidPayment(c, order)
   if (await hasOpenPaymentDispute(c, payment.id)) throw new Error('该笔付款存在未解决的拒付争议，暂不能退还未使用租金')
   let channel = refundChannel(order, payment)
   if (channel === 'unavailable') channel = 'balance'
@@ -1587,17 +1634,70 @@ export async function cancelPendingPaymentOrderByCustomer(c: Context, user: any,
   await revokeReferralRewardForOrder(c, order.id, '客户取消待支付订单')
 }
 
+// 回调可能晚于取消请求：先向 Stripe 核对尚未确认的付款，不能把已扣款当成未付款。
+async function reconcileCancellationPayments(c: Context, order: any): Promise<boolean> {
+  let verified = false
+  const rows = ((await c.env.RENT.prepare("SELECT * FROM payments WHERE rental_id = ? AND payment_method = 'card' AND COALESCE(payment_provider, 'stripe') = 'stripe' AND status IN ('pending', 'failed')").bind(order.id).all()).results || []) as any[]
+  for (const payment of rows) {
+    let intentId = payment.stripe_payment_intent_id
+    if (payment.stripe_checkout_session_id) {
+      const session = await stripeRequest(c, `checkout/sessions/${encodeURIComponent(payment.stripe_checkout_session_id)}?expand[]=payment_intent`)
+      if (session.status === 'open') await stripeRequest(c, `checkout/sessions/${encodeURIComponent(session.id)}/expire`, new URLSearchParams())
+      intentId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id
+    }
+    if (!intentId) continue
+    const intent = await stripeRequest(c, `payment_intents/${encodeURIComponent(intentId)}`)
+    if (intent.currency !== 'aud' || intent.metadata?.order_id !== order.id || intent.metadata?.customer_id !== String(order.userId)
+        || Number(intent.amount) !== cents(payment.amount)) throw new Error('Stripe 支付数据与订单不匹配')
+    verified = true
+    if (intent.status === 'processing') throw new Error('Stripe 正在确认付款，请稍后重试')
+    if (intent.status === 'succeeded') {
+      const received = Number(intent.amount_received)
+      if (!Number.isSafeInteger(received) || received <= 0 || received > cents(payment.amount)) throw new Error('Stripe 支付数据与订单不匹配')
+      await c.env.RENT.prepare("UPDATE payments SET status = 'paid', amount = ?, stripe_payment_intent_id = ?, paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('pending', 'failed')").bind(received / 100, intentId, payment.id).run()
+    } else if (['requires_capture', 'requires_payment_method', 'requires_confirmation', 'requires_action', 'canceled'].includes(intent.status)) {
+      if (intent.status !== 'canceled') await stripeRequest(c, `payment_intents/${encodeURIComponent(intentId)}/cancel`, new URLSearchParams(), `cancellation-release-${order.id}-${payment.id}`)
+      await c.env.RENT.prepare("UPDATE payments SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'").bind(payment.id).run()
+    } else throw new Error('Stripe 正在确认付款，请稍后重试')
+  }
+  return verified
+}
+
+async function finishOrderCancellation(c: Context, admin: any, order: any, reason?: string): Promise<void> {
+  await updateOrderStatus(c, order.id, 'cancelled', { reason: reason || '取消订单', triggeredBy: admin.id })
+  await c.env.RENT.prepare("UPDATE contracts SET status = 'cancelled', updatedAt = CURRENT_TIMESTAMP WHERE orderId = ? AND status IN ('draft', 'pending_sign', 'signed')").bind(order.id).run()
+  await releaseDeviceIfUnbooked(c, order.deviceId, { orderId: order.id, reason: reason || '取消订单', changedBy: admin.id })
+  await releaseCouponForOrder(c, order.id)
+  await revokeReferralRewardForOrder(c, order.id, '订单取消')
+}
+
+// 请求超时或本地写入失败后，优先认领 Stripe 已创建的取消退款；两种入口共用同一幂等键。
+async function requestCancellationRefund(c: Context, order: any, payment: any, refundAmount: number): Promise<any> {
+  const refunds = await stripeRequest(c, `refunds?payment_intent=${encodeURIComponent(payment.stripe_payment_intent_id)}&limit=100`)
+  const existing = (refunds.data || []).find((refund: any) => refund.metadata?.order_id === order.id && refund.metadata?.type === 'cancellation'
+    && Number(refund.amount) === cents(refundAmount) && refund.currency === 'aud' && !['failed', 'canceled'].includes(refund.status))
+  if (existing) return existing
+  const failed = (refunds.data || []).find((refund: any) => refund.metadata?.order_id === order.id && refund.metadata?.type === 'cancellation' && ['failed', 'canceled'].includes(refund.status))
+  return stripeRequest(c, 'refunds', new URLSearchParams({ payment_intent: payment.stripe_payment_intent_id, amount: String(cents(refundAmount)), 'metadata[order_id]': order.id, 'metadata[type]': 'cancellation' }), `cancellation-refund-${order.id}${failed ? `-${failed.id}` : ''}`)
+}
+
 export async function cancelAndRefund(c: Context, admin: any, orderId: string, reason?: string, options: { deductionAmount?: number; deductionReason?: string; allowedStatuses?: string[] } = {}): Promise<Response> {
   const order = await getOrderById(c, orderId)
   if (!order) return c.text('订单不存在', 404)
   if (options.allowedStatuses?.length && !options.allowedStatuses.includes(String(order.status))) return c.text('订单状态已变化，不能自动取消', 409)
   const mayReleasePendingAuthorization = order.status === 'pending_payment' && String((order as any).deposit_payment_mode || '') === 'PREAUTH'
   const canCancelBeforeHandover = !order.handover_completed_at && !['cancelled', 'completed', 'returned', 'pending_return'].includes(String(order.status))
-  if (!canCancelBeforeHandover && !mayReleasePendingAuthorization) return c.text('只有尚未交付的订单可取消', 409)
+  if ((!canCancelBeforeHandover && !mayReleasePendingAuthorization) || !canTransitionOrder(order.status, 'cancelled')) return c.text('只有尚未交付的订单可取消', 409)
+  const verifiedStripePayment = await reconcileCancellationPayments(c, order)
   const existingRefund = await c.env.RENT.prepare("SELECT id FROM payment_refunds WHERE order_id = ? AND type = 'cancellation' AND status = 'succeeded'").bind(order.id).first()
   if (existingRefund) return c.text('该订单已经全额退款', 409)
   const payment = await c.env.RENT.prepare("SELECT * FROM payments WHERE rental_id = ? AND (status = 'paid' OR (status = 'pending' AND payment_method = 'card' AND stripe_payment_intent_id = (SELECT stripe_deposit_payment_intent_id FROM orders WHERE id = ?))) ORDER BY CASE WHEN status = 'paid' THEN 0 ELSE 1 END, paid_at DESC LIMIT 1").bind(order.id, order.id).first() as any
-  if (!payment) return c.text('未找到已结算付款，不能自动退款', 409)
+  if (!payment) {
+    if (!['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment'].includes(order.status) && !verifiedStripePayment) return c.text('未找到已结算付款，不能自动退款', 409)
+    await finishOrderCancellation(c, admin, order, reason)
+    await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
+    return c.redirect(`/admin/orders/${order.id}`, 303)
+  }
   if (await hasOpenPaymentDispute(c, payment.id)) return c.text('该笔付款存在未解决的拒付争议，暂不能退款', 409)
   const channel = cancellationRefundChannel(payment)
   if (channel === 'unavailable') return c.text('未找到信用卡原路退款所需的 Stripe 交易记录，不能改为余额退款', 409)
@@ -1643,8 +1743,7 @@ export async function cancelAndRefund(c: Context, admin: any, orderId: string, r
 
   let stripeRefundId: string | null = null
   if (channel === 'stripe' && refundAmount > 0) {
-    const params = new URLSearchParams({ payment_intent: payment.stripe_payment_intent_id, amount: String(cents(refundAmount)), 'metadata[order_id]': order.id, 'metadata[type]': 'cancellation' })
-    const refund = await stripeRequest(c, 'refunds', params, `cancellation-refund-${order.id}`)
+    const refund = await requestCancellationRefund(c, order, payment, refundAmount)
     if (refund.status !== 'succeeded') return c.text('Stripe 全额退款尚未成功，请稍后重试', 502)
     stripeRefundId = refund.id
   }
@@ -1752,6 +1851,7 @@ export async function retryCancellationRefund(c: Context, admin: any, orderId: s
   const order = await getOrderById(c, orderId)
   if (!order) return c.text('订单不存在', 404)
   if (order.status !== 'cancelled') return c.text('只有已取消的订单可以重试退款', 409)
+  await reconcileCancellationPayments(c, order)
   const existingRefund = await c.env.RENT.prepare("SELECT id FROM payment_refunds WHERE order_id = ? AND type = 'cancellation'").bind(order.id).first()
   if (existingRefund) return c.text('该订单已经有退款记录', 409)
   const payment = await c.env.RENT.prepare("SELECT * FROM payments WHERE rental_id = ? AND status = 'paid' ORDER BY paid_at DESC LIMIT 1").bind(order.id).first() as any
@@ -1776,8 +1876,7 @@ export async function retryCancellationRefund(c: Context, admin: any, orderId: s
 
   let stripeRefundId: string | null = null
   if (channel === 'stripe') {
-    const params = new URLSearchParams({ payment_intent: payment.stripe_payment_intent_id, amount: String(cents(refundAmount)), 'metadata[order_id]': order.id, 'metadata[type]': 'cancellation' })
-    const refund = await stripeRequest(c, 'refunds', params, `cancellation-refund-retry-${order.id}`)
+    const refund = await requestCancellationRefund(c, order, payment, refundAmount)
     if (refund.status !== 'succeeded') return c.text('Stripe 全额退款尚未成功，请稍后重试', 502)
     stripeRefundId = refund.id
   }

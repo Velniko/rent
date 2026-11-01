@@ -10,7 +10,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { URL } from 'node:url'
 import { createHmac } from 'node:crypto'
 import { Hono } from 'hono'
-import { createBalanceTopUpIntent, createOrderPaymentIntent, handleStripeWebhook, refundDeposit, settleCompletedOrderAuthorization } from '../src/actions/stripePayments'
+import { createBalanceTopUpIntent, createOrderPaymentIntent, handleStripeWebhook, refundDeposit, refundUnusedRentalDays, createOrderInstallmentPaymentIntent, settleCompletedOrderAuthorization } from '../src/actions/stripePayments'
 import { saveStripeConfig } from '../src/stripe'
 import { createAuthSession, formatMelbourneDateTime, getOrderById, releaseStripePendingPaymentIntents, reconcileOrderPayments, runDataConsistencyChecks } from '../src/site'
 import worker from '../src/index'
@@ -27,6 +27,9 @@ import { listBusinessDocuments, searchBusinessDocuments } from '../src/services/
 import { renderInvoice } from '../src/pages/invoice'
 import { buildPaymentReceiptDocument, buildTaxInvoiceDocument } from '../src/services/notifications'
 import { extractInlineScripts } from './helpers'
+import { chargeDueRentalInstallments, settleRentalInstallment } from '../src/services/monthlyRentalPayments'
+import { buildMonthlyRentalInstallments, rentalPricingSnapshot } from '../src/domain/monthlyRental'
+import { renderRentalDiscounts } from '../src/pages/partials/rentalDiscounts'
 import { CHECKOUT_INTEGRATION, linkStripeCheckoutIntent, upsertStripeCheckout } from '../src/services/stripeCheckout'
 import { stripePaymentHelperScript } from '../src/pages/partials/stripePaymentSection'
 
@@ -57,7 +60,7 @@ async function setup(t: any, options: { rental?: number; status?: string; mode?:
     },
   }
   const env = { RENT: db, SETTINGS_ENCRYPTION_KEY: 'test-only-encryption-key', CLOUDINARY_CLOUD_NAME: 'demo', CLOUDINARY_API_KEY: 'test-key', CLOUDINARY_API_SECRET: 'test-secret' }
-  const context = { env, req: { url: 'https://rent.example.test/' } } as any
+  const context = { env, get: () => undefined, req: { url: 'https://rent.example.test/', method: 'GET' } } as any
   await saveStripeConfig(context, { publishableKey: 'pk_test_example', secretKey: 'sk_test_example', webhookSecret: 'whsec_example' })
   const calls: Array<{ path: string; params: URLSearchParams; method: string }> = []
   let intent: any = { id: 'pi_auth', status: 'requires_capture', currency: 'aud', amount: Math.round((rental * 1.025 + 200) * 100), amount_capturable: Math.round((rental * 1.025 + 200) * 100), amount_received: 0, capture_method: 'manual', metadata: { order_id: 'order', customer_id: 'customer', type: 'rental_authorization' }, client_secret: 'pi_auth_secret_test' }
@@ -632,7 +635,7 @@ test('new combined authorization requests manual card capture and extended valid
   assert.equal(created.params.get('payment_intent_data[metadata][type]'), 'rental_authorization')
 })
 
-test('long rental still charges rent without holding the deposit', async t => {
+test('long rental charges first month and deposit and saves the card', async t => {
   const { sqlite, calls, context, setIntent } = await setup(t, { status: 'pending_payment', mode: 'SETUP_INTENT' })
   sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod = 30, stripe_payment_method_id = 'pm_saved' WHERE id='order'; UPDATE users SET stripe_customer_id = 'cus_test' WHERE id='customer';")
   // The existing customer/card relationship avoids creating another customer.
@@ -642,10 +645,10 @@ test('long rental still charges rent without holding the deposit', async t => {
   await createOrderPaymentIntent(context, { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test', stripe_customer_id: 'cus_test' }, 'order')
   const created = calls.find(c => c.path === 'checkout/sessions' && c.method === 'POST')!
   assert.equal(created.params.get('line_items[0][price_data][unit_amount]'), '10000')
-  assert.equal(created.params.get('line_items[1][price_data][unit_amount]'), '250')
-  assert.equal(created.params.get('line_items[2][price_data][unit_amount]'), null)
+  assert.equal(created.params.get('line_items[1][price_data][unit_amount]'), '20000')
+  assert.equal(created.params.get('line_items[2][price_data][unit_amount]'), '750')
   assert.equal(created.params.get('payment_intent_data[capture_method]'), null)
-  assert.equal(created.params.get('metadata[deposit_amount]'), '0')
+  assert.equal(created.params.get('payment_intent_data[setup_future_usage]'), 'off_session')
 })
 
 for (const invalid of [{ currency: 'usd' }, { status: 'succeeded' }, { amount: 1 }, { metadata: { type: 'rental_authorization', order_id: 'other', customer_id: 'customer' } }, { metadata: { type: 'rental_authorization', order_id: 'order', customer_id: 'other' } }]) {
@@ -886,4 +889,232 @@ test('a completed Checkout authorization is recovered without starting another s
   assert.equal(result.authorized, true)
   assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status, 'paid')
   assert.equal(calls.filter(call => call.path === 'checkout/sessions').length, 1)
+})
+
+
+test('115-day monthly checkout charges one month plus deposit, preserves pricing and settles each month once', async t => {
+  const { sqlite, context, calls, sessions } = await setup(t, { status: 'pending_payment' })
+  const pricing = { pricePerDay: 20, weeklyDiscountPercent: 10, monthlyDiscountPercent: 20 }
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE users SET stripe_customer_id='cus_test' WHERE id='customer'; UPDATE orders SET startDate='2026-01-01', endDate='2026-04-26', rentalPeriod=115, totalAmount=2120, deposit_status='PENDING', stripe_deposit_payment_intent_id=NULL WHERE id='order'")
+  sqlite.prepare('UPDATE orders SET rental_pricing_json=? WHERE id=?').run(rentalPricingSnapshot(pricing), 'order')
+  const customer = { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test', stripe_customer_id: 'cus_test' }
+  const checkout = await createOrderPaymentIntent(context, customer, 'order')
+  assert.equal(checkout.amountCents, 69700)
+  assert.deepEqual(sqlite.prepare('SELECT rental_amount FROM rental_installments ORDER BY installment_number').all().map(row => row.rental_amount), [480,480,480,480])
+  assert.equal(sqlite.prepare("SELECT billing_mode FROM orders WHERE id='order'").get()?.billing_mode, 'MONTHLY')
+  sqlite.exec("UPDATE devices SET pricePerDay=999 WHERE id='device'")
+  await createOrderPaymentIntent(context, customer, 'order')
+  assert.equal(calls.filter(call => call.path === 'checkout/sessions' && call.method === 'POST').length, 1)
+  const first = sqlite.prepare('SELECT * FROM rental_installments ORDER BY installment_number LIMIT 1').get() as any
+  const session = [...sessions.values()][0]
+  session.payment_intent = 'pi_auth'
+  session.status = 'complete'
+  const intent = { id:'pi_auth', status:'succeeded', amount:69700, amount_received:69700, currency:'aud', customer:'cus_test', payment_method:'pm_saved', metadata:{ ...session.metadata, type:'rental_installment', installment_id:first.id, payment_record_id:first.payment_id, order_id:'order', customer_id:'customer' } }
+  const webhook = new Hono()
+  webhook.post('/', c => handleStripeWebhook(c))
+  const send = async (object: any, id: string) => {
+    const body=JSON.stringify({id,type:'payment_intent.succeeded',data:{object}}), timestamp=Math.floor(Date.now()/1000)
+    const signature=createHmac('sha256','whsec_example').update(`${timestamp}.${body}`).digest('hex')
+    return webhook.request('https://rent.example.test/',{method:'POST',body,headers:{'stripe-signature':`t=${timestamp},v1=${signature}`}},context.env)
+  }
+  assert.equal((await send(intent,'evt_monthly_first')).status,200)
+  assert.equal(sqlite.prepare("SELECT deposit_status FROM orders WHERE id='order'").get()?.deposit_status,'PAID')
+  assert.equal(sqlite.prepare('SELECT total_amount FROM invoices WHERE order_id=?').get('order')?.total_amount,697)
+  assert.equal(sqlite.prepare("SELECT stripe_payment_method_id FROM orders WHERE id='order'").get()?.stripe_payment_method_id,'pm_saved')
+  sqlite.exec("UPDATE orders SET status='active'")
+  const fetchBefore=globalThis.fetch, monthlyIntents=new Map<string,any>()
+  let creations=0, confirmations=0
+  globalThis.fetch=(async (url:any,init:any)=>{
+    const path=String(url).replace('https://api.stripe.com/v1/',''), params=new URLSearchParams(init?.body)
+    if(path==='payment_intents' && init?.method==='POST') {
+      const id=`pi_month_${++creations}`, metadata=Object.fromEntries([...params].filter(([key])=>key.startsWith('metadata[')).map(([key,value])=>[key.slice(9,-1),value]))
+      const value={id,status:'requires_confirmation',amount:Number(params.get('amount')),amount_received:0,currency:'aud',customer:params.get('customer'),payment_method:params.get('payment_method'),metadata,client_secret:id+'_secret'}
+      assert.equal(value.amount,49200)
+      monthlyIntents.set(id,value)
+      return Response.json(value)
+    }
+    const match=path.match(/^payment_intents\/(pi_month_\d+)(\/confirm)?$/)
+    if(match) {
+      const value=monthlyIntents.get(match[1])
+      if(match[2]) { confirmations++; assert.equal(params.get('off_session'),'true'); value.status='succeeded';value.amount_received=value.amount }
+      return Response.json(value)
+    }
+    return fetchBefore(url,init)
+  }) as typeof fetch
+  for(let i=0;i<3;i++) assert.equal(await chargeDueRentalInstallments(context),1)
+  assert.equal(await chargeDueRentalInstallments(context),0)
+  assert.equal(creations,3);assert.equal(confirmations,3)
+  assert.equal((await send(intent,'evt_monthly_replay')).status,200)
+  assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='order'").get()?.status,'active')
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM payments WHERE status='paid'").get()?.n,4)
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM financial_ledger_entries WHERE source_type='RENTAL_INSTALLMENT'").get()?.n,4)
+  assert.equal(sqlite.prepare('SELECT SUM(amount) AS amount FROM payments').get()?.amount,2173)
+  assert.equal(sqlite.prepare('SELECT total_paid FROM receipts').get()?.total_paid,2173)
+  const order=await getOrderById(context,'order')
+  const discount=renderRentalDiscounts(order,pricing)
+  assert.match(discount,/月租优惠/);assert.match(discount,/−AUD\$480\.00/)
+  const customerHtml=await renderCustomerOrderDetail(context,customer,'order')
+  assert.match(customerHtml,/月租付款计划/);assert.doesNotMatch(customerHtml,/订单价格已增加/)
+  for(const script of extractInlineScripts(customerHtml)) assert.doesNotThrow(()=>new Function(script))
+})
+
+test('monthly pricing splits 110 days into three monthly payments and a three-week last payment', () => {
+  const pricing={pricePerDay:100,weeklyDiscountPercent:10,monthlyDiscountPercent:20}
+  const order={id:'o-monthly',startDate:'2026-01-01',endDate:'2026-04-21',rentalPeriod:110,totalAmount:9290,depositAmount:200,deposit_method:'card_hold'}
+  const plan=buildMonthlyRentalInstallments(order,pricing,0.025)
+  assert.deepEqual(plan.map(row=>row.rental_amount),[2400,2400,2400,1890])
+  assert.deepEqual(plan.map(row=>row.deposit_amount),[200,0,0,0])
+  const coupon=buildMonthlyRentalInstallments({...order,totalAmount:9190},pricing,0.025)
+  assert.equal(Math.round(coupon.reduce((sum,row)=>sum+row.rental_amount,0)*100),899000)
+})
+
+
+async function monthlyFixture(t: any) {
+  const fixture=await setup(t,{status:'pending_payment'})
+  const {sqlite,context}=fixture
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET startDate='2026-01-01',endDate='2026-04-26',rentalPeriod=115,totalAmount=2120,deposit_status='PENDING',stripe_deposit_payment_intent_id=NULL WHERE id='order'; UPDATE devices SET monthly_discount_override=20, monthly_discount_percent=20 WHERE id='device'")
+  const customer={id:'customer',role:'CUSTOMER',email:'customer@example.test'}
+  await createOrderPaymentIntent(context,customer,'order')
+  sqlite.exec("UPDATE orders SET status='active',stripe_payment_method_id='pm_saved'; UPDATE rental_installments SET status='paid' WHERE installment_number=1; UPDATE payments SET status='paid',stripe_payment_intent_id='pi_first',paid_at=CURRENT_TIMESTAMP")
+  return {...fixture,customer}
+}
+
+test('a failed monthly charge is visible, is not charged again by cron and can be paid by its owner',async t=>{
+  const {sqlite,context,customer}=await monthlyFixture(t)
+  let intent:any,confirmations=0
+  const fetchBefore=globalThis.fetch
+  globalThis.fetch=(async(url:any,init:any)=>{
+    const path=String(url).replace('https://api.stripe.com/v1/',''),params=new URLSearchParams(init?.body)
+    if(path==='payment_intents' && init?.method==='POST') {
+      intent={id:'pi_month_failed',status:'requires_confirmation',amount:Number(params.get('amount')),currency:'aud',customer:'cus_test',payment_method:'pm_saved',client_secret:'pi_month_failed_secret',metadata:Object.fromEntries([...params].filter(([key])=>key.startsWith('metadata[')).map(([key,value])=>[key.slice(9,-1),value]))}
+      return Response.json(intent)
+    }
+    if(path==='payment_intents/pi_month_failed/confirm') {confirmations++;intent.status='requires_action';return Response.json({error:{message:'Authentication required'}},{status:402})}
+    if(path==='payment_intents/pi_month_failed') return Response.json(intent)
+    return fetchBefore(url,init)
+  }) as typeof fetch
+  assert.equal(await chargeDueRentalInstallments(context),0)
+  const part=sqlite.prepare('SELECT * FROM rental_installments WHERE installment_number=2').get() as any
+  assert.equal(part.status,'failed')
+  assert.equal(sqlite.prepare('SELECT status FROM payments WHERE id=?').get(part.payment_id)?.status,'failed')
+  const notices=sqlite.prepare("SELECT recipient_id,COUNT(*) AS n FROM notifications WHERE title='月租扣款未完成' GROUP BY recipient_id").all()
+  assert.ok(notices.some(row=>row.recipient_id==='customer'));assert.ok(notices.length>=2);assert.ok(notices.every(row=>row.n===1))
+  assert.equal(await chargeDueRentalInstallments(context),0);assert.equal(confirmations,1)
+  await assert.rejects(()=>createOrderInstallmentPaymentIntent(context,{...customer,id:'other'},'order',part.id),/无权访问/)
+  const retry=await createOrderInstallmentPaymentIntent(context,customer,'order',part.id)
+  assert.equal(retry.clientSecret,'pi_month_failed_secret');assert.equal(retry.amountCents,49200)
+  for(const change of [{amount_received:1},{currency:'usd'},{customer:'cus_other'},{metadata:{...intent.metadata,customer_id:'other'}}]) {
+    await assert.rejects(()=>settleRentalInstallment(context,{...intent,status:'succeeded',amount_received:49200,...change}),/月付数据不匹配/)
+  }
+  await settleRentalInstallment(context,{...intent,status:'succeeded',amount_received:49200})
+  assert.equal(sqlite.prepare('SELECT status FROM rental_installments WHERE installment_number=2').get()?.status,'paid')
+})
+
+test('returning a monthly rental stops future installments and refunds only unused paid rent',async t=>{
+  const {sqlite,context}=await monthlyFixture(t)
+  sqlite.exec("UPDATE orders SET status='completed',refundMethod='balance'")
+  assert.deepEqual(sqlite.prepare('SELECT status FROM rental_installments ORDER BY installment_number').all().map(row=>row.status),['paid','cancelled','cancelled','cancelled'])
+  assert.equal(await chargeDueRentalInstallments(context),0)
+  const order=await getOrderById(context,'order')
+  await refundUnusedRentalDays(context,{id:'admin'},order,'2026-01-16')
+  assert.equal(sqlite.prepare("SELECT refund_amount FROM payment_refunds WHERE type='early_return'").get()?.refund_amount,240)
+  await refundUnusedRentalDays(context,{id:'admin'},order,'2026-01-16')
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM payment_refunds WHERE type='early_return'").get()?.n,1)
+})
+
+
+async function cancellationFixture(t: any, status='paid', localPaymentStatus='paid') {
+  const fixture=await setup(t,{status,mode:'SETUP_INTENT'})
+  fixture.sqlite.exec("UPDATE orders SET totalAmount=2655,deposit_status='NOT_REQUIRED',stripe_deposit_payment_intent_id=NULL; UPDATE payments SET amount=2455,rental_amount=2455,deposit_amount=0,processing_fee=0")
+  fixture.sqlite.prepare('UPDATE payments SET status=?').run(localPaymentStatus)
+  fixture.setIntent({status:'succeeded',amount:245500,amount_received:245500,currency:'aud',metadata:{order_id:'order',customer_id:'customer',type:'rental_payment'}})
+  const refunds:any[]=[]
+  let refundPosts=0,replyStatus='succeeded',loseResponse=false
+  const fetchBefore=globalThis.fetch
+  globalThis.fetch=(async(url:any,init:any)=>{
+    const path=String(url).replace('https://api.stripe.com/v1/','')
+    if(path.startsWith('refunds?')) return Response.json({data:refunds})
+    if(path==='refunds' && init?.method==='POST') {
+      refundPosts++
+      const params=new URLSearchParams(init.body)
+      assert.equal(params.get('payment_intent'),'pi_auth')
+      assert.equal(params.get('amount'),'245500')
+      assert.equal(init.headers['Idempotency-Key'],'cancellation-refund-order')
+      const refund={id:'re_cancellation',status:replyStatus,amount:245500,currency:'aud',payment_intent:'pi_auth',metadata:{order_id:'order',type:'cancellation'}}
+      refunds.push(refund)
+      if(loseResponse) {loseResponse=false;throw new Error('Refund response lost')}
+      return Response.json(refund)
+    }
+    return fetchBefore(url,init)
+  }) as typeof fetch
+  return {...fixture,refunds,refundPosts:()=>refundPosts,setReply:(status:string)=>{replyStatus=status},loseNextResponse:()=>{loseResponse=true}}
+}
+
+for(const path of ['/staff/orders/order/cancel','/admin/orders/order/update','/admin/orders/bulk-update','/admin/orders/order/cancel-and-refund']) {
+  test(`cancelling through ${path} refunds the captured AUD 2455 to Stripe`,async t=>{
+    const {sqlite,context,refundPosts}=await cancellationFixture(t)
+    const form: Record<string,string> =path.endsWith('bulk-update')?{status:'cancelled',reason:'客户取消',orderIds:'order'}:{status:'cancelled',reason:'客户取消'}
+    const response=await requestAsAdmin(context,path,form)
+    assert.ok(response.status===302||response.status===303,await response.text())
+    assert.equal(refundPosts(),1)
+    assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status,'cancelled')
+    assert.equal(sqlite.prepare('SELECT status FROM payments').get()?.status,'refunded')
+    const refund=sqlite.prepare("SELECT refund_amount,refund_method,stripe_refund_id FROM payment_refunds WHERE type='cancellation'").get()!
+    assert.equal(refund.refund_amount,2455);assert.equal(refund.refund_method,'stripe');assert.equal(refund.stripe_refund_id,'re_cancellation')
+    assert.equal(sqlite.prepare("SELECT balance FROM users WHERE id='customer'").get()?.balance,12)
+  })
+}
+
+test('a pending Stripe refund does not cancel the order or report a completed refund',async t=>{
+  const {sqlite,context,refundPosts,setReply}=await cancellationFixture(t)
+  setReply('pending')
+  assert.equal((await requestAsAdmin(context,'/staff/orders/order/cancel',{reason:'客户取消'})).status,502)
+  assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status,'paid')
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM payment_refunds').get()?.n,0)
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM notifications WHERE type='refund_completed'").get()?.n,0)
+  assert.equal(refundPosts(),1)
+})
+
+test('cancellation refunds a successful Stripe charge even before its payment webhook arrives',async t=>{
+  const {sqlite,context,refundPosts,intent}=await cancellationFixture(t,'pending_payment','pending')
+  assert.equal((await requestAsAdmin(context,'/staff/orders/order/cancel',{reason:'客户取消'})).status,303)
+  assert.equal(refundPosts(),1)
+  const app=new Hono();app.post('/',c=>handleStripeWebhook(c))
+  const object={...intent,status:'succeeded',amount:245500,amount_received:245500,metadata:{order_id:'order',customer_id:'customer',type:'rental_payment'}}
+  const body=JSON.stringify({id:'evt_late_after_cancellation',type:'payment_intent.succeeded',data:{object}}),timestamp=Math.floor(Date.now()/1000)
+  const signature=createHmac('sha256','whsec_example').update(`${timestamp}.${body}`).digest('hex')
+  assert.equal((await app.request('https://rent.example.test/',{method:'POST',body,headers:{'stripe-signature':`t=${timestamp},v1=${signature}`}},context.env)).status,200)
+  assert.equal(sqlite.prepare('SELECT status FROM payments').get()?.status,'refunded')
+  assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status,'cancelled')
+})
+
+test('an old cancelled order exposes a refund retry and refunds its existing Stripe payment',async t=>{
+  const {sqlite,context,refundPosts}=await cancellationFixture(t,'cancelled')
+  const html=await renderAdminOrderDetail(context,{id:'admin',role:'ADMIN'},'order')
+  assert.match(html,/action="\/admin\/orders\/order\/retry-cancellation-refund"/)
+  assert.equal((await requestAsAdmin(context,'/admin/orders/order/retry-cancellation-refund',{})).status,303)
+  assert.equal(refundPosts(),1)
+  assert.equal(sqlite.prepare('SELECT refund_amount FROM payment_refunds').get()?.refund_amount,2455)
+  assert.equal((await requestAsAdmin(context,'/admin/orders/order/retry-cancellation-refund',{})).status,409)
+  assert.equal(refundPosts(),1)
+})
+
+test('retrying after a lost Stripe refund response recovers that refund without charging Stripe again',async t=>{
+  const {sqlite,context,refundPosts,loseNextResponse}=await cancellationFixture(t)
+  loseNextResponse()
+  assert.equal((await requestAsAdmin(context,'/staff/orders/order/cancel',{reason:'客户取消'})).status,502)
+  assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status,'paid')
+  assert.equal((await requestAsAdmin(context,'/staff/orders/order/cancel',{reason:'客户取消'})).status,303)
+  assert.equal(refundPosts(),1)
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM payment_refunds').get()?.n,1)
+})
+
+test('cancellation releases a manual authorization without creating a cash refund',async t=>{
+  const {sqlite,context,calls}=await setup(t,{status:'paid'})
+  const response=await requestAsAdmin(context,'/staff/orders/order/cancel',{reason:'客户取消'})
+  assert.equal(response.status,303,await response.text())
+  assert.equal(sqlite.prepare('SELECT status FROM orders').get()?.status,'cancelled')
+  assert.equal(sqlite.prepare('SELECT status FROM payments').get()?.status,'failed')
+  assert.equal(calls.filter(call=>call.path.endsWith('/cancel')).length,1)
+  assert.equal(calls.filter(call=>call.path==='refunds').length,0)
 })

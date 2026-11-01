@@ -507,7 +507,7 @@ test('rental length selects preauthorization or SetupIntent deposit handling', (
   assert.equal(depositPaymentModeForRental(7, true, 'amex'), 'PREAUTH')
   assert.equal(depositPaymentModeForRental(8, true, 'amex'), 'SETUP_INTENT')
   assert.equal(depositPaymentModeForRental(29, true, 'visa'), 'PREAUTH')
-  assert.equal(depositPaymentModeForRental(30, true, 'visa'), 'SETUP_INTENT')
+  assert.equal(depositPaymentModeForRental(30, true, 'visa'), 'PAID')
   assert.equal(depositPaymentModeForRental(90, false), 'PAID')
 })
 

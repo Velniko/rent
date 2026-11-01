@@ -29,7 +29,7 @@ export async function renderPublicRentalLink(c: Context) {
       ${unknownDates ? '<p class="alert">设备当前有一笔尚未确定归还日期的租赁，暂时无法在线预订，请联系工作人员。</p>' : ''}
       <form method="POST" action="/rent/${esc(link.token)}"><fieldset ${unknownDates ? 'disabled' : ''} style="border:0;padding:0;margin:0">${datePicker}<button class="button button-primary" type="submit" disabled>继续填写资料并签署合同</button></fieldset></form></section>
       <aside class="panel"><h3>租赁信息</h3><dl class="data-list"><div><dt>日租金</dt><dd>${formatCurrency(device.pricePerDay)}</dd></div><div><dt>押金</dt><dd>${formatCurrency(device.depositAmount)}</dd></div><div><dt>取货地点</dt><dd>${esc(link.pickup_location)}</dd></div><div><dt>归还地点</dt><dd>${esc(link.return_location)}</dd></div></dl>
-        ${Number(device.weeklyDiscountPercent) ? `<p class="section-note">满 7 天部分租金优惠 ${Number(device.weeklyDiscountPercent)}%。</p>` : ''}${Number(device.monthlyDiscountPercent) ? `<p class="section-note">满 30 天部分租金优惠 ${Number(device.monthlyDiscountPercent)}%。</p>` : ''}
+        ${Number(device.weeklyDiscountPercent) ? `<p class="section-note">周租优惠 ${Number(device.weeklyDiscountPercent)}%。</p>` : ''}${Number(device.monthlyDiscountPercent) ? `<p class="section-note">月租优惠 ${Number(device.monthlyDiscountPercent)}%。</p>` : ''}
       </aside></div></div>`
   return c.html(buildLayout(`${link.title} - 自助租赁`, body))
 }
