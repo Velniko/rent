@@ -22,7 +22,7 @@ export function rentalPricingSnapshot(device: RentalPricingDeviceLike): string {
 
 // 每期租金使用下单时的月租/周租价格；优惠按各期租金占比分摊，尾期吸收分币误差。
 export function buildMonthlyRentalInstallments(order: any, device: RentalPricingDeviceLike, feeRate: number): RentalInstallment[] {
-  const days = Math.floor(Number(order.rentalPeriod))
+  const days = Number(order.rentalPeriod)
   const start = Date.parse(`${order.startDate}T00:00:00Z`)
   if (!Number.isFinite(days) || days < LONG_TERM_RENTAL_DAYS || days > 366 || !Number.isFinite(start)) throw new Error('月付租期无效')
   const pricing = order.rental_pricing_json ? JSON.parse(order.rental_pricing_json) : device
@@ -31,7 +31,10 @@ export function buildMonthlyRentalInstallments(order: any, device: RentalPricing
   const extras = toCents(order.serviceFee ?? order.service_fee) + toCents(order.deliveryFee ?? order.delivery_fee)
   const netRental = toCents(order.totalAmount) - deposit - extras
   if (![deposit, extras, netRental].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error('订单金额无效')
-  const weights = Array.from({ length: Math.ceil(days / 30) }, (_, index) => toCents(calculateRentalFee(pricing, Math.min(30, days - index * 30))))
+  const monthlyRent = calculateRentalFee(pricing, 30)
+  const grossRental = toCents(calculateRentalFee(pricing, days))
+  const fullMonths = Math.floor(days / 30)
+  const weights = Array.from({ length: Math.ceil(days / 30) }, (_, index) => index < fullMonths ? toCents(monthlyRent) : Math.max(0, grossRental - fullMonths * toCents(monthlyRent)))
   const weightTotal = weights.reduce((sum, amount) => sum + amount, 0)
   let allocated = 0
   const date = (offset: number) => new Date(start + offset * 86400000).toISOString().slice(0, 10)

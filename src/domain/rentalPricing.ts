@@ -48,27 +48,29 @@ function roundCurrency(value: number): number {
 }
 
 /**
- * 30 天为一个月、7 天为一周。余数达到该周期的 80% 时收整期价格，
- * 否则继续按下一档拆分（24 天收月租、6 天收周租）。
+ * 未满 30 天按整周和日租计；满 30 天后，零头不足 21 天按周租日价，
+ * 满 21 天按月租日价折算，不把零头进位为整期。
  */
 export function rentalPriceBreakdown(device: RentalPricingDeviceLike, rentalDays: number) {
-  const days = Math.max(0, Math.floor(Number(rentalDays) || 0))
+  const days = Math.max(0, Number(rentalDays) || 0)
   const dailyRate = Math.max(0, numericValue(device.pricePerDay, device.price_per_day, device.dailyRate))
   const weeklyDiscount = Math.min(100, Math.max(0, numericValue(device.weeklyDiscountPercent, device.weekly_discount_percent)))
   const monthlyDiscount = Math.min(100, Math.max(0, numericValue(device.monthlyDiscountPercent, device.monthly_discount_percent)))
-  const monthlyDays = (Math.floor(days / 30) + (days % 30 >= 24 ? 1 : 0)) * 30
-  const remainingAfterMonthly = Math.max(0, days - monthlyDays)
-  const weeklyDays = (Math.floor(remainingAfterMonthly / 7) + (remainingAfterMonthly % 7 >= 6 ? 1 : 0)) * 7
-  const dailyDays = Math.max(0, remainingAfterMonthly - weeklyDays)
-  const monthlyFee = monthlyDays / 30 * roundCurrency(30 * dailyRate * (1 - monthlyDiscount / 100))
-  const weeklyFee = weeklyDays / 7 * roundCurrency(7 * dailyRate * (1 - weeklyDiscount / 100))
-  const dailyFee = dailyDays * dailyRate
+  const remainder = days % 30
+  const monthlyDays = days >= 30 ? Math.floor(days / 30) * 30 + (remainder >= 21 ? remainder : 0) : 0
+  const remainingDays = days - monthlyDays
+  const weeklyDays = days >= 30 ? remainingDays : Math.floor(remainingDays / 7) * 7
+  const dailyDays = remainingDays - weeklyDays
+  const monthlyFee = roundCurrency(monthlyDays / 30 * roundCurrency(30 * dailyRate * (1 - monthlyDiscount / 100)))
+  const weeklyFee = roundCurrency(weeklyDays / 7 * roundCurrency(7 * dailyRate * (1 - weeklyDiscount / 100)))
+  const originalAmount = roundCurrency(days * dailyRate)
+  const monthlyDiscountAmount = roundCurrency(monthlyDays * dailyRate - monthlyFee)
+  const weeklyDiscountAmount = roundCurrency(weeklyDays * dailyRate - weeklyFee)
   return {
-    monthlyCount: monthlyDays / 30, weeklyCount: weeklyDays / 7, dailyDays,
-    originalAmount: roundCurrency((monthlyDays + weeklyDays + dailyDays) * dailyRate),
-    monthlyDiscountAmount: roundCurrency(monthlyDays * dailyRate - monthlyFee),
-    weeklyDiscountAmount: roundCurrency(weeklyDays * dailyRate - weeklyFee),
-    total: roundCurrency(monthlyFee + weeklyFee + dailyFee),
+    monthlyCount: Math.floor(monthlyDays / 30), monthlyRemainderDays: monthlyDays % 30,
+    weeklyCount: Math.floor(weeklyDays / 7), weeklyRemainderDays: weeklyDays % 7, dailyDays,
+    originalAmount, monthlyDiscountAmount, weeklyDiscountAmount,
+    total: roundCurrency(originalAmount - monthlyDiscountAmount - weeklyDiscountAmount),
   }
 }
 

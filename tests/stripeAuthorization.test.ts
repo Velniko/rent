@@ -895,12 +895,12 @@ test('a completed Checkout authorization is recovered without starting another s
 test('115-day monthly checkout charges one month plus deposit, preserves pricing and settles each month once', async t => {
   const { sqlite, context, calls, sessions } = await setup(t, { status: 'pending_payment' })
   const pricing = { pricePerDay: 20, weeklyDiscountPercent: 10, monthlyDiscountPercent: 20 }
-  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE users SET stripe_customer_id='cus_test' WHERE id='customer'; UPDATE orders SET startDate='2026-01-01', endDate='2026-04-26', rentalPeriod=115, totalAmount=2120, deposit_status='PENDING', stripe_deposit_payment_intent_id=NULL WHERE id='order'")
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE users SET stripe_customer_id='cus_test' WHERE id='customer'; UPDATE orders SET startDate='2026-01-01', endDate='2026-04-26', rentalPeriod=115, totalAmount=2040, deposit_status='PENDING', stripe_deposit_payment_intent_id=NULL WHERE id='order'")
   sqlite.prepare('UPDATE orders SET rental_pricing_json=? WHERE id=?').run(rentalPricingSnapshot(pricing), 'order')
   const customer = { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test', stripe_customer_id: 'cus_test' }
   const checkout = await createOrderPaymentIntent(context, customer, 'order')
   assert.equal(checkout.amountCents, 69700)
-  assert.deepEqual(sqlite.prepare('SELECT rental_amount FROM rental_installments ORDER BY installment_number').all().map(row => row.rental_amount), [480,480,480,480])
+  assert.deepEqual(sqlite.prepare('SELECT rental_amount FROM rental_installments ORDER BY installment_number').all().map(row => row.rental_amount), [480,480,480,400])
   assert.equal(sqlite.prepare("SELECT billing_mode FROM orders WHERE id='order'").get()?.billing_mode, 'MONTHLY')
   sqlite.exec("UPDATE devices SET pricePerDay=999 WHERE id='device'")
   await createOrderPaymentIntent(context, customer, 'order')
@@ -929,7 +929,7 @@ test('115-day monthly checkout charges one month plus deposit, preserves pricing
     if(path==='payment_intents' && init?.method==='POST') {
       const id=`pi_month_${++creations}`, metadata=Object.fromEntries([...params].filter(([key])=>key.startsWith('metadata[')).map(([key,value])=>[key.slice(9,-1),value]))
       const value={id,status:'requires_confirmation',amount:Number(params.get('amount')),amount_received:0,currency:'aud',customer:params.get('customer'),payment_method:params.get('payment_method'),metadata,client_secret:id+'_secret'}
-      assert.equal(value.amount,49200)
+      assert.equal(value.amount,creations === 3 ? 41000 : 49200)
       monthlyIntents.set(id,value)
       return Response.json(value)
     }
@@ -948,31 +948,32 @@ test('115-day monthly checkout charges one month plus deposit, preserves pricing
   assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='order'").get()?.status,'active')
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM payments WHERE status='paid'").get()?.n,4)
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM financial_ledger_entries WHERE source_type='RENTAL_INSTALLMENT'").get()?.n,4)
-  assert.equal(sqlite.prepare('SELECT SUM(amount) AS amount FROM payments').get()?.amount,2173)
-  assert.equal(sqlite.prepare('SELECT total_paid FROM receipts').get()?.total_paid,2173)
+  assert.equal(sqlite.prepare('SELECT SUM(amount) AS amount FROM payments').get()?.amount,2091)
+  assert.equal(sqlite.prepare('SELECT total_paid FROM receipts').get()?.total_paid,2091)
   const order=await getOrderById(context,'order')
   const discount=renderRentalDiscounts(order,pricing)
-  assert.match(discount,/月租优惠/);assert.match(discount,/−AUD\$480\.00/)
+  assert.match(discount,/月租优惠/);assert.match(discount,/−AUD\$460\.00/)
   const customerHtml=await renderCustomerOrderDetail(context,customer,'order')
   assert.match(customerHtml,/月租付款计划/);assert.doesNotMatch(customerHtml,/订单价格已增加/)
   for(const script of extractInlineScripts(customerHtml)) assert.doesNotThrow(()=>new Function(script))
 })
 
-test('monthly pricing splits 110 days into three monthly payments and a three-week last payment', () => {
+test('110-day installments charge three months then two weeks plus six prorated days', () => {
   const pricing={pricePerDay:100,weeklyDiscountPercent:10,monthlyDiscountPercent:20}
-  const order={id:'o-monthly',startDate:'2026-01-01',endDate:'2026-04-21',rentalPeriod:110,totalAmount:9290,depositAmount:200,deposit_method:'card_hold'}
+  const order={id:'o-monthly',startDate:'2026-01-01',endDate:'2026-04-21',rentalPeriod:110,totalAmount:9200,depositAmount:200,deposit_method:'card_hold'}
   const plan=buildMonthlyRentalInstallments(order,pricing,0.025)
-  assert.deepEqual(plan.map(row=>row.rental_amount),[2400,2400,2400,1890])
+  assert.deepEqual(plan.map(row=>row.rental_amount),[2400,2400,2400,1800])
   assert.deepEqual(plan.map(row=>row.deposit_amount),[200,0,0,0])
-  const coupon=buildMonthlyRentalInstallments({...order,totalAmount:9190},pricing,0.025)
-  assert.equal(Math.round(coupon.reduce((sum,row)=>sum+row.rental_amount,0)*100),899000)
+  assert.deepEqual(plan.map(row=>row.due_date),['2026-01-01','2026-01-31','2026-03-02','2026-04-01'])
+  const coupon=buildMonthlyRentalInstallments({...order,totalAmount:9100},pricing,0.025)
+  assert.equal(Math.round(coupon.reduce((sum,row)=>sum+row.rental_amount,0)*100),890000)
 })
 
 
 async function monthlyFixture(t: any) {
   const fixture=await setup(t,{status:'pending_payment'})
   const {sqlite,context}=fixture
-  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET startDate='2026-01-01',endDate='2026-04-26',rentalPeriod=115,totalAmount=2120,deposit_status='PENDING',stripe_deposit_payment_intent_id=NULL WHERE id='order'; UPDATE devices SET monthly_discount_override=20, monthly_discount_percent=20 WHERE id='device'")
+  sqlite.exec("DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET startDate='2026-01-01',endDate='2026-04-26',rentalPeriod=115,totalAmount=2040,deposit_status='PENDING',stripe_deposit_payment_intent_id=NULL WHERE id='order'; UPDATE devices SET monthly_discount_override=20, monthly_discount_percent=20 WHERE id='device'")
   const customer={id:'customer',role:'CUSTOMER',email:'customer@example.test'}
   await createOrderPaymentIntent(context,customer,'order')
   sqlite.exec("UPDATE orders SET status='active',stripe_payment_method_id='pm_saved'; UPDATE rental_installments SET status='paid' WHERE installment_number=1; UPDATE payments SET status='paid',stripe_payment_intent_id='pi_first',paid_at=CURRENT_TIMESTAMP")
