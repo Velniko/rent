@@ -206,7 +206,7 @@ import { recordBalanceTransaction, recordFinancialLedgerEntry } from './services
 import {
   ensureNotificationsTable, createNotification, getNotifications,
   deleteRentalApplicationNotifications, cleanupCompletedRentalApplicationNotifications, cleanupCompletedPaymentReviewNotifications,
-  createDueDateNotifications, enqueueAgreementUpdate, deliverPendingAgreementNotifications,
+  createDueDateNotifications, sendScheduledPickupReminders, enqueueAgreementUpdate, deliverPendingAgreementNotifications,
   deliverPendingAgreementEmails, deliverPendingAgreementUpdates, notifyOverduePaymentProofs,
   notifyOverdueBankTransferRefunds,
 } from './services/notifications'
@@ -227,7 +227,7 @@ export {
   recordBalanceTransaction, recordFinancialLedgerEntry,
   ensureNotificationsTable, createNotification, getNotifications,
   deleteRentalApplicationNotifications, cleanupCompletedRentalApplicationNotifications, cleanupCompletedPaymentReviewNotifications,
-  createDueDateNotifications, enqueueAgreementUpdate, deliverPendingAgreementNotifications,
+  createDueDateNotifications, sendScheduledPickupReminders, enqueueAgreementUpdate, deliverPendingAgreementNotifications,
   deliverPendingAgreementEmails, deliverPendingAgreementUpdates, notifyOverduePaymentProofs,
   notifyOverdueBankTransferRefunds,
   ensureReferralProgram, lockReferralRelationship, syncReferralOrderState,
@@ -683,8 +683,8 @@ export async function updateOrderStatus(c: Context, orderId: string, status: str
     // settlement_status，读取本次调用之后的最终 deposit_status（上面 HELD 分支
     // 可能刚改过）。updateOrderStatus 是所有普通状态流转的统一入口，在这里做
     // 是唯一能覆盖到强制完成 / 自动流转等所有路径的地方。
-    const depositState = await db.prepare('SELECT deposit_status FROM orders WHERE id = ?').bind(orderId).first() as any
-    await db.prepare('UPDATE orders SET settlement_status = ? WHERE id = ?').bind(computeOrderSettlementStatus({ status: 'completed', deposit_status: depositState?.deposit_status }), orderId).run()
+    const depositState = await db.prepare('SELECT deposit_status, overdue_outstanding_amount FROM orders WHERE id = ?').bind(orderId).first() as any
+    await db.prepare('UPDATE orders SET settlement_status = ? WHERE id = ?').bind(computeOrderSettlementStatus({ status: 'completed', deposit_status: depositState?.deposit_status, overdue_outstanding_amount: depositState?.overdue_outstanding_amount }), orderId).run()
   }
   if (previous && previous.rental_status !== next.rental) {
     const reason = options?.reason?.trim()
@@ -1705,7 +1705,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
     '/customer/profile': '◎', '/customer/security': '⚿', '/customer/referral': '✦', '/customer/devices': 'laptop', '/customer/balance': '◌', '/customer/guest': '▰', '/customer/guest/upgrade': '↥',
     '/staff/dashboard': 'rental-console', '/staff/orders': '◓', '/staff/orders/ongoing': '◷', '/staff/customers': '♧', '/staff/contracts': 'rental-contract',
     '/staff/contracts/new': 'file-plus', '/staff/contracts?status=pending_sign': '✍', '/staff/inspections': 'device-inspection', '/staff/mobile/scan': 'scan', '/staff/rentals/tracking': '⌖', '/staff/devices': 'asset-register', '/manager/staff': 'people',
-    '/staff/mobile': 'today', '/staff/mobile?stage=pickup': 'pickup', '/staff/mobile?stage=return': 'return',
+    '/staff/mobile': 'today', '/staff/mobile/pickup': 'pickup', '/staff/mobile/return': 'return',
     '/admin/notifications/settings': 'bell-settings', '/admin/rental-links': 'link', '/admin/delivery': 'truck',
     '/admin/marketing-emails/data': 'marketing-chart', '/admin/api-settings': 'code',
     '/notifications': 'N', '/admin/notifications': 'inbox', '/admin/dashboard': 'rental-console', '/admin/users': 'people', '/admin/orders': '▥',
@@ -1805,9 +1805,9 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
   // 第三个元素是该 tab 视为「当前页」的路径前缀，用于输出 aria-current 与 active 高亮。
   const mobileLinks: Array<[string, string, string, string[]]> = currentUser?.role === 'ADMIN' || currentUser?.role === 'STAFF'
     ? [
-        ['/staff/mobile', '今日订单', '◉', ['/staff/mobile', '/staff/mobile/today']],
-        ['/staff/mobile?stage=pickup', '取货', '◷', []],
-        ['/staff/mobile?stage=return', '归还', '↺', []],
+        ['/staff/mobile', '今日订单', '◉', ['/staff/mobile/today']],
+        ['/staff/mobile/pickup', '取货', '◷', ['/staff/mobile/pickup']],
+        ['/staff/mobile/return', '归还', '↺', ['/staff/mobile/return']],
         ['/staff/mobile/scan', '扫码', '▦', ['/staff/mobile/scan']],
         ['/staff/inspections', '验机', '◈', ['/staff/inspections']],
       ]
@@ -1816,7 +1816,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
         : [['/customer/dashboard', '首页', '◉', ['/customer/dashboard']], ['/notifications', '通知', 'N', ['/notifications']], ['/customer/devices', '可租设备', 'laptop', ['/customer/devices']], ['/customer/rentals', '租赁', '▤', ['/customer/rentals']], ['/customer/orders', '订单', '▦', ['/customer/orders']], ['/customer/balance', '钱包', '$', ['/customer/balance']], ['/customer/profile', '我的', '◎', ['/customer/profile']]]
   const mobileNav = currentUser
     ? mobileLinks.map(([href, text, icon, activePaths]) => {
-        const isCurrent = activePaths.some(path => currentPath === path || currentPath.startsWith(`${path}/`))
+        const isCurrent = (href === '/staff/mobile' && currentPath === href) || activePaths.some(path => currentPath === path || currentPath.startsWith(`${path}/`))
         return `<a href="${href}"${isCurrent ? ' class="active" aria-current="page"' : ''}><span class="nav-icon">${navIconSvg(navIcons[href] || icon)}</span><small>${text}</small></a>`
       }).join('')
     : `<a href="/login"><span class="nav-icon">${navIconSvg('↗')}</span><small>登录</small></a><a href="/register"><span class="nav-icon">${navIconSvg('+')}</span><small>注册</small></a>`

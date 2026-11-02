@@ -4,6 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { buildLayout, formatCurrency, getDB, sanitizePlainText, staffOrderPath } from '../../site'
+import { renderPickupPreparation } from '../partials/pickupPreparation'
 import type { Context } from 'hono'
 
 const ongoingStatuses = new Set(['approved', 'pending_payment', 'paid', 'pending_pickup', 'active', 'extended', 'overdue', 'suspended', 'pending_return'])
@@ -65,7 +66,7 @@ export async function renderStaffOrdersOngoing(c: Context, user: any) {
             : stage === 'return'
               ? `<a class="button button-sm button-info" href="/staff/orders/${order.id}/inspection">归还验机</a>`
               : inspectionAvailable ? `<a class="button button-sm button-info" href="/staff/orders/${order.id}/inspection">归还验机</a>` : ''
-          return `<tr><td class="mono">${esc(order.orderNo || '付款后生成')}</td><td>${esc(customer?.name || '未知客户')}</td><td>${esc(device?.name || '未知设备')}</td><td>${esc(order.startDate)} 至 ${esc(order.endDate)}</td><td>${formatCurrency(order.totalAmount)}</td><td><span class="badge ${inspectionAvailable ? 'badge-primary' : 'badge-warning'}">${statusLabels[order.status] || esc(order.status)}</span></td><td><div class="table-actions"><a class="button button-sm button-secondary" href="${staffOrderPath(order)}">查看订单</a>${action}</div></td></tr>`
+          return `<tr><td class="mono">${esc(order.orderNo || '付款后生成')}</td><td>${esc(customer?.name || '未知客户')}</td><td>${esc(device?.name || '未知设备')}</td><td>${esc(order.startDate)} 至 ${esc(order.endDate)}</td><td>${formatCurrency(order.totalAmount)}</td><td><span class="badge ${inspectionAvailable ? 'badge-primary' : 'badge-warning'}">${statusLabels[order.status] || esc(order.status)}</span></td><td><div class="table-actions"><a class="button button-sm button-secondary" href="${staffOrderPath(order)}">查看订单</a>${action}${renderPickupPreparation(order)}</div></td></tr>`
         }).join('')}
       </tbody></table></div>` : '<div class="empty-state"><span class="empty-state-code mono">NO ACTIVE ORDERS</span><h3>目前没有进行中的订单</h3></div>'}
     </div>`

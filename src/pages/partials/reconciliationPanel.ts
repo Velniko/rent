@@ -94,7 +94,7 @@ export function renderReconciliationPanel(
   const margin = opts.margin ?? '0 0 24px'
 
   const paymentTable = `<div class="table-wrapper"><table><thead><tr><th>付款来源</th><th>方式</th><th>金额</th><th>手续费</th><th>状态</th></tr></thead><tbody>${
-    paymentSources.map((p: any) => `<tr><td class="mono">${esc(p.id)}</td><td>${esc(p.payment_provider === 'square' ? 'Square 礼品卡' : ({ card: '信用卡（Stripe）', bank_transfer: '银行转账', balance: '账户余额', alipay: '支付宝', wechat: '微信' } as Record<string, string>)[p.payment_method] || p.payment_method)}</td><td>${formatCurrency(p.amount)}</td><td>${formatCurrency(p.processing_fee || 0)}</td><td>${esc(reconciliation.authorizedPaymentIds.includes(p.id) ? '已预授权' : ({ pending: '待确认', paid: '已扣款', refunded: '已退款', failed: '已失效' } as Record<string, string>)[p.status] || p.status)}</td></tr>`).join('')
+    paymentSources.map((p: any) => `<tr><td class="mono">${esc(p.id)}</td><td>${esc(p.payment_provider === 'square' ? 'Square 礼品卡' : ({ cash: '现金', card: '信用卡（Stripe）', bank_transfer: '银行转账', balance: '账户余额', alipay: '支付宝', wechat: '微信' } as Record<string, string>)[p.payment_method] || p.payment_method)}</td><td>${formatCurrency(p.amount)}</td><td>${formatCurrency(p.processing_fee || 0)}</td><td>${esc(reconciliation.authorizedPaymentIds.includes(p.id) ? '已预授权' : ({ pending: '待确认', paid: '已扣款', refunded: '已退款', failed: '已失效' } as Record<string, string>)[p.status] || p.status)}</td></tr>`).join('')
       || '<tr><td colspan="5" class="empty-state">无付款记录</td></tr>'
   }</tbody></table></div>`
 

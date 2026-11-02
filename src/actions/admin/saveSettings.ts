@@ -16,6 +16,7 @@ import { enqueueAgreementUpdate } from '../../services/notifications'
 import { normalizeTallyEmbedUrl } from '../../lib/tally'
 import { hasValidPickupTimeSettings, pickupTimeSettings } from '../../domain/pickupTimeSlots'
 import { validateReferralSettings } from '../../domain/referral'
+import { validateHostedImageUrls } from '../../lib/hostedImages'
 
 /** 保存协议更新记录，实际通知由定时任务统一发送。 */
 export async function notifyAgreementUpdate(c: Context, changedAgreements: Array<[string, string]>, _companyDetails?: any, _changedContent = ''): Promise<void> {
@@ -105,6 +106,12 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
       website: String(payload.companyDetails?.website ?? getSystemSettings().companyDetails.website).trim(),
       logo: String(payload.companyDetails?.logo ?? getSystemSettings().companyDetails.logo).trim(),
       loginImage: String(payload.companyDetails?.loginImage ?? getSystemSettings().companyDetails.loginImage).trim(),
+      wechatUrl: String(payload.companyDetails?.wechatUrl ?? getSystemSettings().companyDetails.wechatUrl ?? '').trim().slice(0, 1000),
+      wechatQrUrl: String(payload.companyDetails?.wechatQrUrl ?? getSystemSettings().companyDetails.wechatQrUrl ?? '').trim().slice(0, 1000),
+      xiaohongshuUrl: String(payload.companyDetails?.xiaohongshuUrl ?? getSystemSettings().companyDetails.xiaohongshuUrl ?? '').trim().slice(0, 1000),
+      xiaohongshuQrUrl: String(payload.companyDetails?.xiaohongshuQrUrl ?? getSystemSettings().companyDetails.xiaohongshuQrUrl ?? '').trim().slice(0, 1000),
+      douyinUrl: String(payload.companyDetails?.douyinUrl ?? getSystemSettings().companyDetails.douyinUrl ?? '').trim().slice(0, 1000),
+      douyinQrUrl: String(payload.companyDetails?.douyinQrUrl ?? getSystemSettings().companyDetails.douyinQrUrl ?? '').trim().slice(0, 1000),
       pickupLocations: Array.isArray(payload.companyDetails?.pickupLocations)
         ? payload.companyDetails.pickupLocations.map((value: unknown) => String(value).trim()).filter(Boolean).slice(0, 20)
         : getSystemSettings().companyDetails.pickupLocations,
@@ -159,6 +166,12 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
   }
   if (next.feedbackRewards.rewardType === 'BALANCE' && next.feedbackRewards.enabled && (next.feedbackRewards.balanceAmountMin <= 0 || next.feedbackRewards.balanceAmountMax < next.feedbackRewards.balanceAmountMin)) throw new Error('反馈奖励余额范围无效')
   if (next.feedbackRewards.rewardType === 'COUPON' && next.feedbackRewards.enabled && (next.feedbackRewards.couponDiscountValueMin <= 0 || next.feedbackRewards.couponDiscountValueMax < next.feedbackRewards.couponDiscountValueMin || (next.feedbackRewards.couponDiscountType === 'percent' && next.feedbackRewards.couponDiscountValueMax > 100))) throw new Error('反馈奖励优惠值范围无效')
+
+  for (const key of ['wechatUrl', 'wechatQrUrl', 'xiaohongshuUrl', 'xiaohongshuQrUrl', 'douyinUrl', 'douyinQrUrl'] as const) {
+    const value = next.companyDetails[key]
+    if (!value) continue
+    try { validateHostedImageUrls(value, 1) } catch { throw new Error('社交平台链接和二维码必须使用公开的 HTTPS 地址') }
+  }
 
   for (const [name, value] of Object.entries(next.rmbPayment)) {
     if (value && (!/^https:\/\//i.test(String(value)) || String(value).includes('"'))) throw new Error(`${name} 必须是 HTTPS 图片地址`)

@@ -14,6 +14,8 @@ import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl } from '../../serv
 import { deliveryStatusInfo } from '../../deliveryStatus'
 import { renderAdminManualOrder } from './manualOrder'
 
+import { renderPickupPreparation } from '../partials/pickupPreparation'
+
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character))
 }
@@ -48,7 +50,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   ]);
   const canModifyOrder = !['completed', 'cancelled'].includes(String(order.status));
   const paymentMethodLabels: Record<string, string> = {
-    card: '信用卡（Stripe）', stripe: '信用卡（Stripe）', bank_transfer: '银行转账',
+    card: '信用卡（Stripe）', stripe: '信用卡（Stripe）', cash: '现金', bank_transfer: '银行转账',
     alipay: '支付宝', wechat: '微信', balance: '账户余额',
   };
   const paymentMethod = String(order.paymentMethod || (order as any).payment_method || 'card');
@@ -138,6 +140,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
       </div>
     </div>
 
+    ${renderPickupPreparation(order, contract, c.req?.query?.('pickupReady'))}
     <div class="order-detail-actions">
       ${['paid', 'active', 'completed', 'pending_return'].includes(String(order.status)) ? `<a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>` : ''}
       ${['paid', 'pending_pickup'].includes(String(order.status)) ? `<a class="button button-primary" href="/staff/orders/${order.id}/handover">记录交付并开始租赁</a>` : ''}

@@ -9,6 +9,7 @@ import { renderReconciliationPanel } from '../partials/reconciliationPanel'
 import type { Context } from 'hono'
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl } from '../../services/deliveryViews'
 import { deliveryStatusInfo } from '../../deliveryStatus'
+import { renderPickupPreparation } from '../partials/pickupPreparation'
 import { renderOrderStatusBadge } from '../partials/orderStatusBadge'
 
 const esc = (value: unknown) => String(value ?? '—').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -69,6 +70,7 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
         </div>
         <div class="order-info-card order-actions-card">
           <h3>操作</h3>
+          ${renderPickupPreparation(order, contract, c.req?.query?.('pickupReady'))}
           ${['STAFF', 'ADMIN'].includes(user.role) && order.status === 'pending_approval' ? `
             <form method="POST" action="/staff/orders/${order.id}/approve" class="order-approval-form" style="margin-bottom: 10px;" data-site-confirm="批准后订单将进入待付款/待取货流程，并通知客户。" data-confirm-title="批准订单？" data-confirm-label="批准订单">
               <label class="form-label" for="order-delivery-method">交付方式</label>

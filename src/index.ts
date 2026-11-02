@@ -175,6 +175,7 @@ import {
 } from './lib/security'
 import { escapeHtml } from './lib/html'
 import { createTallyFeedbackToken } from './lib/tally'
+import { renderPickupPreparation } from './pages/partials/pickupPreparation'
 import { parsePickupQrPayload } from './lib/pickupQr'
 import { pickupTimeSlotEndMinutes } from './domain/pickupTimeSlots'
 import { readManualInspectionFields, renderManualInspectionFields, inspectionText } from './lib/inspection'
@@ -844,7 +845,9 @@ app.use('*', async (c, next) => {
     : c.req.path === '/contract/sign/payment-plan' || /^\/customer\/orders\/[^/]+\/payment-plan$/.test(c.req.path) ? ['rental-payment-plan', 15, 600] as const
     : /^\/customer\/orders\/[^/]+\/(?:installments\/[^/]+\/)?stripe\/(?:checkout|intent)$/.test(c.req.path) ? ['stripe-checkout', 10, 600] as const
     : /^\/customer\/orders\/[^/]+\/bank-transfer-proof$/.test(c.req.path) ? ['bank-proof', 10, 3600] as const
+    : c.req.method === 'POST' && /^\/staff\/orders\/[^/]+\/prepare-pickup$/.test(c.req.path) ? ['pickup-preparation', 15, 600] as const
     : /^\/staff\/orders\/[^/]+\/inspection$/.test(c.req.path) ? ['inspection-upload', 10, 3600] as const
+    : c.req.method === 'POST' && (/^\/staff\/orders\/[^/]+\/return-collection$/.test(c.req.path) || /^\/staff\/return-collections\//.test(c.req.path)) ? ['return-collection', 20, 600] as const
     : c.req.method === 'POST' && (/^\/staff\/orders\/[^/]+\/cancel$/.test(c.req.path) || /^\/admin\/orders\/[^/]+\/(?:cancel-and-refund|retry-cancellation-refund)$/.test(c.req.path)) ? ['cancellation-refund', 10, 600] as const
     : c.req.method === 'POST' && (/^\/customer\/orders\/[^/]+\/refund-request$/.test(c.req.path) || /^\/admin\/refund-requests\//.test(c.req.path) || /^\/admin\/refunds\/[^/]+\/complete-customer-refund$/.test(c.req.path)) ? ['customer-refund', 10, 600] as const
     : c.req.path === '/admin/settings/upload-image' ? ['admin-settings-image', 10, 3600] as const
@@ -2617,8 +2620,18 @@ app.get('/staff/dashboard', async (c) => {
 app.get('/staff/mobile', async (c) => {
   const user = c.get('user')
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
+  const stage = c.req.query('stage')
+  if (['pickup', 'return'].includes(stage)) return c.redirect(`/staff/mobile/${stage}`, 302)
   return c.html(await pages.renderStaffMobileHome(c, user))
 })
+
+for (const stage of ['pickup', 'return'] as const) {
+  app.get(`/staff/mobile/${stage}`, async (c) => {
+    const user = c.get('user')
+    if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
+    return c.html(await pages.renderStaffMobileOperations(c, user, stage))
+  })
+}
 
 // 今日任务列表（原 /staff/mobile 的内容）：工作台首屏的「今日任务」入口指向这里。
 app.get('/staff/mobile/today', async (c) => {
@@ -2630,17 +2643,26 @@ app.get('/staff/mobile/today', async (c) => {
 app.get('/staff/mobile/scan', async (c) => {
   const user = c.get('user')
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
+  const stage = ['pickup', 'return'].includes(String(c.req.query('stage') || '')) ? c.req.query('stage') : ''
   const code = String(c.req.query('code') || '').trim().slice(0, 300)
   if (code) {
     const payloadOrderId = parsePickupQrPayload(code)
-    const row = payloadOrderId
+    let row = payloadOrderId
       ? await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE id = ?').bind(payloadOrderId).first()
-      : await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE id = ? OR UPPER(orderNo) = UPPER(?) LIMIT 1').bind(code, code).first()
+      : await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE deleted_at IS NULL AND (id = ? OR UPPER(orderNo) = UPPER(?)) LIMIT 1').bind(code, code).first()
+    if (!row && !payloadOrderId && /^[A-Za-z0-9]{6}$/.test(code)) {
+      const matches = ((await c.env.RENT.prepare(`SELECT o.id, o.orderNo, o.status, o.userId
+        FROM orders o JOIN users u ON u.id = o.userId
+        WHERE o.deleted_at IS NULL AND UPPER(SUBSTR(o.orderNo, -6)) = ?${user.role === 'ADMIN' ? '' : ' AND u.staff_id = ?'}
+        ORDER BY o.id LIMIT 2`).bind(code.toUpperCase(), ...(user.role === 'ADMIN' ? [] : [user.id])).all()).results || []) as any[]
+      if (matches.length > 1) return c.html(pages.renderStaffMobileScan(c, user, '匹配到多个订单，请输入完整订单号'), 409)
+      row = matches[0] || null
+    }
     const order = row ? await getOrderById(c, String(row.id)) : null
     const customer = order ? await getUserById(c, order.userId) : null
     const signedPickup = order?.status === 'approved' && await getContractByOrderId(c, order.id).then(contract => contract?.status === 'signed')
-    const pickupReady = order && (['paid', 'pending_pickup'].includes(String(order.status)) || signedPickup)
-    const returnReady = order && ['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status))
+    const pickupReady = stage !== 'return' && order && (['paid', 'pending_pickup'].includes(String(order.status)) || signedPickup)
+    const returnReady = stage !== 'pickup' && order && (['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) || (order.status === 'completed' && Number(order.overdue_outstanding_amount || 0) > 0))
     if ((pickupReady || returnReady) && (user.role === 'ADMIN' || customer?.staffId === user.id)) {
       return c.redirect(`/staff/orders/${encodeURIComponent(order.id)}/${pickupReady ? 'handover' : 'inspection'}`)
     }
@@ -2777,6 +2799,12 @@ app.post('/staff/orders/:orderId/suspend', async (c) => {
   return c.redirect(staffOrderPath(order))
 })
 
+app.post('/staff/orders/:orderId/prepare-pickup', async (c) => {
+  const user = c.get('user')
+  if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
+  return actions.prepareOrderPickup(c, user, c.req.param('orderId'))
+})
+
 // 员工操作 - 已付款订单完成取货后进入租赁中
 app.get('/staff/orders/:orderId/handover', async (c) => {
   const user = c.get('user') as any
@@ -2791,7 +2819,7 @@ app.get('/staff/orders/:orderId/handover', async (c) => {
   let beforeSnapshot: Record<string, any> = {}
   try { beforeSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
   const inspectionFields = renderManualInspectionFields(beforeSnapshot)
-  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>扫码或打开订单后，先填写出租前验机报告，再完成取货交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div><form class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}<div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
+  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>扫码或打开订单后，先填写出租前验机报告，再完成取货交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}<div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
   return c.html(buildLayout('出租前验机与交付 - 电脑租赁管理系统', body, user, { compactStaffNav: true }))
 })
 
@@ -2966,10 +2994,41 @@ app.post('/staff/orders/:orderId/complete', async (c) => {
   return c.text('请通过归还验机流程完成订单', 409)
 })
 
+app.post('/staff/orders/:orderId/return-collection', async (c) => {
+  const user = c.get('user')
+  if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
+  try {
+    const { startReturnCollection } = await import('./services/returnCollections')
+    const id = await startReturnCollection(c, user, c.req.param('orderId'), await c.req.parseBody())
+    return c.redirect(`/staff/return-collections/${encodeURIComponent(id)}`, 303)
+  } catch (error: any) { return c.text(error.message || '收款失败', error.message === '无权操作' ? 403 : 409) }
+})
+
+app.get('/staff/return-collections/:id', async (c) => {
+  const user = c.get('user')
+  if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
+  try { return c.html(await pages.renderReturnCollection(c, user, c.req.param('id'))) }
+  catch (error: any) { return c.text(error.message || '收款记录不存在', error.message === '无权操作' ? 403 : 404) }
+})
+
+for (const action of ['verify-stripe', 'cancel']) app.post(`/staff/return-collections/:id/${action}`, async (c) => {
+  const user = c.get('user')
+  if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
+  try {
+    const { verifyReturnStripeReceipt, cancelReturnCollection } = await import('./services/returnCollections')
+    const form = await c.req.parseBody()
+    if (action === 'verify-stripe') await verifyReturnStripeReceipt(c, user, c.req.param('id'), form.receiptId)
+    else await cancelReturnCollection(c, user, c.req.param('id'), form.confirmUnpaid === '1')
+    return c.redirect(`/staff/return-collections/${encodeURIComponent(c.req.param('id'))}`, 303)
+  } catch (error: any) { return c.text(error.message || '收款处理失败', error.message === '无权操作' ? 403 : 409) }
+})
+
 app.get('/staff/orders/:orderId/inspection', async (c) => {
   const user = c.get('user')
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
   const order = await getOrderById(c, c.req.param('orderId'))
+  const customer = order ? await getUserById(c, order.userId) : null
+  if (order && user.role === 'STAFF' && customer?.staffId !== user.id) return c.html(renderForbidden(), 403)
   const inspectionStatuses = ['active', 'extended', 'overdue', 'suspended', 'pending_return']
   if (order && inspectionStatuses.includes(String(order.status))) {
     await c.env.RENT.prepare('UPDATE devices SET inspection_requested_at = CURRENT_TIMESTAMP WHERE id = ?').bind(order.deviceId).run()
@@ -2981,8 +3040,10 @@ app.get('/staff/orders/:orderId/inspection', async (c) => {
 app.post('/staff/orders/:orderId/inspection', async (c) => {
   const user = c.get('user')
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
-  const order = await getOrderById(c, c.req.param('orderId'))
+  let order = await getOrderById(c, c.req.param('orderId'))
   if (!order || !['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status))) return c.text('当前订单不能验机', 409)
+  const returnCustomer = await getUserById(c, order.userId)
+  if (user.role === 'STAFF' && returnCustomer?.staffId !== user.id) return c.html(renderForbidden(), 403)
   const form = await c.req.parseBody()
   const allowedCheck = new Set(['正常', '异常', '未测试'])
   const checks: Record<string, string> = {}
@@ -3004,6 +3065,8 @@ app.post('/staff/orders/:orderId/inspection', async (c) => {
   let damagePhotos = ''
   try { damagePhotos = (await resolveImageUrls(form.damagePhotoFiles, form.damagePhotos, c, 'rent/damage-photos', 5)).join('\n') } catch (error: any) { return c.text(error.message, 400) }
   if (damageDescription && !damagePhotos) return c.text('记录损坏时必须提供至少一张损坏照片链接', 400)
+  await chargeOverdueReturns(c, new Date(), order.id)
+  order = (await getOrderById(c, order.id))!
   if (order.deposit_payment_mode === 'PREAUTH') {
     if (!/^\d+(\.\d{1,2})?$/.test(String(form.replacementCost || '0')) || (replacementCost > 0 && !damageDescription)) return c.text('请填写有效的损坏扣款金额和损坏说明', 400)
     if (replacementCost + Number(order.overdue_deposit_applied || 0) > Number(order.depositAmount || 0)) return c.text('扣款金额不能高于押金金额', 400)
@@ -3018,7 +3081,7 @@ app.post('/staff/orders/:orderId/inspection', async (c) => {
   const returnDevice = await getDeviceById(c, order.deviceId)
   // 订单进 completed 的这一刻押金往往还没结清（HELD/PENDING）——settlement_status
   // 要单独反映这个事实，不能让“已完成”看起来什么都办完了。
-  const settlementStatusOnCompletion = computeOrderSettlementStatus({ status: 'completed', deposit_status: order.deposit_status })
+  const settlementStatusOnCompletion = computeOrderSettlementStatus({ status: 'completed', deposit_status: order.deposit_status, overdue_outstanding_amount: order.overdue_outstanding_amount })
   await c.env.RENT.batch([
     c.env.RENT.prepare("UPDATE orders SET status = 'completed', order_status = 'COMPLETED', payment_status = COALESCE(payment_status, 'PAID'), rental_status = 'COMPLETED', return_received_at = COALESCE(return_received_at, CURRENT_TIMESTAMP), return_received_by = COALESCE(return_received_by, ?), settlement_status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").bind(user.id, settlementStatusOnCompletion, order.id),
     c.env.RENT.prepare("INSERT INTO rental_status_history (id, rental_id, old_status, new_status, trigger_type, triggered_by, reason) VALUES (?, ?, ?, 'RETURNED', 'MANUAL', ?, ?), (?, ?, 'RETURNED', 'COMPLETED', 'SYSTEM', ?, ?)").bind(`rsh-${nanoid(16)}`, order.id, order.rental_status || 'RETURN_PENDING', user.id, '工作人员收到设备并开始归还验机', `rsh-${nanoid(16)}`, order.id, user.id, '归还验机完成'),
@@ -4856,7 +4919,7 @@ app.post('/admin/orders/:id/deposit-settlements', async (c) => {
   const settlementId = `dst-${nanoid(12)}`
   await c.env.RENT.batch([
     c.env.RENT.prepare("INSERT INTO deposit_settlements (id, order_id, deposit_amount, refund_amount, deduction_amount, deduction_category, deduction_reason, refund_method, status, requested_by, reviewed_by, reviewed_at, review_note, settlement_number, document_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, CURRENT_TIMESTAMP, '管理员提交，自动审批通过', ?, ?)").bind(settlementId, order.id, depositAmount, isSetupIntentDeposit ? 0 : refundAmount, deductionAmount, deductionAmount ? deductionCategory : null, deductionAmount ? deductionReason : null, refundMethod, user.id, user.id, generateReferenceNumber('DST'), JSON.stringify(snapshot)),
-    c.env.RENT.prepare("UPDATE orders SET deposit_status = 'REFUND_PENDING', settlement_status = ? WHERE id = ?").bind(computeOrderSettlementStatus({ status: order.status, deposit_status: 'REFUND_PENDING' }), order.id),
+    c.env.RENT.prepare("UPDATE orders SET deposit_status = 'REFUND_PENDING', settlement_status = ? WHERE id = ?").bind(computeOrderSettlementStatus({ status: order.status, overdue_outstanding_amount: order.overdue_outstanding_amount, deposit_status: 'REFUND_PENDING' }), order.id),
   ])
   await createAuditLog(c, { actor: user, action: 'DEPOSIT_SETTLEMENT_AUTO_APPROVED', targetType: 'DEPOSIT_SETTLEMENT', targetId: settlementId, after: { ...snapshot, status: 'APPROVED' }, reason: deductionReason || '管理员提交，自动审批通过' })
   return c.redirect(`/admin/orders/${order.id}`, 303)
@@ -6549,6 +6612,15 @@ export default {
 
     // Import and run the cleanup function
     const { cleanupExpiredAndCancelledContracts, cleanupExpiredGuestAccounts, cancelExpiredPendingPaymentOrders, notifyOverduePaymentProofs, runDataConsistencyChecks, releaseQualifiedReferralRewards, runMonitoringSweep, runScheduledJob, deliverPendingAgreementUpdates } = await import('./site')
+
+    if (event.cron === '* * * * *') {
+      ctx.waitUntil(runScheduledJob(c, 'send_pickup_reminders', async () => {
+        await loadSystemSettingsFromDB(c)
+        const { sendScheduledPickupReminders } = await import('./site')
+        return sendScheduledPickupReminders(c)
+      }))
+      return
+    }
 
     if (event.cron === '*/15 * * * *') {
       ctx.waitUntil((async () => {

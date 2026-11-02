@@ -15,12 +15,13 @@ import { buildMonthlyRentalInstallments, isMonthlyRental } from '../../domain/mo
 import { getOrderPriceAdjustmentSummary, getStripeProcessingFeeRate } from '../../actions/stripePayments';
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl, type DeliveryBookingView } from '../../services/deliveryViews';
 import { decryptSecret } from '../../lib/secretBox';
+import { canPreparePickup } from '../../domain/pickupPreparation';
 import { pickupTimeSlots } from '../../domain/pickupTimeSlots';
 import { renderOrderStatusBadge } from '../partials/orderStatusBadge';
 import { canRequestCustomerRefund, getCustomerRefundRequest, CUSTOMER_REFUND_STATUSES } from '../../services/customerRefunds';
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
-  stripe: '信用卡（Stripe）', card: '信用卡（Stripe）', square: '礼品卡', bank_transfer: '银行转账', alipay: '支付宝', wechat: '微信',
+  stripe: '信用卡（Stripe）', card: '信用卡（Stripe）', square: '礼品卡', cash: '现金', bank_transfer: '银行转账', alipay: '支付宝', wechat: '微信',
   customer_balance: '账户余额', balance: '账户余额', deposit: '押金', credit: '信用额度 / 调整',
 };
 const REFUND_TYPE_LABELS: Record<string, string> = { deposit: '押金退还', rent: '租金退款', order: '订单退款', service_fee: '服务费退款', cancellation: '取消订单退款', early_return: '提前归还租金退款' };
@@ -141,6 +142,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
         </div>
         <div class="order-info-card">
           <h3>设备信息</h3>
+          ${canPreparePickup(order, contract) ? `<p><strong>准备状态:</strong> <span class="badge ${order.pickup_ready_at ? 'badge-success' : 'badge-warning'}">${order.pickup_ready_at ? '准备完成' : '待准备'}</span></p>` : ''}
           <p><strong>设备名称:</strong> ${device?.name ?? '未知设备'}</p>
           <p><strong>设备型号:</strong> ${device?.model ?? 'N/A'}</p>
           <p><strong>序列号:</strong> ${device?.serialNumber ?? 'N/A'}</p>

@@ -10,8 +10,9 @@ export type OrderSettlementStatus = 'NOT_APPLICABLE' | 'PENDING' | 'SETTLED'
 
 const UNSETTLED_DEPOSIT_STATUSES = new Set(['PENDING', 'HELD', 'REFUND_PENDING'])
 
-export function computeOrderSettlementStatus(order: { status?: unknown; deposit_status?: unknown }): OrderSettlementStatus {
+export function computeOrderSettlementStatus(order: { status?: unknown; deposit_status?: unknown; overdue_outstanding_amount?: unknown }): OrderSettlementStatus {
   if (String(order.status || '') !== 'completed') return 'NOT_APPLICABLE'
+  if (Number(order.overdue_outstanding_amount || 0) > 0) return 'PENDING'
   const depositStatus = String(order.deposit_status || '').toUpperCase()
   return UNSETTLED_DEPOSIT_STATUSES.has(depositStatus) ? 'PENDING' : 'SETTLED'
 }

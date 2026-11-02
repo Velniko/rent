@@ -128,8 +128,8 @@ export async function renderStaffMobileHome(c: Context, user: any) {
   const quickActions: QuickAction[] = isAdmin
     ? [
         { href: '/staff/mobile/scan', label: '扫码作业', hint: '客户取货码', tone: 'primary' },
-        { href: '/staff/mobile/today?stage=pickup', label: '今日取货', hint: `${overview.pickups} 单待取`, tone: 'info' },
-        { href: '/staff/mobile/today?stage=return', label: '今日归还', hint: `${overview.returns} 单待验`, tone: 'warning' },
+        { href: '/staff/mobile/pickup', label: '今日取货', hint: `${overview.pickups} 单待取`, tone: 'info' },
+        { href: '/staff/mobile/return', label: '今日归还', hint: `${overview.returns} 单待验`, tone: 'warning' },
         { href: '/admin/order-review', label: '订单审核', hint: `${overview.pendingReview} 单待审` },
         { href: '/admin/orders', label: '租赁订单', hint: '' },
         { href: '/admin/devices', label: '设备管理', hint: '' },
@@ -138,8 +138,8 @@ export async function renderStaffMobileHome(c: Context, user: any) {
       ]
     : [
         { href: '/staff/mobile/scan', label: '扫码作业', hint: '客户取货码', tone: 'primary' },
-        { href: '/staff/mobile/today?stage=pickup', label: '今日取货', hint: `${overview.pickups} 单待取`, tone: 'info' },
-        { href: '/staff/mobile/today?stage=return', label: '今日归还', hint: `${overview.returns} 单待验`, tone: 'warning' },
+        { href: '/staff/mobile/pickup', label: '今日取货', hint: `${overview.pickups} 单待取`, tone: 'info' },
+        { href: '/staff/mobile/return', label: '今日归还', hint: `${overview.returns} 单待验`, tone: 'warning' },
         { href: '/staff/customers', label: '我的客户', hint: `${overview.customers} 位` },
         { href: '/staff/orders', label: '租赁订单', hint: '' },
         { href: '/staff/contracts', label: '我的合同', hint: '' },
@@ -172,8 +172,8 @@ export async function renderStaffMobileHome(c: Context, user: any) {
     </form>
 
     <section class="mq-overview" aria-label="今日概览">
-      ${statCard('/staff/mobile/today?stage=pickup', '今日取货', overview.pickups, 'is-pickup')}
-      ${statCard('/staff/mobile/today?stage=return', '今日归还', overview.returns, 'is-return')}
+      ${statCard('/staff/mobile/pickup', '今日取货', overview.pickups, 'is-pickup')}
+      ${statCard('/staff/mobile/return', '今日归还', overview.returns, 'is-return')}
       ${statCard(isAdmin ? '/admin/exceptions' : '/staff/orders/ongoing', '逾期', overview.overdue, 'is-overdue')}
       ${statCard(isAdmin ? '/admin/order-review' : '/staff/orders', '待审核', overview.pendingReview, 'is-review')}
       ${statCard(isAdmin ? '/admin/finance' : '/staff/orders', '待结算押金', overview.pendingDeposits, 'is-deposit')}

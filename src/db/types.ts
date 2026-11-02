@@ -155,6 +155,14 @@ export interface Order {
   payment_status?: string
   rental_status?: string
   amount_due?: number
+  pickup_notice_base_url?: string | null
+  pickup_reminder_2h_sent_at?: string | null
+  pickup_reminder_30m_sent_at?: string | null
+  pickup_reminder_attempt_at?: string | null
+  pickup_ready_at?: string | null
+  pickup_ready_by?: string | null
+  pickup_ready_email_sent_at?: string | null
+  pickup_ready_email_attempt_at?: string | null
   handover_completed_at?: string | null
   handover_by?: string | null
   return_received_at?: string | null
@@ -175,6 +183,9 @@ export interface Order {
   stripe_deposit_payment_intent_id?: string | null
   deposit_status?: string
   deposit_deduction_amount?: number
+  overdue_collected_amount?: number
+  overdue_charge_total?: number
+  overdue_outstanding_amount?: number
   overdue_deposit_applied?: number
   settlement_status?: 'NOT_APPLICABLE' | 'PENDING' | 'SETTLED'
   couponCode?: string | null

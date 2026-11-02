@@ -363,7 +363,7 @@ async function syncStripeCustomerProfile(c: Context, customerId: string, user: a
   await stripeRequest(c, `customers/${customerId}`, params)
 }
 
-async function ensureStripeCustomerForPaymentMethod(c: Context, user: any, paymentMethodId: string): Promise<string> {
+export async function ensureStripeCustomerForPaymentMethod(c: Context, user: any, paymentMethodId: string): Promise<string> {
   const userId = String(user.id || '')
   const email = String(user.email || '').trim().toLowerCase()
 
@@ -986,6 +986,17 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
   // UPDATEs / INSERT OR IGNORE), so a safe retry cannot double-apply.
 
   const session = event.data?.object
+  if (event.type === 'payment_intent.succeeded' && String(session?.description || '').startsWith('RETURN-')) {
+    try {
+      const { handleStripeReturnReceipt } = await import('../services/returnCollections')
+      await handleStripeReturnReceipt(c, event)
+      await markWebhookProcessed(c, claim.recordId)
+      return c.json({ received: true })
+    } catch (error: any) {
+      await markWebhookFailed(c, claim.recordId, error.message)
+      return c.text(error.message, 400)
+    }
+  }
   if (['refund.created', 'refund.updated', 'refund.failed'].includes(event.type)) {
     try {
       const { handleCustomerRefundWebhook } = await import('../services/customerRefunds')
@@ -1386,7 +1397,7 @@ async function settlePreauthorizedDeposit(c: Context, admin: any, order: any, fo
     c.env.RENT.prepare("UPDATE payments SET status = ?, amount = ?, transaction_id = COALESCE(transaction_id, ?), paid_at = CASE WHEN ? > 0 THEN COALESCE(paid_at, CURRENT_TIMESTAMP) ELSE paid_at END, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(captureAmount > 0 ? 'paid' : 'refunded', captureAmount, authorizationId, captureAmount, payment.id),
     c.env.RENT.prepare("UPDATE orders SET refundMethod = ?, deposit_status = ?, deposit_deduction_amount = ?, deposit_refund_amount = ?, deposit_held_amount = 0, deposit_refund_at = CURRENT_TIMESTAMP, settlement_status = ? WHERE id = ?")
-      .bind(selectedRefundMethod, nextStatus, deductionAmount, refundToBalance ? totalReleased : 0, computeOrderSettlementStatus({ status: order.status, deposit_status: nextStatus }), order.id),
+      .bind(selectedRefundMethod, nextStatus, deductionAmount, refundToBalance ? totalReleased : 0, computeOrderSettlementStatus({ status: order.status, overdue_outstanding_amount: order.overdue_outstanding_amount, deposit_status: nextStatus }), order.id),
     c.env.RENT.prepare("UPDATE devices SET status = 'available' WHERE id = ? AND lifecycle_status NOT IN ('DAMAGED', 'MAINTENANCE', 'RETIRED')").bind(order.deviceId),
     // 原路释放没有实际退款；退余额则记录实际入账的可退押金。
     c.env.RENT.prepare(`INSERT INTO payment_refunds (id, refund_number, order_id, payment_id, type, refundable_amount, refund_amount, refunded_processing_fee, deduction_amount, deduction_category, deduction_reason, status, processed_by, refund_method)
@@ -1411,7 +1422,7 @@ async function settleSetupIntentDeposit(c: Context, admin: any, order: any, form
   const deduction = validateDepositDeduction(form, depositAmount, deductionAmount)
   if (deduction instanceof Response) return deduction
   if (deductionAmount === 0) {
-    await c.env.RENT.prepare("UPDATE orders SET deposit_status = 'NOT_REQUIRED', deposit_deduction_amount = 0, deposit_refund_amount = 0, deposit_refund_at = CURRENT_TIMESTAMP, settlement_status = ? WHERE id = ?").bind(computeOrderSettlementStatus({ status: order.status, deposit_status: 'NOT_REQUIRED' }), order.id).run()
+    await c.env.RENT.prepare("UPDATE orders SET deposit_status = 'NOT_REQUIRED', deposit_deduction_amount = 0, deposit_refund_amount = 0, deposit_refund_at = CURRENT_TIMESTAMP, settlement_status = ? WHERE id = ?").bind(computeOrderSettlementStatus({ status: order.status, overdue_outstanding_amount: order.overdue_outstanding_amount, deposit_status: 'NOT_REQUIRED' }), order.id).run()
     return c.redirect(`/admin/orders/${order.id}`, 303)
   }
   const paymentMethodId = String((order as any).stripe_payment_method_id || '')
@@ -1434,7 +1445,7 @@ async function settleSetupIntentDeposit(c: Context, admin: any, order: any, form
       VALUES (?, ?, ?, ?, 'deposit', 0, 0, 0, ?, ?, ?, 'succeeded', ?, 'stripe')`)
       .bind(`rf-${nanoid(12)}`, generateReferenceNumber('RFD'), order.id, paymentId, deductionAmount, deduction.category, deduction.reason, admin.id),
     c.env.RENT.prepare("UPDATE orders SET deposit_status = ?, deposit_deduction_amount = ?, deposit_refund_amount = 0, deposit_refund_at = CURRENT_TIMESTAMP, settlement_status = ? WHERE id = ?")
-      .bind(deductionAmount >= depositAmount ? 'FORFEITED' : 'PARTIALLY_DEDUCTED', deductionAmount, computeOrderSettlementStatus({ status: order.status, deposit_status: deductionAmount >= depositAmount ? 'FORFEITED' : 'PARTIALLY_DEDUCTED' }), order.id),
+      .bind(deductionAmount >= depositAmount ? 'FORFEITED' : 'PARTIALLY_DEDUCTED', deductionAmount, computeOrderSettlementStatus({ status: order.status, overdue_outstanding_amount: order.overdue_outstanding_amount, deposit_status: deductionAmount >= depositAmount ? 'FORFEITED' : 'PARTIALLY_DEDUCTED' }), order.id),
   ])
   return c.redirect(`/admin/orders/${order.id}`, 303)
 }
@@ -1527,7 +1538,7 @@ export async function refundDeposit(c: Context, admin: any, orderId: string, for
       .bind(`rf-${nanoid(12)}`, generateReferenceNumber('RFD'), order.id, payment.id, remainingRefundable, depositRefundAmount, refundedProcessingFee, deductionAmount, deductionAmount > 0 ? deductionCategory : null, recordedReason, stripeRefundId, isBankTransfer ? 'pending' : 'succeeded', admin.id, channel, isBankTransfer ? order.refundBsb : null, isBankTransfer ? order.refundAccountNumber : null, isBankTransfer ? order.refundAccountName : null),
     ...(priceRefundAmount > 0 ? [c.env.RENT.prepare("UPDATE order_price_adjustments SET deposit_refunded = 1, updated_at = CURRENT_TIMESTAMP WHERE order_id = ? AND direction = 'decrease' AND status = 'succeeded' AND refund_method = 'pending_deposit' AND deposit_refunded = 0").bind(order.id)] : []),
     ...(totalRefundAmount > 0 && channel === 'balance' ? [c.env.RENT.prepare('UPDATE users SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(totalRefundAmount, order.userId)] : []),
-    c.env.RENT.prepare("UPDATE orders SET deposit_status = ?, deposit_deduction_amount = ?, deposit_refund_amount = ?, deposit_refund_at = CURRENT_TIMESTAMP, settlement_status = ? WHERE id = ?").bind(nextDepositStatus, deductionAmount, totalRefunded, computeOrderSettlementStatus({ status: order.status, deposit_status: nextDepositStatus }), order.id),
+    c.env.RENT.prepare("UPDATE orders SET deposit_status = ?, deposit_deduction_amount = ?, deposit_refund_amount = ?, deposit_refund_at = CURRENT_TIMESTAMP, settlement_status = ? WHERE id = ?").bind(nextDepositStatus, deductionAmount, totalRefunded, computeOrderSettlementStatus({ status: order.status, overdue_outstanding_amount: order.overdue_outstanding_amount, deposit_status: nextDepositStatus }), order.id),
     c.env.RENT.prepare("UPDATE devices SET status = 'available' WHERE id = ?").bind(order.deviceId),
   ])
   if (totalRefundAmount > 0 && channel === 'balance') await recordBalanceTransaction(c, order.userId, totalRefundAmount, 'refund_credit', `${refundItemLabel}退回账户余额`, admin.id)
@@ -1810,10 +1821,10 @@ function dateAfter(date: string, days: number): string {
   return value.toISOString().slice(0, 10)
 }
 
-export async function chargeOverdueReturns(c: Context, now = new Date()): Promise<{ overdue: number; charged: number }> {
+export async function chargeOverdueReturns(c: Context, now = new Date(), orderId?: string): Promise<{ overdue: number; charged: number }> {
   const administrator = await c.env.RENT.prepare("SELECT id FROM users WHERE role = 'ADMIN' AND COALESCE(status, 'active') = 'active' ORDER BY created_at ASC LIMIT 1").first() as any
   if (!administrator?.id) throw new Error('没有可用于处理逾期归还的管理员账户')
-  const candidates = ((await c.env.RENT.prepare("SELECT o.*, d.pricePerDay FROM orders o LEFT JOIN devices d ON d.id = o.deviceId WHERE o.status IN ('active', 'extended', 'overdue') AND o.return_received_at IS NULL").all()).results || []) as any[]
+  const candidates = ((await c.env.RENT.prepare("SELECT o.*, d.pricePerDay FROM orders o LEFT JOIN devices d ON d.id = o.deviceId WHERE o.deleted_at IS NULL AND o.status IN ('active', 'extended', 'overdue', 'suspended', 'pending_return') AND o.return_received_at IS NULL" + (orderId ? " AND o.id = ?" : "")).bind(...(orderId ? [orderId] : [])).all()).results || []) as any[]
   let overdue = 0
   let charged = 0
   for (const order of candidates) {
@@ -1825,7 +1836,7 @@ export async function chargeOverdueReturns(c: Context, now = new Date()): Promis
     const charges = [{ date: String(order.endDate), rental: 0, fee: 25 }, ...Array.from({ length: overdueDays }, (_, index) => ({ date: dateAfter(String(order.endDate), index + 1), rental: dailyRate, fee: 0 }))]
     const before = await c.env.RENT.prepare('SELECT COUNT(*) AS count FROM overdue_return_charges WHERE order_id = ?').bind(order.id).first() as any
     for (const charge of charges) {
-      await c.env.RENT.prepare('INSERT OR IGNORE INTO overdue_return_charges (id, order_id, charge_date, rental_amount, handling_fee) VALUES (?, ?, ?, ?, ?)').bind(`orc-${nanoid(12)}`, order.id, charge.date, charge.rental, charge.fee).run()
+      await c.env.RENT.prepare('INSERT OR IGNORE INTO overdue_return_charges (id, order_id, charge_date, rental_amount, handling_fee) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM orders WHERE id = ? AND return_received_at IS NULL AND deleted_at IS NULL AND status IN (\'active\',\'extended\',\'overdue\',\'suspended\',\'pending_return\'))').bind(`orc-${nanoid(12)}`, order.id, charge.date, charge.rental, charge.fee, order.id).run()
     }
     const summary = await c.env.RENT.prepare('SELECT COALESCE(SUM(rental_amount + handling_fee), 0) AS total FROM overdue_return_charges WHERE order_id = ?').bind(order.id).first() as any
     const total = Number(Number(summary?.total || 0).toFixed(2))
@@ -1834,13 +1845,11 @@ export async function chargeOverdueReturns(c: Context, now = new Date()): Promis
     const depositHeld = Math.max(0, Number(order.deposit_held_amount || 0))
     const depositAvailable = Math.max(0, depositHeld - otherDepositDeductions)
     const depositApplied = Number(Math.min(total, depositAvailable).toFixed(2))
-    const outstanding = Number(Math.max(0, total - depositApplied).toFixed(2))
-    const previousOutstanding = Math.max(0, Number(order.overdue_outstanding_amount || 0))
-    const amountAdded = Number(Math.max(0, outstanding - previousOutstanding).toFixed(2))
     const nextDepositStatus = depositApplied <= 0 ? order.deposit_status : depositApplied >= depositHeld ? 'FORFEITED' : 'PARTIALLY_DEDUCTED'
-    await c.env.RENT.prepare("UPDATE orders SET totalAmount = totalAmount + ?, overdue_charge_total = ?, overdue_deposit_applied = ?, overdue_outstanding_amount = ?, deposit_deduction_amount = ?, deposit_status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?")
-      .bind(amountAdded, total, depositApplied, outstanding, Number((otherDepositDeductions + depositApplied).toFixed(2)), nextDepositStatus, order.id).run()
-    if (String(order.status) !== 'overdue') await updateOrderStatus(c, order.id, 'overdue', { reason: '超过预约归还时间 2 小时' })
+    const grossOutstanding = Number(Math.max(0, total - depositApplied).toFixed(2))
+    await c.env.RENT.prepare("UPDATE orders SET totalAmount = totalAmount + MAX(0, ? - overdue_outstanding_amount - overdue_collected_amount), overdue_charge_total = ?, overdue_deposit_applied = ?, overdue_outstanding_amount = MAX(0, ? - overdue_collected_amount), deposit_deduction_amount = ?, deposit_status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND return_received_at IS NULL AND status IN ('active','extended','overdue','suspended','pending_return')")
+      .bind(grossOutstanding, total, depositApplied, grossOutstanding, Number((otherDepositDeductions + depositApplied).toFixed(2)), nextDepositStatus, order.id).run()
+    if (['active', 'extended'].includes(String(order.status))) await updateOrderStatus(c, order.id, 'overdue', { reason: '超过预约归还时间 2 小时', expectedStatus: String(order.status) })
     const after = await c.env.RENT.prepare('SELECT COUNT(*) AS count FROM overdue_return_charges WHERE order_id = ?').bind(order.id).first() as any
     const addedRows = Math.max(0, Number(after?.count || 0) - Number(before?.count || 0))
     if (addedRows > 0) {
@@ -1945,7 +1954,7 @@ export async function completeBankTransferRefund(c: Context, admin: any, refundI
   const totalRefundAmount = Number(pending.refund_amount || 0) + Number(pending.refunded_processing_fee || 0)
   const nextDepositStatus = totalRefunded >= depositAmount ? 'REFUNDED' : totalRefunded <= 0 ? 'FORFEITED' : 'PARTIALLY_REFUNDED'
   await c.env.RENT.prepare("UPDATE orders SET deposit_status = ?, deposit_refund_amount = ?, deposit_refund_at = CURRENT_TIMESTAMP, settlement_status = ? WHERE id = ?")
-    .bind(nextDepositStatus, totalRefunded, computeOrderSettlementStatus({ status: order.status, deposit_status: nextDepositStatus }), order.id).run()
+    .bind(nextDepositStatus, totalRefunded, computeOrderSettlementStatus({ status: order.status, overdue_outstanding_amount: order.overdue_outstanding_amount, deposit_status: nextDepositStatus }), order.id).run()
   const refund = await c.env.RENT.prepare("SELECT id FROM payment_refunds WHERE order_id = ? AND type = 'deposit' AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
   if (refund) await recordFinancialLedgerEntry(c, { entryType: 'REFUND', amount: -totalRefundAmount, customerId: order.userId, orderId: order.id, sourceType: 'PAYMENT_REFUND', sourceId: refund.id, description: '押金退款（银行转账）', createdBy: admin.id, metadata: { channel: 'bank_transfer', principal: Number(pending.refund_amount || 0), processingFee: Number(pending.refunded_processing_fee || 0) } })
   if (Number(pending.refund_amount || 0) > 0) await issueCreditNote(c, order.id, Number(pending.refund_amount || 0), Number(pending.refunded_processing_fee || 0), `deposit-${nanoid(12)}`)

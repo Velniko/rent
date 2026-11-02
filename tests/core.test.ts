@@ -225,8 +225,8 @@ test('staff and admin mobile navigation keeps only core rental operations', () =
   for (const html of [adminHtml, staffHtml]) {
     const mobileNav = html.slice(html.indexOf('<nav class="mobile-bottom-nav"'), html.indexOf('</nav>', html.indexOf('<nav class="mobile-bottom-nav"')))
     assert.match(mobileNav, /href="\/staff\/mobile"[^>]*>.*今日订单/s)
-    assert.match(mobileNav, /href="\/staff\/mobile\?stage=pickup"[^>]*>.*取货/s)
-    assert.match(mobileNav, /href="\/staff\/mobile\?stage=return"[^>]*>.*归还/s)
+    assert.match(mobileNav, /href="\/staff\/mobile\/pickup"[^>]*>.*取货/s)
+    assert.match(mobileNav, /href="\/staff\/mobile\/return"[^>]*>.*归还/s)
     assert.match(mobileNav, /href="\/staff\/mobile\/scan"[^>]*>.*扫码/s)
     assert.match(mobileNav, /href="\/staff\/inspections"[^>]*>.*验机/s)
     assert.doesNotMatch(mobileNav, /通知|设置|客户|合同/)
@@ -419,8 +419,10 @@ test('return inspection is available for every active rental status', async () =
           async first() {
             if (sql.includes('FROM orders')) return { id: 'o1', userId: 'u1', deviceId: 'd1', status, totalAmount: 100, depositAmount: 50, startDate: '2026-09-01', endDate: '2026-09-10' }
             if (sql.includes('FROM devices')) return { id: 'd1', name: '测试设备', pricePerDay: 10, depositAmount: 50 }
+            if (sql.includes('FROM users')) return { id: 'u1', name: '客户', role: 'CUSTOMER', staff_id: 'staff-1' }
             return null
           },
+          async all() { return { results: [] } },
         }
         return statement
       },

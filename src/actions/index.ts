@@ -17,3 +17,4 @@ export * from './staff/cancelContract';
 export * from './coupons';
 export * from './squarePayments';
 export * from './public/tallyFeedback';
+export * from './staff/preparePickup';

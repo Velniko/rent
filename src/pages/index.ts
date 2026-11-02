@@ -105,3 +105,5 @@ export * from './admin/delivery';
 export * from './admin/manualOrder';
 export * from './admin/rentalLinks';
 export * from './public/rentalLink';
+
+export * from './staff/returnCollection'

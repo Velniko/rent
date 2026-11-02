@@ -6,7 +6,7 @@
 import { buildLayout, formatCurrency, sanitizePlainText, deviceUtilisationRate, paymentMethodBreakdown } from '../../site';
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
-  card: '信用卡 / Stripe', square: 'Square 礼品卡', balance: '账户余额', bank_transfer: '银行转账', deposit: '押金抵扣', adjustment: '人工调整', unknown: '其他',
+  cash: '现金', card: '信用卡 / Stripe', square: 'Square 礼品卡', balance: '账户余额', bank_transfer: '银行转账', deposit: '押金抵扣', adjustment: '人工调整', unknown: '其他',
 }
 
 export interface OperationsReportData {

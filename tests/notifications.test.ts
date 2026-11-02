@@ -45,9 +45,9 @@ test('due-date notifications are inserted once per order and reminder type', asy
   }
   const context = { env: { RENT: db } } as any
 
-  assert.equal(await createDueDateNotifications(context), 3)
+  assert.equal(await createDueDateNotifications(context), 2)
   assert.equal(await createDueDateNotifications(context), 0)
-  assert.equal(statements.filter(sql => /INSERT OR IGNORE INTO notifications/i.test(sql)).length, 6)
+  assert.equal(statements.filter(sql => /INSERT OR IGNORE INTO notifications/i.test(sql)).length, 4)
 })
 
 test('automatic due-date notifications also send email', async () => {
