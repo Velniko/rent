@@ -4,6 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import type { Context } from 'hono'
+import { renderRentalProgramLanding } from '../partials/programLanding'
 import { renderShippingAddress,renderShippingAddressFields } from '../partials/rentalProgramAddress'
 import type { User } from '../../site'
 import { buildLayout, formatCurrency } from '../../site'
@@ -38,21 +39,21 @@ export function renderC2CQuoteTable(quotes: C2CQuote[], admin=false): string {
 }
 export function renderC2CModeChoices(settings: C2CSettings,current?: C2CMode): string {
   const ready=settings.managed_commission_bps!=null && Boolean(settings.shipping_address.trim())
-  return `<div class="c2c-mode-choices">${(['managed','self'] as const).map(mode=>`<label class="c2c-mode-choice"><input type="radio" name="mode" value="${mode}" required ${current===mode?'checked':''} ${mode==='managed'&&!ready?'disabled':''}><span class="c2c-mode-choice__body"><strong>${c2cModeLabels[mode]}</strong><span>${mode==='managed'?'寄给平台出租':'设备自行保管'}</span><b>平台手续费 ${mode==='managed'?(settings.managed_commission_bps==null?'—':settings.managed_commission_bps/100+'%'):settings.commission_bps/100+'%'}</b><small>${mode==='managed'?'运费自付 · 上架超过 6 个月可下架':'无最短上架期限'}</small>${mode==='managed'&&!ready?'<small>暂未开放</small>':''}</span></label>`).join('')}</div>`
+  return `<div class="c2c-mode-choices">${(['managed','self'] as const).map(mode=>`<label class="c2c-mode-choice"><input type="radio" name="mode" value="${mode}" data-commission-bps="${mode==='managed'?(settings.managed_commission_bps ?? ''):settings.commission_bps}" data-mode-label="${c2cModeLabels[mode]}" required ${current===mode?'checked':''} ${mode==='managed'&&!ready?'disabled':''}><span class="c2c-mode-choice__body"><strong>${c2cModeLabels[mode]}</strong><span>${mode==='managed'?'寄给平台出租':'设备自行保管'}</span><b>平台手续费 ${mode==='managed'?(settings.managed_commission_bps==null?'—':settings.managed_commission_bps/100+'%'):settings.commission_bps/100+'%'}</b><small>${mode==='managed'?'运费自付 · 上架超过 6 个月可下架':'无最短上架期限'}</small>${mode==='managed'&&!ready?'<small>暂未开放</small>':''}</span></label>`).join('')}</div>`
 }
 export function renderC2CPause(listing: C2CListing,admin=false): string {
   return listing.pause_locked?`<span class="form-text">可下架时间：${escapeHtml(formatMelbourneDateTime(listing.unlist_after))}</span><button class="button button-secondary" type="button" disabled>下架设备</button>`:`<form method="post" action="/${admin?'admin':'customer'}/c2c/${encodeURIComponent(listing.id)}/pause"><button class="button button-secondary" type="submit">下架设备</button></form>`
 }
 export async function renderCustomerC2C(c: Context,user: User): Promise<string> {
   const [membership,settings]=await Promise.all([getC2CMembership(c,user.id),getC2CSettings(c)])
-  if (!membership) {
-    return buildLayout('设备出租计划',`${renderC2CNotice(c)}<section class="panel"><div class="section-title"><h2>加入设备出租计划</h2></div><form method="post" action="/customer/rental-program/join">${renderC2CModeChoices(settings)}<p class="form-text">切换出租模式需间隔超过 3 个月</p><button class="button button-primary" type="submit">立即加入</button></form></section>`,user)
+  if (!membership || c.req.query('intro')==='1') {
+    return buildLayout('设备出租计划',renderC2CNotice(c)+renderRentalProgramLanding(settings,renderC2CModeChoices(settings),membership?.mode),user)
   }
   const [listingPage,quotePage,canChange]=await Promise.all([listC2CListings(c,user.id),listC2CQuotes(c,user.id),canChangeC2CMode(c,user.id)])
   const {listings}=listingPage, {quotes}=quotePage,bps=membership.mode==='managed'?settings.managed_commission_bps:settings.commission_bps
   const editing=listings.find(l=>l.id===c.req.query('edit') && ['rejected','paused'].includes(l.status))
   const total=Number((await c.env.RENT.prepare('SELECT COALESCE(SUM(owner_cents),0) AS total FROM c2c_settlements WHERE owner_id=?').bind(user.id).first() as {total:number}).total)
-  const body=`${renderC2CNotice(c)}<section class="panel"><div class="section-title"><div><p class="section-code">RENTAL PROGRAM</p><h2>我的出租</h2></div><a class="button button-secondary" href="/customer/devices?mode=owner">逛个人设备</a></div>
+  const body=`${renderC2CNotice(c)}<section class="panel"><div class="section-title"><div><p class="section-code">RENTAL PROGRAM</p><h2>我的出租</h2></div><div class="record-actions"><a class="button button-secondary" href="/customer/rental-program?intro=1">了解出租计划</a><a class="button button-secondary" href="/customer/devices?mode=owner">逛个人设备</a></div></div>
     <div class="grid grid-3"><div class="card"><h3>${c2cModeLabels[membership.mode]}</h3><strong>平台手续费 ${bps==null?'—':bps/100+'%'}</strong></div><div class="card"><h3>我的设备</h3><strong>${listingPage.meta.total}</strong></div><div class="card"><h3>已结算收入</h3><strong>${money(total)}</strong></div></div>
     <div class="c2c-account-actions"><a href="/customer/profile">设置收款账户</a><details><summary>更改出租模式</summary>${canChange?`<form method="post" action="/customer/rental-program/join">${renderC2CModeChoices(settings,membership.mode)}<p class="form-text">切换出租模式需间隔超过 3 个月</p><button class="button button-secondary" type="submit">保存出租模式</button></form>`:membership.mode_change_locked?`<p class="form-text">切换出租模式需间隔超过 3 个月</p><p>可更改时间：${escapeHtml(formatMelbourneDateTime(membership.mode_change_after))}</p>`:'<p class="form-text">请先下架全部设备并完成出租订单</p>'}</details></div></section>
     ${renderC2CListingForm(membership.mode,settings,editing)}<section class="panel"><h2>我的发布</h2>${listings.length?`<div class="device-list grid grid-3">${listings.map(l=>`<article class="device-card card"><span class="badge">${c2cStatus[l.status]}</span><h3>${escapeHtml(l.name)}</h3><p>${c2cModeLabels[l.listing_mode]}</p>${renderC2CPhotoGallery(l.photos_json)}<p>${escapeHtml(l.model)}</p><div class="rental-pickup-detail"><strong>取件地址</strong>${renderShippingAddress(l.pickup_address_json,l.pickup_address,l.listing_mode==='self'?'pickup':'shipping')}</div><p>日租金: ${formatCurrency(l.daily_rate)}</p><p>押金: ${formatCurrency(l.deposit)}</p>${l.review_note?`<p>${escapeHtml(l.review_note)}</p>`:''}<div class="record-actions">${['rejected','paused'].includes(l.status)?`<a class="button button-secondary" href="/customer/rental-program?page=${listingPage.meta.page}&edit=${encodeURIComponent(l.id)}">编辑并重审</a>`:renderC2CPause(l)}</div></article>`).join('')}</div>`:'<p>还没有发布设备。填写设备信息并提交审核。</p>'}${renderPager(listingPage.meta,{basePath:'/customer/rental-program'})}</section>
