@@ -280,6 +280,8 @@ async function getTableColumns(c: any, tableName: string): Promise<string[]> {
   return Array.from(await getCachedTableColumns(c.env.RENT, tableName))
 }
 
+import { c2cBookingError } from './services/c2c'
+
 const app = new Hono()
 
 async function resolveImageUrls(fileValue: unknown, legacyUrl: unknown, c: any, folder: string, maxFiles = 1): Promise<string[]> {
@@ -855,6 +857,7 @@ app.use('*', async (c, next) => {
     : c.req.method === 'POST' && c.req.path.startsWith('/rent/') ? ['rental-link-booking', 10, 900] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/admin/rental-links') ? ['rental-link-admin', 30, 600] as const
     : c.req.method === 'POST' && (c.req.path === '/admin/orders/new' || /^\/admin\/orders\/[^/]+\/edit$/.test(c.req.path)) ? ['admin-manual-order', 60, 600] as const
+    : c.req.method === 'POST' && (c.req.path.startsWith('/customer/c2c') || c.req.path.startsWith('/admin/c2c')) ? ['c2c-write', 30, 600] as const
     : c.req.path === '/verify' ? ['contract-verify', 30, 600] as const
     : c.req.path === '/admin/connectivity/check' ? ['connectivity-check', 10, 60] as const
     : c.req.path.startsWith('/api/address/') ? ['address-search', 120, 60] as const
@@ -2472,6 +2475,26 @@ app.post('/notifications/send', async (c) => {
   return c.redirect('/notifications')
 })
 
+app.get('/customer/c2c', async (c) => {
+  const user=c.get('user')
+  if (!user) return c.redirect('/login')
+  if (user.role!=='CUSTOMER' || (user.accountType ?? user.account_type ?? 'formal')!=='formal') return c.html(renderForbidden(),403)
+  return c.html(await pages.renderCustomerC2C(c,user))
+})
+app.post('/customer/c2c', c => actions.customerC2CAction(c,'submit'))
+app.post('/customer/c2c/:id/edit', c => actions.customerC2CAction(c,'edit'))
+app.post('/customer/c2c/:id/pause', c => actions.customerC2CAction(c,'pause'))
+app.get('/admin/c2c', async (c) => {
+  const user=c.get('user')
+  if (!user) return c.redirect('/login')
+  if (user.role!=='ADMIN') return c.html(renderForbidden(),403)
+  return c.html(await pages.renderAdminC2C(c,user))
+})
+app.post('/admin/c2c/commission', c => actions.adminC2CAction(c,'commission'))
+app.post('/admin/c2c/:id/review', c => actions.adminC2CAction(c,'review'))
+app.post('/admin/c2c/:id/pause', c => actions.adminC2CAction(c,'pause'))
+app.post('/admin/c2c/orders/:orderId/settle', c => actions.adminC2CAction(c,'settle'))
+
 app.get('/customer/devices', async (c) => {
   const user = c.get('user')
   if (!user || user.role !== 'CUSTOMER') return c.redirect('/login')
@@ -2492,6 +2515,8 @@ app.post('/customer/rent/:id', async (c) => {
   if (risk.blocked) return c.html(await pages.renderCustomerRent(c, c.req.param('id'), user, '您的账户当前存在风控限制，暂时无法自助下单，请联系客服协助处理'), 403)
   const account = await c.env.RENT.prepare('SELECT balance FROM users WHERE id = ?').bind(user.id).first() as any
   if (Number(account?.balance || 0) < 0) return c.html(await pages.renderCustomerRent(c, c.req.param('id'), user, `您的账户余额为负（${Number(account.balance).toFixed(2)} AUD），请先充值至非负后再下单。`), 403)
+  const bookingError = await c2cBookingError(c,c.req.param('id'),user.id)
+  if (bookingError) return c.text(bookingError,403)
   const device = await getDeviceById(c, c.req.param('id'))
   const rentalRules = await getDeviceRentalRules(c, c.req.param('id'))
   const deviceUnavailable = new Set(((await c.env.RENT.prepare('SELECT unavailable_date FROM device_unavailable_dates WHERE device_id = ? AND deleted_at IS NULL').bind(c.req.param('id')).all()).results || []).map((row: any) => row.unavailable_date))
@@ -3850,6 +3875,10 @@ app.post('/customer/profile/delete-account', async (c) => {
   const user = c.get('user')
   if (!user || user.role !== 'CUSTOMER') return c.redirect('/login')
   const form = await c.req.parseBody()
+  const c2cOutstanding = await c.env.RENT.prepare(`SELECT 1 FROM c2c_listings WHERE owner_id=? AND status IN ('pending','approved')
+    UNION ALL SELECT 1 FROM c2c_settlement_quotes q WHERE q.owner_id=? AND q.order_status<>'cancelled'
+      AND (q.order_status<>'completed' OR q.rental_cents>0) AND NOT EXISTS(SELECT 1 FROM c2c_settlements s WHERE s.order_id=q.order_id) LIMIT 1`).bind(user.id,user.id).first()
+  if (c2cOutstanding) return c.html(await pages.renderCustomerProfile(c,user,'请先下架个人设备并结清出租订单','error'),409)
   if (form.confirmDelete !== 'on') return c.html(await pages.renderCustomerProfile(c, user, '请先确认永久删除账户及余额清零事项。', 'error'), 400)
   for (const column of ['deletion_requested_at', 'deletion_scheduled_at']) {
     try { await c.env.RENT.prepare(`ALTER TABLE users ADD COLUMN ${sqlIdentifier(column)} TEXT`).run() } catch (_) { }
@@ -5060,7 +5089,7 @@ app.get('/admin/finance', async (c) => {
     return c.redirect('/login')
   }
   const revenueData = await pages.getRevenueData(c)
-  return c.html(pages.renderAdminFinance(user, revenueData.orders, revenueData.refunds, revenueData.withdrawals))
+  return c.html(pages.renderAdminFinance(user, revenueData.orders, revenueData.refunds, revenueData.withdrawals, revenueData.ownerSettlements))
 })
 
 app.get('/admin/finance/payment-disputes', async (c) => {

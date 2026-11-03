@@ -1,0 +1,191 @@
+/* Copyright (c) 2026 jiongjiong123441. All rights reserved.
+ * Licensed under PolyForm Noncommercial 1.0.0.
+ * Noncommercial use, modification, and distribution are permitted.
+ * Keep this notice and the LICENSE file with all copies and modified versions. */
+
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { DatabaseSync } from 'node:sqlite'
+import { URL } from 'node:url'
+import { readFileSync, readdirSync } from 'node:fs'
+import worker from '../src/index'
+import { createAuthSession, invalidateSystemSettingsCache } from '../src/site'
+import { getRevenueData } from '../src/pages/admin/revenueStats'
+import { renderAdminFinance } from '../src/pages/admin/finance'
+import { commissionBps, c2cSettlementQuote } from '../src/services/c2c'
+
+test('C2C publishing, booking ownership, rental accounting and manual settlements', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2030-01-01T00:00:00Z') })
+  const sqlite=new DatabaseSync(':memory:'); t.after(()=>sqlite.close())
+  for (const name of readdirSync(new URL('../migrations/',import.meta.url)).filter(n=>n.endsWith('.sql')).sort()) sqlite.exec(readFileSync(new URL(`../migrations/${name}`,import.meta.url),'utf8'))
+  invalidateSystemSettingsCache()
+  sqlite.exec(`INSERT INTO users (id,name,email,role,status,account_type,bsb,account_number) VALUES
+    ('owner','设备主人','owner@example.test','CUSTOMER','active','formal','123-456','12345678'),
+    ('renter','租客','renter@example.test','CUSTOMER','active','formal',NULL,NULL),
+    ('other','其他客户','other@example.test','CUSTOMER','active','formal',NULL,NULL),
+    ('staff','员工','staff@example.test','STAFF','active','formal',NULL,NULL),
+    ('admin','管理员','admin@example.test','ADMIN','active','formal',NULL,NULL),
+    ('guest','访客','guest@example.test','CUSTOMER','active','guest',NULL,NULL);`)
+  const db={prepare(sql: string) {
+    let values: any[]=[]
+    const statement={bind(...args: any[]) {values=args;return statement},
+      async first(){return sqlite.prepare(sql).get(...values)||null},
+      async all(){return {results:sqlite.prepare(sql).all(...values)}},
+      async run(){return {success:true,meta:{changes:Number(sqlite.prepare(sql).run(...values).changes)}}}}
+    return statement
+  },async batch(statements: any[]) {
+    sqlite.exec('BEGIN')
+    try {const result=[];for(const s of statements)result.push(await s.run());sqlite.exec('COMMIT');return result}
+    catch(error){sqlite.exec('ROLLBACK');throw error}
+  }}
+  const env={RENT:db}; const c={env,req:{url:'https://rent.example.test/',header:()=>undefined}} as any
+  const sessions=new Map<string,string>()
+  for (const actor of ['owner','renter','other','staff','admin','guest']) sessions.set(actor,(await createAuthSession(c,actor)).token)
+  const request=(path: string,actor='owner',form?: Record<string,string>,origin='https://rent.example.test')=>worker.fetch(new Request(`https://rent.example.test${path}`,{
+    method:form?'POST':'GET',body:form?new URLSearchParams(form):undefined,
+    headers:{Cookie:`session=${sessions.get(actor)||''}`,Origin:origin,'Sec-Fetch-Site':origin==='https://rent.example.test'?'same-origin':'cross-site'}
+  }),env,{waitUntil(){}} as any)
+  const row=(sql: string,...args: any[])=>sqlite.prepare(sql).get(...args) as any
+  const settleForm=(reference: string)=>({reference,quote:c2cSettlementQuote(row("SELECT * FROM c2c_settlement_quotes WHERE order_id='rental'"))})
+  const listing=()=>row('SELECT * FROM c2c_listings LIMIT 1')
+  const form={name:'个人笔记本 <img src=x onerror=alert(1)>',model:'M4" autofocus onfocus="alert(1)',serialNumber:'C2C-TEST',dailyRate:'20.50',deposit:'200',description:'设备描述 <script>alert(1)</script>'}
+
+  await t.test('only formal customers can submit; admin actions and CSRF are guarded',async()=>{
+    assert.equal((await request('/customer/c2c','staff')).status,403)
+    assert.equal((await request('/admin/c2c','owner')).status,403)
+    assert.equal((await request('/customer/c2c','guest',form)).headers.get('location'),'/customer/guest')
+    assert.equal((await request('/admin/c2c/commission','owner',{commission:'0'})).status,403)
+    assert.equal((await request('/customer/c2c','owner',form,'https://evil.example.test')).status,403)
+    const invalid=await request('/customer/c2c','owner',{...form,dailyRate:'-1'})
+    assert.match(invalid.headers.get('location')||'',/error=/)
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_listings').n,0)
+    await request('/customer/c2c','owner',form)
+    assert.equal(listing().status,'pending')
+    assert.doesNotMatch(listing().name,/<img/)
+    assert.equal(row('SELECT id FROM devices WHERE id=?',listing().device_id),undefined)
+    assert.doesNotMatch(await (await request('/customer/devices?mode=c2c','renter')).text(),/C2C-TEST/)
+  })
+  await t.test('review, isolation, resubmission and owner booking rejection',async()=>{
+    assert.equal((await request('/customer/profile/delete-account','owner',{confirmDelete:'on'})).status,409)
+    const id=listing().id
+    await request(`/admin/c2c/${id}/review`,'admin',{action:'reject',note:'请补充信息'})
+    assert.equal(listing().status,'rejected')
+    await request(`/customer/c2c/${id}/edit`,'other',form)
+    assert.equal(listing().status,'rejected')
+    await request(`/customer/c2c/${id}/edit`,'owner',form)
+    await request(`/admin/c2c/${id}/review`,'admin',{action:'approve'})
+    assert.equal(listing().status,'approved')
+    assert.equal(row('SELECT status FROM devices WHERE id=?',listing().device_id).status,'available')
+    assert.match(await (await request('/customer/devices?mode=c2c','renter')).text(),/个人笔记本/)
+    const rentPage=await (await request(`/customer/rent/${listing().device_id}`,'renter')).text()
+    const staffEdit=await (await request(`/staff/devices/${listing().device_id}/edit`,'admin')).text()
+    for (const page of [rentPage,staffEdit]) {
+      assert.match(page,/M4&amp;quot;|M4&quot;/)
+      assert.doesNotMatch(page,/value="M4" autofocus/)
+    }
+    assert.doesNotMatch(await (await request('/customer/devices?mode=c2c','owner')).text(),/个人笔记本/)
+    assert.match(await (await request(`/customer/rent/${listing().device_id}`,'owner')).text(),/不能租赁自己发布的设备/)
+    assert.equal((await request(`/customer/rent/${listing().device_id}`,'owner',{})).status,403)
+  })
+  await t.test('approved personal devices use the existing customer application route',async()=>{
+    const response=await request(`/customer/rent/${listing().device_id}`,'renter',{
+      startDate:'2030-03-04',endDate:'2030-03-08',deliveryMethod:'Pickup',pickupTimeSlot:'morning',returnTimeSlot:'morning'
+    })
+    assert.equal(response.status,302)
+    const application=row("SELECT * FROM orders WHERE deviceId=? AND userId='renter'",listing().device_id)
+    assert.ok(application)
+    assert.equal(application.status,'pending_approval')
+    assert.equal(row('SELECT owner_id FROM c2c_order_terms WHERE order_id=?',application.id).owner_id,'owner')
+    assert.equal(application.depositAmount,200)
+    assert.ok(application.totalAmount>200)
+    sqlite.prepare("UPDATE orders SET status='cancelled' WHERE id=?").run(application.id)
+    const page=await (await request('/admin/c2c','admin')).text()
+    assert.doesNotMatch(page,/name="action" value="approve" type="submit"/)
+  })
+  const insertOrder=(id: string,customer='renter')=>sqlite.prepare(`INSERT INTO orders
+    (id,orderNo,userId,deviceId,startDate,endDate,rentalPeriod,totalAmount,depositAmount,deliveryFee,serviceFee,status,paymentMethod,deposit_status,settlement_status)
+    VALUES (?,? ,?,?,'2030-01-07','2030-01-12',5,330,200,20,10,'pending_approval','bank_transfer','HELD','NOT_APPLICABLE')`).run(id,`OD-${id}`,customer,listing().device_id)
+  await t.test('all order insertion paths snapshot commission and prevent self rental and owner swaps',async()=>{
+    assert.throws(()=>insertOrder('self','owner'),/C2C_DEVICE_UNAVAILABLE/)
+    insertOrder('rental')
+    assert.equal(row("SELECT commission_bps FROM c2c_order_terms WHERE order_id='rental'").commission_bps,1000)
+    await request('/admin/c2c/commission','admin',{commission:'12.34'})
+    assert.equal(row('SELECT commission_bps FROM c2c_settings').commission_bps,1234)
+    assert.equal(row("SELECT commission_bps FROM c2c_order_terms WHERE order_id='rental'").commission_bps,1000)
+    assert.throws(()=>sqlite.exec("UPDATE orders SET userId='owner' WHERE id='rental'"),/C2C_ORDER_OWNERSHIP_LOCKED/)
+    assert.throws(()=>sqlite.exec("UPDATE orders SET deviceId='d-mbp14' WHERE id='rental'"),/C2C_ORDER_OWNERSHIP_LOCKED/)
+    assert.throws(()=>sqlite.exec("UPDATE c2c_order_terms SET commission_bps=0"),/C2C_TERMS_IMMUTABLE/)
+    await request(`/customer/c2c/${listing().id}/pause`,'owner',{})
+    assert.equal(listing().status,'approved')
+  })
+  await t.test('settlement excludes deposits, service, delivery and processing fees; pending refunds and disputes block payout',async()=>{
+    sqlite.exec(`INSERT INTO payments (id,rental_id,customer_id,payment_method,amount,deposit_amount,rental_amount,processing_fee,currency,status)
+      VALUES ('payment','rental','renter','bank_transfer',338.25,200,130,8.25,'AUD','paid');`)
+    const quote=()=>row("SELECT * FROM c2c_settlement_quotes WHERE order_id='rental'")
+    assert.equal(quote().rental_cents,10000)
+    assert.equal(quote().commission_cents,1000)
+    assert.equal(quote().owner_cents,9000)
+    await request('/admin/c2c/orders/rental/settle','admin',settleForm('TOO-EARLY'))
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_settlements').n,0)
+    sqlite.exec("UPDATE orders SET status='completed',return_received_at=CURRENT_TIMESTAMP,deposit_status='REFUNDED',settlement_status='SETTLED' WHERE id='rental'")
+    assert.equal(quote().eligible,1)
+    sqlite.exec(`INSERT INTO payment_refunds (id,order_id,payment_id,type,refundable_amount,refund_amount,status,processed_by,refund_method)
+      VALUES ('early','rental','payment','early_return',100,20,'pending','admin','bank_transfer')`)
+    assert.equal(quote().eligible,0)
+    sqlite.exec("UPDATE payment_refunds SET status='succeeded' WHERE id='early'")
+    assert.equal(quote().rental_cents,8000)
+    assert.equal(quote().owner_cents,7200)
+    sqlite.exec(`INSERT INTO payment_disputes (id,stripe_dispute_id,payment_id,order_id,amount,status) VALUES ('dispute','dp_1','payment','rental',20,'DISPUTE_OPENED')`)
+    assert.equal(quote().eligible,0)
+    sqlite.exec("UPDATE payment_disputes SET status='DISPUTE_WON' WHERE id='dispute'")
+    assert.equal(quote().eligible,1)
+    sqlite.exec("UPDATE users SET account_number=NULL WHERE id='owner'")
+    await request('/admin/c2c/orders/rental/settle','admin',settleForm('MISSING-BANK'))
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_settlements').n,0)
+    sqlite.exec("UPDATE users SET account_number='12345678' WHERE id='owner'")
+    const stale=settleForm('STALE')
+    sqlite.exec("UPDATE users SET account_number='87654321' WHERE id='owner'")
+    await request('/admin/c2c/orders/rental/settle','admin',stale)
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_settlements').n,0)
+    sqlite.exec("UPDATE users SET account_number='12345678' WHERE id='owner'")
+    const adminPage=await (await request('/admin/c2c','admin')).text()
+    assert.match(adminPage,/登记结算/)
+    const [first,second]=await Promise.all([request('/admin/c2c/orders/rental/settle','admin',settleForm('TRANSFER-1')),request('/admin/c2c/orders/rental/settle','admin',settleForm('TRANSFER-1'))])
+    assert.equal(first.status,303);assert.equal(second.status,303)
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_settlements').n,1)
+    const settled=row('SELECT * FROM c2c_settlements')
+    assert.equal(settled.owner_cents,7200)
+    assert.equal(settled.bsb,'123-456')
+    const revenue=await getRevenueData(c)
+    assert.equal(revenue.ownerSettlements[0].amount,72)
+    const finance=renderAdminFinance({id:'admin',role:'ADMIN'},revenue.orders,revenue.refunds,revenue.withdrawals,revenue.ownerSettlements)
+    assert.match(finance,/AUD\$38\.00/)
+    assert.equal((await request('/customer/profile/delete-account','owner',{confirmDelete:'on'})).status,409)
+    assert.throws(()=>sqlite.exec("UPDATE c2c_settlements SET owner_cents=0"),/C2C_SETTLEMENT_IMMUTABLE/)
+    assert.throws(()=>sqlite.exec('DELETE FROM c2c_settlements'),/C2C_SETTLEMENT_IMMUTABLE/)
+    assert.match(await (await request('/customer/c2c','owner')).text(),/TRANSFER-1/)
+    assert.doesNotMatch(await (await request('/customer/c2c','other')).text(),/TRANSFER-1/)
+    // Display uses the immutable settlement even if later reconciliation changes the order.
+    sqlite.exec("UPDATE orders SET totalAmount=220 WHERE id='rental'")
+    assert.match(await (await request('/customer/c2c','owner')).text(),/72\.00/)
+  })
+  await t.test('withdrawal hides equipment and blocks direct booking, and reapproval is required after edits',async()=>{
+    await request(`/customer/c2c/${listing().id}/pause`,'other',{})
+    assert.equal(listing().status,'approved')
+    await request(`/customer/c2c/${listing().id}/pause`,'owner',{})
+    assert.equal(listing().status,'paused')
+    assert.throws(()=>insertOrder('paused'),/C2C_DEVICE_UNAVAILABLE/)
+    await request(`/customer/c2c/${listing().id}/edit`,'owner',{...form,dailyRate:'30'})
+    assert.equal(listing().status,'pending')
+    assert.throws(()=>insertOrder('pending'),/C2C_DEVICE_UNAVAILABLE/)
+    await request(`/admin/c2c/${listing().id}/review`,'admin',{action:'approve'})
+    insertOrder('new-rate')
+    assert.equal(row("SELECT commission_bps FROM c2c_order_terms WHERE order_id='new-rate'").commission_bps,1234)
+    assert.equal(row('SELECT pricePerDay FROM devices WHERE id=?',listing().device_id).pricePerDay,30)
+  })
+})
+
+test('C2C commission accepts zero and 100 percent and rejects malformed input',()=>{
+  assert.equal(commissionBps('0'),0);assert.equal(commissionBps('100'),10000);assert.equal(commissionBps('12.34'),1234)
+  for(const input of ['',null,'-1','100.01','NaN','Infinity','1.001','0x10'])assert.throws(()=>commissionBps(input))
+})

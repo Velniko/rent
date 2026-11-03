@@ -3,9 +3,11 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { c2cBookingError } from '../../services/c2c';
 import { rentalPricingClientScript } from '../../domain/rentalPricing';
 import { buildLayout, getDeviceById, formatCurrency, getDeviceRentalRules } from '../../site';
 import { HALF_HOUR_TIME_OPTIONS, legacyPickupSlot, pickupTimeSlots, serviceFeeRate, pickupClosureConfig, isPickupPeriodClosed } from '../../domain/pickupTimeSlots';
+import { escapeHtml } from '../../lib/html';
 import type { Context } from 'hono';
 
 export interface RentFormPrefill {
@@ -22,6 +24,8 @@ export interface RentFormPrefill {
 }
 
 export async function renderCustomerRent(c: Context, deviceId: string, user: any, errorMessage?: string, prefill: RentFormPrefill = {}) {
+  const bookingError = await c2cBookingError(c,deviceId,user.id);
+  if (bookingError) return buildLayout('设备租赁', `<div class="panel"><p>${bookingError}</p><a class="button" href="/customer/devices">可租设备</a></div>`,user);
   const device = await getDeviceById(c, deviceId);
 
   if (!device) {
@@ -50,16 +54,16 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
 
   const body = `
     <div class="panel">
-      <div class="section-title"><h2>租赁设备: ${device.name}</h2></div>
+      <div class="section-title"><h2>租赁设备: ${escapeHtml(device.name)}</h2></div>
       ${errorMessage ? `<div data-flash-notice class="page-notification page-notification--error">${errorMessage}</div>` : ''}
       <form method="POST" action="/customer/rent/${device.id}">
         <div class="form-group">
           <label class="form-label" for="deviceName">设备名称</label>
-          <input type="text" id="deviceName" class="form-control" value="${device.name}" readonly />
+          <input type="text" id="deviceName" class="form-control" value="${escapeHtml(device.name)}" readonly />
         </div>
         <div class="form-group">
           <label class="form-label" for="deviceModel">型号</label>
-          <input type="text" id="deviceModel" class="form-control" value="${device.model}" readonly />
+          <input type="text" id="deviceModel" class="form-control" value="${escapeHtml(device.model)}" readonly />
         </div>
         <div class="form-group">
           <label class="form-label" for="dailyRate">日租金</label>
@@ -150,5 +154,5 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
     </div>
   `;
 
-  return buildLayout(`租赁 ${device.name} - 电脑租赁管理系统`, body, user);
+  return buildLayout(`租赁 ${escapeHtml(device.name)} - 电脑租赁管理系统`, body, user);
 }

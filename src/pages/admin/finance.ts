@@ -5,12 +5,13 @@
 
 import { buildLayout, formatCurrency } from '../../site';
 
-export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[] = [], withdrawals: any[] = []) {
+export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[] = [], withdrawals: any[] = [], ownerSettlements: any[] = []) {
   const totalRevenue = orders
     .reduce((sum, order) => sum + Number(order.collectedRevenue || 0), 0)
 
   const totalExpense = refunds.reduce((sum, item) => sum + Number(item.refund_amount || 0), 0) + withdrawals.reduce((sum, item) => sum + Number(item.amount || 0), 0)
-  const netProfit = Math.round((totalRevenue - totalExpense) * 100) / 100
+  const ownerExpense = ownerSettlements.reduce((sum,item)=>sum+Number(item.amount || 0),0)
+  const netProfit = Math.round((totalRevenue - totalExpense - ownerExpense) * 100) / 100
 
   const body = `
     <style>
@@ -72,7 +73,7 @@ export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[]
         </div>
         <div class="finance-card">
           <h3>总支出</h3>
-          <p class="amount">${formatCurrency(totalExpense)}</p>
+          <p class="amount">${formatCurrency(totalExpense + ownerExpense)}</p>
         </div>
         <div class="finance-card">
           <h3>净收入</h3>
@@ -81,6 +82,7 @@ export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[]
       </div>
 
       <div class="finance-sections">
+        <div class="finance-section"><h4>主人结算</h4><p>${formatCurrency(ownerExpense)}</p><a href="/admin/c2c" class="button button-sm">个人设备管理</a></div>
         <div class="finance-section">
           <h4>单据中心</h4>
           <a href="/admin/documents" class="button button-sm">查询单据</a>
