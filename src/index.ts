@@ -9,6 +9,7 @@ import { getTranslationConfigSummary } from './translationConfig'
 import { handleTranslation } from './services/translation'
 import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
+import { createNotificationWithDelivery } from './services/notifications'
 import { runRentalPayouts } from './services/rentalPayouts'
 import { rentalPickupBlocks,rentalPickupBlocked } from './services/rentalPickup'
 import { normalizeClientAccess, readClientAccess, clientFeatureForPath, consoleEssentialPath, clientMaintenanceHtml } from './clientAccess'
@@ -909,6 +910,7 @@ app.use('*', async (c, next) => {
     : c.req.method === 'POST' && c.req.path.startsWith('/admin/contracts/template') ? ['contract-template-write', 30, 600] as const
     : c.req.method === 'POST' && (c.req.path.startsWith('/admin/settings') || c.req.path.startsWith('/admin/rental-settlements')) ? ['admin-settings-write', 60, 600] as const
     : c.req.path === '/admin/orders/export' ? ['orders-export', 10, 3600] as const
+    : c.req.method === 'POST' && (c.req.path === '/notifications/send' || c.req.path === '/admin/email-templates/send' || /^\/manager\/email-events\/[^/]+\/retry$/.test(c.req.path)) ? ['notification-email-send', 30, 600] as const
     : c.req.path === '/api/search' ? ['global-search', 120, 60] as const
     : c.req.path === '/api/contract-sign/coupon-preview' ? ['coupon-preview', 30, 60] as const
     : c.req.path === '/api/payment/status' ? ['payment-status-poll', 300, 60] as const
@@ -1125,8 +1127,8 @@ async function sendEmailVerification(c: any, user: any) {
   await c.env.RENT.prepare('INSERT INTO email_verifications (id, user_id, email, token_hash, sent_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)').bind(nanoid(), user.id, user.email, tokenHash, now.toISOString(), expiresAt).run()
   const claimed = await c.env.RENT.prepare("INSERT OR IGNORE INTO email_events (id, event_type, recipient, idempotency_key, status) VALUES (?, 'EMAIL_VERIFICATION', ?, ?, 'PENDING')").bind(`email-${nanoid(12)}`, user.email, eventKey).run() as any
   if (!claimed.meta?.changes) return
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) { await c.env.RENT.prepare("UPDATE email_events SET status = 'SKIPPED', error_message = 'Email transport is not configured' WHERE idempotency_key = ?").bind(eventKey).run(); return }
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) { await c.env.RENT.prepare("UPDATE email_events SET status = 'SKIPPED', error_message = 'Email transport is not configured' WHERE idempotency_key = ?").bind(eventKey).run(); return }
   const verifyUrl = `${new URL(c.req.url).origin}/verify-email?token=${encodeURIComponent(token)}`
   const result = await sendTransactionalEmail(c, { to: user.email, subject: '验证您的邮箱 - PC Rental', text: `您好 ${user.name}，请在 24 小时内打开以下链接验证邮箱：\n${verifyUrl}` })
   await c.env.RENT.prepare("UPDATE email_events SET status = ?, provider_message_id = ?, error_message = ?, sent_at = CASE WHEN ? THEN CURRENT_TIMESTAMP END WHERE idempotency_key = ?").bind(result.ok ? 'SENT' : 'FAILED', result.id, result.error, result.ok ? 1 : 0, eventKey).run()
@@ -1813,6 +1815,7 @@ function notificationListMessage(item: any): string {
 }
 
 app.get('/notifications', async (c) => {
+  await loadSystemSettingsFromDB(c)
   const user = c.get('user')
   if (!user) return c.redirect('/login')
   await ensureNotificationsTable(c)
@@ -1829,8 +1832,13 @@ app.get('/notifications', async (c) => {
   if (user.role === 'ADMIN' || user.role === 'STAFF') await ensureInAppNotificationTemplates(c)
   const inAppNotificationTemplates = user.role === 'ADMIN' || user.role === 'STAFF' ? ((await c.env.RENT.prepare("SELECT id, name FROM in_app_notification_templates WHERE enabled = 1 AND deleted_at IS NULL ORDER BY name").all()).results || []) as any[] : []
   const inAppNotificationTemplateOptions = `<option value="custom">自定义通知</option>${inAppNotificationTemplates.map((item: any) => `<option value="${sanitizePlainText(item.id, 120)}">使用模板：${sanitizePlainText(item.name, 120)}</option>`).join('')}`
+  const defaultDelivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
+  const deliveryChoice = `<div class="form-group"><label class="form-label" for="notificationDelivery">发送方式</label><select class="form-control" id="notificationDelivery" name="delivery"><option value="in_app_email" ${defaultDelivery === 'in_app_email' ? 'selected' : ''}>站内通知 + 邮件</option><option value="in_app_only" ${defaultDelivery === 'in_app_only' ? 'selected' : ''}>仅站内通知</option></select></div>`
+  const resultCount = (key: string) => Math.min(10000, Math.max(0, Number.parseInt(c.req.query(key) || '0', 10) || 0))
+  const sentCount = resultCount('sent'), emailSent = resultCount('emailSent'), emailFailed = resultCount('emailFailed')
+  const sendResult = c.req.query('sent') ? `<div role="status" data-flash-notice class="page-notification page-notification--${emailFailed ? 'error' : 'success'}"><span>站内通知已发送：</span> ${sentCount}${c.req.query('delivery') === 'in_app_email' ? ` · <span>邮件已提交：</span> ${emailSent} · <span>邮件失败：</span> ${emailFailed}` : ''}${user.role === 'ADMIN' ? ' · <a href="/manager/email-events">查看邮件发送记录</a>' : ''}</div>` : ''
   const recipientOptions = recipients.map((account: any) => `<option value="${sanitizePlainText(account.id, 120)}">${sanitizePlainText(account.name || account.email, 120)} · ${sanitizePlainText(account.email, 160)}</option>`).join('')
-  const body = `<div class="panel"><div class="section-title"><h2>通知中心</h2><span class="section-note">订单和归还提醒</span></div>${user.role === 'ADMIN' ? `<form method="post" action="/notifications/announcement" class="panel notification-compose"><h3>发布通告</h3>${renderAnnouncementEditor()}<div class="form-group"><label class="form-label" for="announcementExpiresAt">下架日期和时间（选填）</label><input class="form-control" id="announcementExpiresAt" name="expiresAt" type="datetime-local"></div><button class="button button-primary" type="submit">发布通告</button></form>` : ''}${user.role === 'ADMIN' || user.role === 'STAFF' ? `<form method="post" action="/notifications/send" class="panel notification-compose"><h3>发送通知</h3><div class="form-group"><label class="form-label" for="notificationRecipient">收件人（可多选）</label><input class="form-control recipient-search" id="notificationRecipientSearch" type="search" placeholder="搜索姓名或邮箱…" autocomplete="off"><div class="recipient-picker-actions"><button type="button" class="button button-sm button-secondary" id="selectVisibleRecipients">全选当前结果</button><button type="button" class="button button-sm button-secondary" id="clearRecipients">清空选择</button><span id="recipientCount" class="section-note">已选 0 人</span></div><select class="form-control recipient-select" id="notificationRecipient" name="recipientId" multiple size="7" required>${recipientOptions}</select><small class="form-text">可搜索后全选当前结果，也可以按住 Command（Mac）或 Ctrl（Windows）逐个选择。</small></div><div class="form-group"><label class="form-label" for="notificationTitle">标题（自定义通知时必填）</label><input class="form-control" id="notificationTitle" name="title" maxlength="120" required></div><div class="form-group"><label class="form-label" for="notificationMessage">内容（支持 HTML，自定义通知时必填）</label><textarea class="form-control html-editor" id="notificationMessage" name="message" maxlength="1000" required></textarea></div><button class="button button-primary" type="submit">发送通知</button></form><script>(()=>{const search=document.getElementById('notificationRecipientSearch'),select=document.getElementById('notificationRecipient'),count=document.getElementById('recipientCount'),template=document.getElementById('notificationTemplate'),title=document.getElementById('notificationTitle'),message=document.getElementById('notificationMessage');if(!search||!select)return;const update=()=>{const query=search.value.trim().toLowerCase();Array.from(select.options).forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});count.textContent='已选 '+Array.from(select.selectedOptions).length+' 人';};const syncTemplateFields=()=>{const custom=!template||template.value==='custom';[title,message].forEach(field=>{if(!field)return;field.required=custom;field.setAttribute('aria-required',String(custom));});};search.addEventListener('input',update);select.addEventListener('change',update);template?.addEventListener('change',syncTemplateFields);document.getElementById('selectVisibleRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>{if(!option.hidden)option.selected=true;});update();});document.getElementById('clearRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>option.selected=false);update();});update();syncTemplateFields();})();</script>` : ''}${user.role === 'ADMIN' && sentAnnouncements.length ? `<section class="panel"><h3>已发布通告历史</h3><div class="notification-list">${sentAnnouncements.map((item: any) => `<article class="notification-item"><div><strong>${sanitizePlainText(item.title, 120)}</strong><div class="notification-message">${renderNotificationMarkdown(normalizeDisplayedNotification(item))}</div><small>${formatMelbourneDateTime(item.created_at)}</small></div><form method="post" action="/notifications/announcements/${item.id}/delete" data-site-confirm="删除后这条通告及其历史记录将从所有收件人处撤回，无法恢复。" data-confirm-variant="danger" data-confirm-title="删除这条通告？" data-confirm-label="删除通告"><button class="button button-sm button-danger" type="submit">删除</button></form></article>`).join('')}</div></section>` : ''}${notifications.length ? `<div class="notification-list">${notifications.map((item: any) => `<a class="notification-item ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><div><strong>${sanitizePlainText(item.title, 200)}</strong><div class="notification-message">${renderNotificationMarkdown(notificationListMessage(item))}</div><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div>${item.order_id ? `<span class="button button-sm button-secondary">查看订单</span>` : ''}</a>`).join('')}</div>` : '<p class="empty-state">暂无通知</p>'}</div>`
+  const body = `<div class="panel"><div class="section-title"><h2>通知中心</h2><span class="section-note">订单和归还提醒</span></div>${user.role === 'ADMIN' ? `<form method="post" action="/notifications/announcement" class="panel notification-compose"><h3>发布通告</h3>${renderAnnouncementEditor()}<div class="form-group"><label class="form-label" for="announcementExpiresAt">下架日期和时间（选填）</label><input class="form-control" id="announcementExpiresAt" name="expiresAt" type="datetime-local"></div><button class="button button-primary" type="submit">发布通告</button></form>` : ''}${user.role === 'ADMIN' || user.role === 'STAFF' ? `<form method="post" action="/notifications/send" class="panel notification-compose"><h3>发送通知</h3>${sendResult}${deliveryChoice}<div class="form-group"><label class="form-label" for="notificationRecipient">收件人（可多选）</label><input class="form-control recipient-search" id="notificationRecipientSearch" type="search" placeholder="搜索姓名或邮箱…" autocomplete="off"><div class="recipient-picker-actions"><button type="button" class="button button-sm button-secondary" id="selectVisibleRecipients">全选当前结果</button><button type="button" class="button button-sm button-secondary" id="clearRecipients">清空选择</button><span id="recipientCount" class="section-note">已选 0 人</span></div><select class="form-control recipient-select" id="notificationRecipient" name="recipientId" multiple size="7" required>${recipientOptions}</select><small class="form-text">可搜索后全选当前结果，也可以按住 Command（Mac）或 Ctrl（Windows）逐个选择。</small></div><div class="form-group"><label class="form-label" for="notificationTitle">标题（自定义通知时必填）</label><input class="form-control" id="notificationTitle" name="title" maxlength="120" required></div><div class="form-group"><label class="form-label" for="notificationMessage">内容（支持 HTML，自定义通知时必填）</label><textarea class="form-control html-editor" id="notificationMessage" name="message" maxlength="1000" required></textarea></div><button class="button button-primary" type="submit">发送通知</button></form><script>(()=>{const search=document.getElementById('notificationRecipientSearch'),select=document.getElementById('notificationRecipient'),count=document.getElementById('recipientCount'),template=document.getElementById('notificationTemplate'),title=document.getElementById('notificationTitle'),message=document.getElementById('notificationMessage');if(!search||!select)return;const update=()=>{const query=search.value.trim().toLowerCase();Array.from(select.options).forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});count.textContent='已选 '+Array.from(select.selectedOptions).length+' 人';};const syncTemplateFields=()=>{const custom=!template||template.value==='custom';[title,message].forEach(field=>{if(!field)return;field.required=custom;field.setAttribute('aria-required',String(custom));});};search.addEventListener('input',update);select.addEventListener('change',update);template?.addEventListener('change',syncTemplateFields);document.getElementById('selectVisibleRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>{if(!option.hidden)option.selected=true;});update();});document.getElementById('clearRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>option.selected=false);update();});update();syncTemplateFields();})();</script>` : ''}${user.role === 'ADMIN' && sentAnnouncements.length ? `<section class="panel"><h3>已发布通告历史</h3><div class="notification-list">${sentAnnouncements.map((item: any) => `<article class="notification-item"><div><strong>${sanitizePlainText(item.title, 120)}</strong><div class="notification-message">${renderNotificationMarkdown(normalizeDisplayedNotification(item))}</div><small>${formatMelbourneDateTime(item.created_at)}</small></div><form method="post" action="/notifications/announcements/${item.id}/delete" data-site-confirm="删除后这条通告及其历史记录将从所有收件人处撤回，无法恢复。" data-confirm-variant="danger" data-confirm-title="删除这条通告？" data-confirm-label="删除通告"><button class="button button-sm button-danger" type="submit">删除</button></form></article>`).join('')}</div></section>` : ''}${notifications.length ? `<div class="notification-list">${notifications.map((item: any) => `<a class="notification-item ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><div><strong>${sanitizePlainText(item.title, 200)}</strong><div class="notification-message">${renderNotificationMarkdown(notificationListMessage(item))}</div><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div>${item.order_id ? `<span class="button button-sm button-secondary">查看订单</span>` : ''}</a>`).join('')}</div>` : '<p class="empty-state">暂无通知</p>'}</div>`
   const pagination = pageCount > 1 ? `<nav class="pagination" aria-label="通知分页">${Array.from({ length: pageCount }, (_, index) => `<a class="button button-sm ${index + 1 === page ? 'button-primary' : 'button-secondary'}" href="/notifications?page=${index + 1}">${index + 1}</a>`).join('')}</nav>` : ''
   const bodyWithAnnouncementExpiry = body
   const bodyWithSendAnchor = bodyWithAnnouncementExpiry.replace('<form method="post" action="/notifications/send" class="panel notification-compose">', '<form id="send-notification" method="post" action="/notifications/send" class="panel notification-compose">')
@@ -1986,13 +1994,12 @@ app.post('/admin/email-templates/send', async (c) => {
   vars.company_email = vars.company_email || String(companyDetails.email || '')
   const fill = (value: string) => value.replace(/\{([a-z_]+)\}/g, (_: string, key: string) => vars[key] ?? '')
   if (['site', 'both'].includes(channel)) await createNotification(c, { recipientId, senderId: user.id, type: 'manual', title: notificationPlainText(fill(template.subject)), message: fill(template.body), notifyByEmail: false })
-  if (['site', 'both'].includes(channel)) await createNotification(c, { recipientId, senderId: user.id, type: 'manual', title: notificationPlainText(fill(template.subject)), message: fill(template.body), notifyByEmail: false })
   if (['email', 'both'].includes(channel)) {
-    const { apiKey, from } = await resolveEmailCredentials(c)
-    if (!apiKey || !from) return c.text('尚未配置邮件服务：请在后台「通知渠道」配置 Resend / Brevo / MailerSend 之一，或设置 RESEND_API_KEY / EMAIL_FROM', 503)
+    const { provider, apiKey, from } = await resolveEmailCredentials(c)
+    if ((provider !== 'smtp' && !apiKey) || !from) return c.text('请先在通知渠道配置邮件服务', 503)
     const filledBody = fill(template.body)
     const html = renderEmailNotificationHtml(fill(template.subject), filledBody, vars.company_name, template.theme_color || '#71818d')
-    const sent = await sendLoggedEmail(c, { eventType: 'TEMPLATE', recipient: mailTo, key: `template:${String(form.templateId || 'custom')}:${mailTo}:${JSON.stringify(vars)}`, subject: fill(template.subject), text: filledBody, html, templateId: String(form.templateId || '') || undefined })
+    const sent = await sendLoggedEmail(c, { eventType: 'TEMPLATE', recipient: mailTo, key: `template:${crypto.randomUUID()}`, subject: fill(template.subject), text: filledBody, html, templateId: String(form.templateId || '') || undefined })
     if (!sent.ok) return c.text('邮件发送失败或邮件服务尚未配置', 502)
   }
   return c.redirect('/admin/email-templates')
@@ -2127,7 +2134,7 @@ async function sendMarketingCampaignEmails(c: any, params: { campaignId: string;
     const url = device?.id ? new URL(`/customer/rent/${encodeURIComponent(String(device.id))}`, c.req.url).toString() : ''
     return { name, description, url }
   })
-  const { apiKey, from } = await resolveEmailCredentials(c)
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
   let sent = 0, failed = 0
   for (const row of params.recipients) {
     const recipient = await getUserById(c, row.customerId)
@@ -2162,7 +2169,7 @@ async function sendMarketingCampaignEmails(c: any, params: { campaignId: string;
     const filledBody = fill(params.body)
     let ok = false
     let errorMessage = ''
-    if (!apiKey || !from) {
+    if ((provider !== 'smtp' && !apiKey) || !from) {
       errorMessage = '邮件服务尚未配置'
     } else {
       const html = renderMarketingEmailHtml(filledSubject, filledBody, companyName, params.themeColor, unsubscribeUrl, companyEmail, logoUrl)
@@ -2481,9 +2488,10 @@ app.post('/notifications/announcement', async (c) => {
 })
 
 app.post('/notifications/send', async (c) => {
+  await loadSystemSettingsFromDB(c)
   const user = c.get('user')
   if (!user || !['ADMIN', 'STAFF'].includes(user.role)) return c.html(renderForbidden(), 403)
-  const form = await c.req.parseBody()
+  const form = await c.req.parseBody({ all: true })
   const rawRecipientIds = form.recipientId ?? form['recipientId[]']
   const recipientIds = (Array.isArray(rawRecipientIds) ? rawRecipientIds : [rawRecipientIds])
     .map((value: unknown) => String(value || '').trim())
@@ -2505,8 +2513,21 @@ app.post('/notifications/send', async (c) => {
     (user.role !== 'STAFF' || (recipient.role === 'CUSTOMER' && recipient.staffId === user.id))
   )
   if (!recipientIds.length || allowedRecipients.length !== new Set(recipientIds).size || !title || !message) return c.text('收件人或通知内容无效', 400)
-  await Promise.all(allowedRecipients.map((recipient: any) => createNotification(c, { recipientId: recipient.id, senderId: user.id, type: 'manual', title, message })))
-  return c.redirect('/notifications')
+  const defaultDelivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
+  const delivery = String(form.delivery || defaultDelivery)
+  if (!['in_app_only', 'in_app_email'].includes(delivery)) return c.text('发送方式无效', 400)
+  const results = []
+  for (const recipient of allowedRecipients) {
+    const company = getSystemSettings().companyDetails || {}
+    const vars = { customer_name: String(recipient.name || ''), customer_email: String(recipient.email || ''), company_name: String(company.name || ''), company_email: String(company.email || '') }
+    const fill = (value: string, html = false) => value.replace(/\{([a-z_]+)\}/g, (placeholder, key) => Object.hasOwn(vars, key) ? (html ? escapeHtml(vars[key]) : vars[key]) : placeholder)
+    results.push(await createNotificationWithDelivery(c, { recipientId: recipient.id, senderId: user.id, type: 'manual', title: fill(title), message: fill(message, true), notifyByEmail: delivery === 'in_app_email' }))
+  }
+  const count = results.filter(result => result.inserted).length
+  const emailSent = results.filter(result => result.email?.ok).length
+  const emailFailed = delivery === 'in_app_email' ? results.filter(result => result.inserted && !result.email?.ok).length : 0
+  await createAuditLog(c, { actor: user, action: 'MANUAL_NOTIFICATIONS_SENT', targetType: 'NOTIFICATION', targetId: user.id, after: { count, delivery, emailSent, emailFailed } })
+  return c.redirect(`/notifications?sent=${count}&emailSent=${emailSent}&emailFailed=${emailFailed}&delivery=${delivery}#send-notification`, 303)
 })
 
 // Existing links keep working while new pages use the rental-program name.
@@ -4271,9 +4292,11 @@ app.get('/manager/staff', async (c) => {
 app.get('/manager/email-events', async (c) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)
   if (!user || !['MANAGER', 'ADMIN'].includes(getAccessLevel(user))) return c.html(renderForbidden(), 403)
-  const { results = [] } = await c.env.RENT.prepare('SELECT id, event_type, recipient, status, retry_count, max_attempts, error_message, sent_at, created_at FROM email_events ORDER BY created_at DESC LIMIT 100').all() as any
-  const rows = results.map((event: any) => `<tr><td>${sanitizePlainText(event.event_type, 40)}</td><td>${sanitizePlainText(event.recipient, 254)}</td><td>${sanitizePlainText(event.status, 20)}</td><td>${event.retry_count}/${event.max_attempts}</td><td>${sanitizePlainText(event.error_message || '—', 200)}</td><td>${sanitizePlainText(event.sent_at || event.created_at, 40)}</td><td>${event.status !== 'SENT' && Number(event.retry_count) < Number(event.max_attempts) ? `<form method="post" action="/manager/email-events/${encodeURIComponent(event.id)}/retry" data-site-confirm="确认重新发送该邮件吗？"><button class="button button-sm button-primary">重新发送</button></form>` : '—'}</td></tr>`).join('') || '<tr><td colspan="7">暂无邮件事件</td></tr>'
-  return c.html(buildLayout('邮件发送记录', `<div class="panel"><div class="section-title"><div><h2>邮件发送记录</h2><p>失败邮件可在最大重试次数内由 Manager 或 Admin 手动重发。</p></div></div><div class="table-wrapper"><table><thead><tr><th>事件</th><th>收件人</th><th>状态</th><th>尝试</th><th>失败原因</th><th>时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>`, user))
+  const { results = [] } = await c.env.RENT.prepare('SELECT id, event_type, recipient, subject, status, retry_count, max_attempts, error_message, sent_at, created_at FROM email_events ORDER BY created_at DESC LIMIT 100').all() as any
+  const statusLabels = { PENDING: '待发送', SENT: '邮件已提交', FAILED: '发送失败', SKIPPED: '已跳过' }
+  const eventLabels = { SITE_NOTIFICATION: '手动通知', TEMPLATE: '模板邮件', MARKETING: '营销邮件', C2C_NEW_RENTAL: '新出租通知' }
+  const rows = results.map((event: any) => `<tr><td>${sanitizePlainText(eventLabels[event.event_type] || event.event_type, 40)}<br><small>${sanitizePlainText(event.subject || '—', 200)}</small></td><td>${sanitizePlainText(event.recipient, 254)}</td><td><span class="badge ${event.status === 'SENT' ? 'badge-success' : event.status === 'FAILED' ? 'badge-danger' : 'badge-neutral'}">${sanitizePlainText(statusLabels[event.status] || event.status, 20)}</span></td><td>${event.retry_count}/${event.max_attempts}</td><td>${sanitizePlainText(event.error_message || '—', 200)}</td><td>${sanitizePlainText(event.sent_at || event.created_at, 40)}</td><td>${['FAILED', 'SKIPPED'].includes(event.status) && Number(event.retry_count) < Number(event.max_attempts) ? `<form method="post" action="/manager/email-events/${encodeURIComponent(event.id)}/retry" data-site-confirm="确认重新发送该邮件吗？"><button class="button button-sm button-primary">重新发送</button></form>` : '—'}</td></tr>`).join('') || '<tr><td colspan="7">暂无邮件事件</td></tr>'
+  return c.html(buildLayout('邮件发送记录', `<div class="panel"><div class="section-title"><h2>邮件发送记录</h2><a class="button button-secondary" href="/notifications#send-notification">发送通知</a></div><div class="table-wrapper"><table><thead><tr><th>事件与主题</th><th>收件人</th><th>状态</th><th>尝试</th><th>失败原因</th><th>时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>`, user))
 })
 
 app.post('/manager/email-events/:id/retry', async (c) => {
@@ -4286,10 +4309,17 @@ app.post('/manager/email-events/:id/retry', async (c) => {
     await createAuditLog(c,{actor:user,action:'EMAIL_EVENT_RETRIED',targetType:'EMAIL_EVENT',targetId:event.id})
     return c.redirect('/manager/email-events',303)
   }
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) return c.text('邮件服务尚未配置', 503)
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) return c.text('邮件服务尚未配置', 503)
+  if (!event.subject || !event.text_body) return c.text('邮件内容不完整，请重新发送通知', 409)
+  if (event.event_type === 'SITE_NOTIFICATION') {
+    const template = await c.env.RENT.prepare('SELECT enabled FROM email_templates WHERE id = ? AND deleted_at IS NULL').bind(event.template_id).first()
+    if (!template?.enabled) return c.text('请先启用站内通知邮件模板', 409)
+  }
+  const claimed = await c.env.RENT.prepare("UPDATE email_events SET status = 'PENDING', retry_count = retry_count + 1, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('FAILED', 'SKIPPED') AND retry_count = ? AND retry_count < max_attempts").bind(event.id, event.retry_count).run()
+  if (Number(claimed.meta?.changes || 0) !== 1) return c.text('邮件已在发送中或已发送', 409)
   const result = await sendTransactionalEmail(c, { to: event.recipient, subject: event.subject, text: event.text_body, html: event.html_body || undefined })
-  await c.env.RENT.prepare("UPDATE email_events SET status = ?, provider_message_id = ?, error_message = ?, retry_count = retry_count + 1, last_attempt_at = CURRENT_TIMESTAMP, sent_at = CASE WHEN ? THEN CURRENT_TIMESTAMP END WHERE id = ?").bind(result.ok ? 'SENT' : 'FAILED', result.id, result.error, result.ok ? 1 : 0, event.id).run()
+  await c.env.RENT.prepare("UPDATE email_events SET status = ?, provider_message_id = ?, error_message = ?, sent_at = CASE WHEN ? THEN CURRENT_TIMESTAMP END WHERE id = ?").bind(result.ok ? 'SENT' : 'FAILED', result.id, result.error, result.ok ? 1 : 0, event.id).run()
   await createAuditLog(c, { actor: user, action: 'EMAIL_EVENT_RETRIED', targetType: 'EMAIL_EVENT', targetId: event.id, after: { status: result.ok ? 'SENT' : 'FAILED' } })
   return c.redirect('/manager/email-events', 303)
 })
