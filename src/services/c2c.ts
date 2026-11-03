@@ -4,6 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import type { Context } from 'hono'
+import { shippingAddressFromForm,formatShippingAddress } from '../domain/rentalProgramAddress'
 import { nanoid } from 'nanoid'
 import { sanitizePlainText } from '../lib/html'
 import { createAuditLog } from './audit'
@@ -17,7 +18,7 @@ import { parsePageRequest, clampPageRequest, buildPaginationMeta } from '../lib/
 export interface C2CListing {
   id: string; owner_id: string; device_id: string; name: string; model: string;
   serial_number: string; description: string; photos_json: string; daily_rate: number; deposit: number;
-  listing_mode: C2CMode; pickup_address: string; listed_at: string | null; custody_received_at: string | null; pause_locked?:number; unlist_after?:string;
+  listing_mode: C2CMode; pickup_address: string; pickup_address_json:string; listed_at: string | null; custody_received_at: string | null; pause_locked?:number; unlist_after?:string;
   status: 'pending' | 'approved' | 'rejected' | 'paused'; review_note: string; owner_name?: string;
 }
 export interface C2CQuote {
@@ -31,14 +32,16 @@ export async function isC2CMember(c: Context,userId: string): Promise<boolean> {
 }
 export type C2CMode='self' | 'managed'
 export const c2cModeLabels={self:'自行交付',managed:'墨尔本托管'}
-export interface C2CSettings {commission_bps:number;managed_commission_bps:number|null;shipping_address:string}
+export interface C2CSettings {commission_bps:number;managed_commission_bps:number|null;shipping_address:string;shipping_address_json:string}
 export async function getC2CSettings(c: Context): Promise<C2CSettings> {
-  return await c.env.RENT.prepare('SELECT commission_bps,managed_commission_bps,shipping_address FROM c2c_settings WHERE id=1').first() as C2CSettings
+  return await c.env.RENT.prepare('SELECT commission_bps,managed_commission_bps,shipping_address,shipping_address_json FROM c2c_settings WHERE id=1').first() as C2CSettings
 }
-export async function getC2CMembership(c: Context,userId: string): Promise<{mode:C2CMode}|null> {
-  return await c.env.RENT.prepare('SELECT mode FROM c2c_memberships WHERE user_id=?').bind(userId).first() as {mode:C2CMode}|null
+export async function getC2CMembership(c: Context,userId: string): Promise<{mode:C2CMode;mode_change_locked:number;mode_change_after:string}|null> {
+  return await c.env.RENT.prepare("SELECT mode,datetime(COALESCE(mode_changed_at,joined_at),'+3 months') AS mode_change_after,CASE WHEN julianday('now')<=julianday(COALESCE(mode_changed_at,joined_at),'+3 months') THEN 1 ELSE 0 END AS mode_change_locked FROM c2c_memberships WHERE user_id=?").bind(userId).first() as {mode:C2CMode;mode_change_locked:number;mode_change_after:string}|null
 }
 export async function canChangeC2CMode(c: Context,userId: string): Promise<boolean> {
+  const membership=await getC2CMembership(c,userId)
+  if (membership?.mode_change_locked) return false
   return !await c.env.RENT.prepare(`SELECT 1 FROM c2c_listings WHERE owner_id=? AND status IN ('pending','approved')
     UNION ALL SELECT 1 FROM c2c_order_terms t JOIN orders o ON o.id=t.order_id WHERE t.owner_id=? AND o.deleted_at IS NULL AND o.status NOT IN ('completed','cancelled') LIMIT 1`).bind(userId,userId).first()
 }
@@ -46,12 +49,14 @@ export async function joinC2C(c: Context,userId: string,input: unknown): Promise
   if (input!=='self' && input!=='managed') throw new Error('请选择出租模式')
   const existing=await getC2CMembership(c,userId)
   if (existing?.mode===input) return
+  if (existing?.mode_change_locked) throw new Error('切换出租模式需间隔超过 3 个月')
   const settings=await getC2CSettings(c)
   if (input==='managed' && (settings.managed_commission_bps==null || !settings.shipping_address.trim())) throw new Error('托管模式暂未开放')
   if (existing && !await canChangeC2CMode(c,userId)) throw new Error('请先下架全部设备并完成出租订单')
   try {
     await c.env.RENT.prepare(`INSERT INTO c2c_memberships (user_id,mode) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET mode=excluded.mode`).bind(userId,input).run()
   } catch (error) {
+    if (String(error).includes('C2C_MODE_CHANGE_COOLDOWN')) throw new Error('切换出租模式需间隔超过 3 个月')
     if (String(error).includes('C2C_UNLIST_ALL_BEFORE_MODE_CHANGE')) throw new Error('请先下架全部设备并完成出租订单')
     throw error
   }
@@ -114,7 +119,11 @@ export async function submitC2CListing(c: Context, ownerId: string, form: Record
   if (!membership) throw new Error('请先加入出租计划')
   if (form.mode!==membership.mode) throw new Error('出租模式已变更，请刷新后重试')
   const settings=await getC2CSettings(c)
-  const pickupAddress=membership.mode==='managed'?settings.shipping_address:sanitizePlainText(form.pickupAddress,500)
+  if (membership.mode==='self' && form.pickupAddress) throw new Error('地址表单已更新，请刷新后填写')
+  const address=membership.mode==='managed'?null:shippingAddressFromForm(form,'pickup')
+  const pickupAddress=membership.mode==='managed'?settings.shipping_address:formatShippingAddress(address!)
+  const pickupAddressJson=membership.mode==='managed'?settings.shipping_address_json:JSON.stringify(address)
+  if (pickupAddress.length>500) throw new Error('请填写有效的取件地址')
   if (!pickupAddress.trim()) throw new Error(membership.mode==='managed'?'托管模式暂未开放':'请填写取件地址')
   const text = (key: string, max: number) => sanitizePlainText(form[key], max)
   const name=text('name',120), model=text('model',120), serial=text('serialNumber',120), description=text('description',2000)
@@ -128,12 +137,12 @@ export async function submitC2CListing(c: Context, ownerId: string, form: Record
   if (duplicate) throw new Error('设备序列号已存在')
   const photos=JSON.stringify(await listingPhotos(c,ownerId,form))
   if (id) {
-    const result=await c.env.RENT.prepare(`UPDATE c2c_listings SET name=?,model=?,serial_number=?,description=?,daily_rate=?,deposit=?,photos_json=?,listing_mode=?,pickup_address=?,listed_at=NULL,custody_received_at=NULL,status='pending',review_note='',reviewed_by=NULL,reviewed_at=NULL,updated_at=CURRENT_TIMESTAMP
-      WHERE id=? AND owner_id=? AND status IN ('rejected','paused') AND EXISTS(SELECT 1 FROM c2c_memberships WHERE user_id=? AND mode=?)`).bind(name,model,serial,description,daily,deposit,photos,membership.mode,pickupAddress,id,ownerId,ownerId,membership.mode).run()
+    const result=await c.env.RENT.prepare(`UPDATE c2c_listings SET name=?,model=?,serial_number=?,description=?,daily_rate=?,deposit=?,photos_json=?,listing_mode=?,pickup_address=?,pickup_address_json=?,listed_at=NULL,custody_received_at=NULL,status='pending',review_note='',reviewed_by=NULL,reviewed_at=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND owner_id=? AND status IN ('rejected','paused') AND EXISTS(SELECT 1 FROM c2c_memberships WHERE user_id=? AND mode=?)`).bind(name,model,serial,description,daily,deposit,photos,membership.mode,pickupAddress,pickupAddressJson,id,ownerId,ownerId,membership.mode).run()
     if (!result.meta.changes) throw new Error('设备当前不可编辑')
   } else {
     id=`c2c-${nanoid(16)}`
-    const result=await c.env.RENT.prepare('INSERT INTO c2c_listings (id,owner_id,device_id,name,model,serial_number,description,daily_rate,deposit,photos_json,listing_mode,pickup_address) SELECT ?,?,?,?,?,?,?,?,?,?,mode,? FROM c2c_memberships WHERE user_id=? AND mode=?').bind(id,ownerId,`d-${id}`,name,model,serial,description,daily,deposit,photos,pickupAddress,ownerId,membership.mode).run()
+    const result=await c.env.RENT.prepare('INSERT INTO c2c_listings (id,owner_id,device_id,name,model,serial_number,description,daily_rate,deposit,photos_json,listing_mode,pickup_address,pickup_address_json) SELECT ?,?,?,?,?,?,?,?,?,?,mode,?,? FROM c2c_memberships WHERE user_id=? AND mode=?').bind(id,ownerId,`d-${id}`,name,model,serial,description,daily,deposit,photos,pickupAddress,pickupAddressJson,ownerId,membership.mode).run()
     if (!result.meta.changes) throw new Error('出租模式已变更，请刷新后重试')
   }
   await createAuditLog(c,{action:'C2C_SUBMIT',targetType:'c2c_listing',targetId:id})

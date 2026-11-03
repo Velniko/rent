@@ -1702,7 +1702,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
 
   const navIcons: Record<string, string> = {
     '/customer/dashboard': 'rental-console', '/customer/rentals': '▤', '/customer/orders': '▦',
-    '/customer/profile': '◎', '/customer/security': '⚿', '/customer/referral': '✦', '/customer/devices': 'laptop', '/customer/c2c': 'c2c-rental', '/admin/c2c': 'c2c-rental', '/customer/balance': '◌', '/customer/guest': '▰', '/customer/guest/upgrade': '↥',
+    '/customer/profile': '◎', '/customer/security': '⚿', '/customer/referral': '✦', '/customer/devices': 'laptop', '/customer/rental-program': 'c2c-rental', '/admin/rental-program': 'c2c-rental', '/customer/balance': '◌', '/customer/guest': '▰', '/customer/guest/upgrade': '↥',
     '/staff/dashboard': 'rental-console', '/staff/orders': '◓', '/staff/orders/ongoing': '◷', '/staff/customers': '♧', '/staff/contracts': 'rental-contract',
     '/staff/contracts/new': 'file-plus', '/staff/contracts?status=pending_sign': '✍', '/staff/inspections': 'device-inspection', '/staff/mobile/scan': 'scan', '/staff/rentals/tracking': '⌖', '/staff/devices': 'asset-register', '/manager/staff': 'people',
     '/staff/mobile': 'today', '/staff/mobile/pickup': 'pickup', '/staff/mobile/return': 'return',
@@ -1814,7 +1814,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
       ]
       : currentUser?.accountType === 'guest'
         ? [['/customer/guest', '合同中心', '▤', ['/customer/guest']], ['/customer/guest/upgrade', '升级账户', '✦', ['/customer/guest/upgrade']]]
-        : [['/customer/dashboard', '首页', '◉', ['/customer/dashboard']], ['/notifications', '通知', 'N', ['/notifications']], ['/customer/devices', '可租设备', 'laptop', ['/customer/devices']], ['/customer/c2c', '我的出租', 'laptop', ['/customer/c2c']], ['/customer/rentals', '租赁', '▤', ['/customer/rentals']], ['/customer/orders', '订单', '▦', ['/customer/orders']], ['/customer/balance', '钱包', '$', ['/customer/balance']], ['/customer/profile', '我的', '◎', ['/customer/profile']]]
+        : [['/customer/dashboard', '首页', '◉', ['/customer/dashboard']], ['/notifications', '通知', 'N', ['/notifications']], ['/customer/devices', '可租设备', 'laptop', ['/customer/devices']], ['/customer/rental-program', '我的出租', 'laptop', ['/customer/rental-program']], ['/customer/rentals', '租赁', '▤', ['/customer/rentals']], ['/customer/orders', '订单', '▦', ['/customer/orders']], ['/customer/balance', '钱包', '$', ['/customer/balance']], ['/customer/profile', '我的', '◎', ['/customer/profile']]]
   const mobileNav = currentUser
     ? mobileLinks.map(([href, text, icon, activePaths]) => {
         const isCurrent = (href === '/staff/mobile' && currentPath === href) || activePaths.some(path => currentPath === path || currentPath.startsWith(`${path}/`))
@@ -1877,7 +1877,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
           ${currentUser.role === 'CUSTOMER' ? `
             ${currentUser.accountType === 'guest' ? renderNavGroup('合同中心', [['/customer/guest', '访客合同中心'], ['/customer/guest/upgrade', '升级账户']]) : `
               ${renderNavLink('/customer/dashboard', '控制台')}
-              ${renderNavGroup('租赁工作区', [['/customer/rentals', '我的租赁'], ['/customer/orders', '订单管理'], ['/customer/devices', '可租设备'], ['/customer/c2c', '我的出租']])}
+              ${renderNavGroup('租赁工作区', [['/customer/rentals', '我的租赁'], ['/customer/orders', '订单管理'], ['/customer/devices', '可租设备'], ['/customer/rental-program', '我的出租']])}
               ${renderNavGroup('账户与钱包', [['/customer/balance', '我的钱包'], ['/customer/profile', '个人资料'], ['/customer/security', '安全设置'], ['/customer/referral', '推荐计划']])}
             `}
           ` : ''}
@@ -1895,7 +1895,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
             ${renderNavGroup('通知中心', [['/admin/notifications', '业务通知'], ['/admin/notifications/settings', '通知设置'], ['/notifications', '发布通知']])}
             ${renderNavGroup('租赁管理', [['/admin/order-review', '网站订单审核'], ['/admin/orders', '租赁订单'], ['/admin/delivery', '配送管理'], ['/admin/calendar', '租赁日历'], ['/admin/rental-rules', '租赁规则']])}
             ${renderNavGroup('合同管理', [['/admin/contracts', '合同列表'], ['/admin/templates/contract', '合同模板'], ['/admin/templates', '协议模板']])}
-            ${renderNavGroup('设备管理', [['/admin/c2c', '个人设备管理'], ['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
+            ${renderNavGroup('设备管理', [['/admin/rental-program', '设备出租管理'], ['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
             ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/documents', '单据中心'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}
             ${renderNavGroup('营销增长', [['/admin/coupons', '优惠码管理'], ['/admin/marketing-emails', '营销邮件'], ['/admin/marketing-emails/data', '营销数据'], ['/admin/referrals', '推荐奖励管理'], ['/admin/feedback-rewards', '反馈奖励记录'], ['/admin/feedback-gift-cards', '礼品卡库存']])}
             ${renderNavGroup('系统设置', [['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/tax-invoice-template', 'Tax Invoice PDF 模板'], ['/admin/settings', '系统设置'], ['/admin/api-settings', 'API 设置'], ['/admin/connectivity', '通讯检测'], ['/admin/exceptions', '异常任务中心'], ['/admin/monitoring', '系统健康监控'], ['/admin/data-retention', '数据保留策略']])}

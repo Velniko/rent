@@ -15,9 +15,9 @@ export async function customerC2CAction(c: Context, action: 'submit' | 'edit' | 
     else if (action==='photo') return c.json(await uploadC2CPhoto(c,user.id,await c.req.parseBody()))
     else if (action==='pause') await pauseC2CListing(c,(c.req.param('id') || ''),user.id)
     else await submitC2CListing(c,user.id,await c.req.parseBody(),action==='edit'?(c.req.param('id') || ''):undefined)
-    return c.redirect(`/customer/c2c?success=${encodeURIComponent(action==='join'?'已加入出租计划':action==='pause'?'设备已下架':'设备已提交审核')}`,303)
+    return c.redirect(`/customer/rental-program?success=${encodeURIComponent(action==='join'?'已加入出租计划':action==='pause'?'设备已下架':'设备已提交审核')}`,303)
   } catch (error) {
     const message=error instanceof Error && !/D1|SQLITE|constraint/i.test(error.message) ? error.message : '操作失败，请刷新后重试'
-    return action==='photo'?c.json({error:message},400):c.redirect(`/customer/c2c?error=${encodeURIComponent(message)}`,303)
+    return action==='photo'?c.json({error:message},400):c.redirect(`/customer/rental-program?error=${encodeURIComponent(message)}`,303)
   }
 }

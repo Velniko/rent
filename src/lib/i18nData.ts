@@ -4174,6 +4174,22 @@ const staff: Readonly<Record<string, string>> = {
 
 // @domain customer —— 客户 / 访客端页面文案
 const customer: Readonly<Record<string, string>> = {
+  '联系人 / 单位': 'Contact / Company',
+  '请填写有效的取件地址': 'Enter a valid pickup address',
+  '设备出租计划': 'Device rental program',
+  '加入设备出租计划': 'Join the device rental program',
+  '设备出租管理': 'Device rental management',
+  '切换出租模式需间隔超过 3 个月': 'Rental mode changes must be more than 3 months apart',
+  '可更改时间': 'Available to change from',
+  '收件人 / 单位': 'Recipient / Company',
+  'Address line 2（选填）': 'Address line 2 (optional)',
+  'Address line 3（选填）': 'Address line 3 (optional)',
+  '城市 / 城区': 'City / Suburb',
+  '州 / 领地': 'State / Territory',
+  '选择州 / 领地': 'Select state / territory',
+  '联系电话（选填）': 'Contact phone (optional)',
+  '请填写地址第一行、城市、州和四位邮编': 'Enter address line 1, city, state and a four-digit postcode',
+  '地址表单已更新，请刷新后填写': 'The address form has changed. Refresh and fill it in again',
   '平台手续费': 'Platform commission',
   '运费自付 · 上架超过 6 个月可下架': 'Shipping at your expense · Unlist after more than 6 months',
   '自行交付': 'Self handover',

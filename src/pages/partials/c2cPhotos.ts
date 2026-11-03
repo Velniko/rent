@@ -33,7 +33,7 @@ export const c2cPhotoUploadScript = `<script>(()=>{
         if(!['image/jpeg','image/png','image/webp'].includes(file.type))throw new Error('只支持 JPG、PNG 或 WebP 图片');
         if(file.size>5*1024*1024)throw new Error('单张图片不能超过 5MB');
         const body=new FormData();body.append('file',file);body.append('slot',card.dataset.c2cPhoto);
-        const response=await fetch('/customer/c2c/photos',{method:'POST',credentials:'same-origin',body});
+        const response=await fetch('/customer/rental-program/photos',{method:'POST',credentials:'same-origin',body});
         const data=await response.json().catch(()=>null);if(!response.ok||!data||!data.id||!data.url)throw new Error(data&&data.error||'图片上传失败，请稍后重试');
         hidden.value=data.id;input.required=false;preview.replaceChildren();const image=document.createElement('img');image.src=data.url;image.alt=card.querySelector('label').textContent;image.style.cssText='width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px';preview.append(image);status.textContent='已上传';
       }catch(error){hidden.value=previous;input.value='';status.textContent=error.message||'图片上传失败，请稍后重试'}

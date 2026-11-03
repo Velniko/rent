@@ -82,7 +82,7 @@ export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[]
       </div>
 
       <div class="finance-sections">
-        <div class="finance-section"><h4>主人结算</h4><p>${formatCurrency(ownerExpense)}</p><a href="/admin/c2c" class="button button-sm">个人设备管理</a></div>
+        <div class="finance-section"><h4>主人结算</h4><p>${formatCurrency(ownerExpense)}</p><a href="/admin/rental-program" class="button button-sm">个人设备管理</a></div>
         <div class="finance-section">
           <h4>单据中心</h4>
           <a href="/admin/documents" class="button button-sm">查询单据</a>

@@ -63,7 +63,7 @@ export const UPLOAD_BODY_LIMIT_BYTES = 6 * 1024 * 1024
 export const DEFAULT_BODY_LIMIT_BYTES = 128 * 1024
 
 const UPLOAD_PATH_PATTERNS: RegExp[] = [
-  /^\/customer\/c2c\/photos$/,
+  /^\/customer\/(?:c2c|rental-program)\/photos$/,
   /^\/contract\/sign$/,
   /^\/customer\/balance\/top-up\/transfer$/,
   /^\/admin\/settings\/upload-image$/,

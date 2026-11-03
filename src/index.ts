@@ -858,8 +858,8 @@ app.use('*', async (c, next) => {
     : c.req.method === 'POST' && c.req.path.startsWith('/rent/') ? ['rental-link-booking', 10, 900] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/admin/rental-links') ? ['rental-link-admin', 30, 600] as const
     : c.req.method === 'POST' && (c.req.path === '/admin/orders/new' || /^\/admin\/orders\/[^/]+\/edit$/.test(c.req.path)) ? ['admin-manual-order', 60, 600] as const
-    : c.req.method === 'POST' && c.req.path === '/customer/c2c/photos' ? ['c2c-photo-upload', 20, 3600] as const
-    : c.req.method === 'POST' && (c.req.path.startsWith('/customer/c2c') || c.req.path.startsWith('/admin/c2c')) ? ['c2c-write', 30, 600] as const
+    : c.req.method === 'POST' && ['/customer/rental-program/photos','/customer/c2c/photos'].includes(c.req.path) ? ['c2c-photo-upload', 20, 3600] as const
+    : c.req.method === 'POST' && ['/customer/rental-program','/admin/rental-program','/customer/c2c','/admin/c2c'].some(prefix=>c.req.path.startsWith(prefix)) ? ['c2c-write', 30, 600] as const
     : c.req.path === '/verify' ? ['contract-verify', 30, 600] as const
     : c.req.path === '/admin/connectivity/check' ? ['connectivity-check', 10, 60] as const
     : c.req.path.startsWith('/api/address/') ? ['address-search', 120, 60] as const
@@ -2477,27 +2477,39 @@ app.post('/notifications/send', async (c) => {
   return c.redirect('/notifications')
 })
 
-app.get('/customer/c2c', async (c) => {
+// Existing links keep working while new pages use the rental-program name.
+for (const role of ['customer','admin']) app.get(`/${role}/c2c`,c=>c.redirect(`/${role}/rental-program${new URL(c.req.url).search}`,302))
+app.post('/customer/c2c/join',c=>actions.customerC2CAction(c,'join'))
+app.post('/customer/c2c/photos',c=>actions.customerC2CAction(c,'photo'))
+app.post('/customer/c2c',c=>actions.customerC2CAction(c,'submit'))
+app.post('/customer/c2c/:id/edit',c=>actions.customerC2CAction(c,'edit'))
+app.post('/customer/c2c/:id/pause',c=>actions.customerC2CAction(c,'pause'))
+app.post('/admin/c2c/commission',c=>actions.adminC2CAction(c,'commission'))
+app.post('/admin/c2c/:id/review',c=>actions.adminC2CAction(c,'review'))
+app.post('/admin/c2c/:id/pause',c=>actions.adminC2CAction(c,'pause'))
+app.post('/admin/c2c/orders/:orderId/settle',c=>actions.adminC2CAction(c,'settle'))
+
+app.get('/customer/rental-program', async (c) => {
   const user=c.get('user')
   if (!user) return c.redirect('/login')
   if (user.role!=='CUSTOMER' || (user.accountType ?? user.account_type ?? 'formal')!=='formal') return c.html(renderForbidden(),403)
   return c.html(await pages.renderCustomerC2C(c,user))
 })
-app.post('/customer/c2c/join', c => actions.customerC2CAction(c,'join'))
-app.post('/customer/c2c/photos', c => actions.customerC2CAction(c,'photo'))
-app.post('/customer/c2c', c => actions.customerC2CAction(c,'submit'))
-app.post('/customer/c2c/:id/edit', c => actions.customerC2CAction(c,'edit'))
-app.post('/customer/c2c/:id/pause', c => actions.customerC2CAction(c,'pause'))
-app.get('/admin/c2c', async (c) => {
+app.post('/customer/rental-program/join', c => actions.customerC2CAction(c,'join'))
+app.post('/customer/rental-program/photos', c => actions.customerC2CAction(c,'photo'))
+app.post('/customer/rental-program', c => actions.customerC2CAction(c,'submit'))
+app.post('/customer/rental-program/:id/edit', c => actions.customerC2CAction(c,'edit'))
+app.post('/customer/rental-program/:id/pause', c => actions.customerC2CAction(c,'pause'))
+app.get('/admin/rental-program', async (c) => {
   const user=c.get('user')
   if (!user) return c.redirect('/login')
   if (user.role!=='ADMIN') return c.html(renderForbidden(),403)
   return c.html(await pages.renderAdminC2C(c,user))
 })
-app.post('/admin/c2c/commission', c => actions.adminC2CAction(c,'commission'))
-app.post('/admin/c2c/:id/review', c => actions.adminC2CAction(c,'review'))
-app.post('/admin/c2c/:id/pause', c => actions.adminC2CAction(c,'pause'))
-app.post('/admin/c2c/orders/:orderId/settle', c => actions.adminC2CAction(c,'settle'))
+app.post('/admin/rental-program/commission', c => actions.adminC2CAction(c,'commission'))
+app.post('/admin/rental-program/:id/review', c => actions.adminC2CAction(c,'review'))
+app.post('/admin/rental-program/:id/pause', c => actions.adminC2CAction(c,'pause'))
+app.post('/admin/rental-program/orders/:orderId/settle', c => actions.adminC2CAction(c,'settle'))
 
 app.get('/customer/devices', async (c) => {
   const user = c.get('user')

@@ -12700,3 +12700,16 @@ html body .content > .section-title {
 .c2c-account-actions summary { color:var(--c-accent); cursor:pointer; }
 .customer-catalog__pickup { color:var(--c-text-2); font-size:.73rem; overflow-wrap:anywhere; margin:14px 0 0; }
 @media(max-width:600px) { .c2c-mode-choices { grid-template-columns:minmax(0,1fr); } .c2c-mode-choice { padding:16px; } }
+
+.rental-shipping-fields { border:0; padding:0; margin:20px 0; min-width:0; }
+.rental-shipping-fields legend { margin-bottom:14px; font-size:1rem; font-weight:600; }
+.rental-postal-address { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 24px; margin:18px 0; }
+.rental-postal-address>div { min-width:0; }
+.rental-postal-address__line { grid-column:1/-1; }
+.rental-postal-address dt { font-size:.72rem; color:var(--c-text-2); margin-bottom:4px; }
+.rental-postal-address dd { font-style:normal; margin:0; font-size:.9rem; color:var(--c-text); overflow-wrap:anywhere; }
+.rental-postal-legacy { font-style:normal; white-space:pre-line; margin:12px 0; }
+
+.customer-catalog__pickup address { white-space:pre-line; font:inherit; margin:5px 0 0; }
+.rental-pickup-detail { margin:14px 0; }
+.rental-pickup-detail .rental-postal-address { gap:10px 16px; }

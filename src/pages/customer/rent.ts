@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { renderShippingAddress } from '../partials/rentalProgramAddress';
 import { renderC2CPhotoGallery } from '../partials/c2cPhotos';
 import { c2cBookingError } from '../../services/c2c';
 import { rentalPricingClientScript } from '../../domain/rentalPricing';
@@ -32,7 +33,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
   if (!device) {
     return buildLayout('租赁设备 - 电脑租赁管理系统', '<div class="panel"><h2>设备未找到</h2><p>您请求租赁的设备不存在。</p></div>', user);
   }
-  const listingPhotos = await c.env.RENT.prepare('SELECT photos_json,pickup_address,listing_mode FROM c2c_listings WHERE device_id=?').bind(deviceId).first() as {photos_json:string;pickup_address:string;listing_mode:string} | null;
+  const listingPhotos = await c.env.RENT.prepare('SELECT photos_json,pickup_address,pickup_address_json,listing_mode FROM c2c_listings WHERE device_id=?').bind(deviceId).first() as {photos_json:string;pickup_address:string;pickup_address_json:string;listing_mode:string} | null;
   const selfDelivery=listingPhotos?.listing_mode==='self';
   const rentalRules = await getDeviceRentalRules(c, deviceId)
   const pickupSlots = pickupTimeSlots(rentalRules)
@@ -59,7 +60,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
     <div class="panel">
       <div class="section-title"><h2>租赁设备: ${escapeHtml(device.name)}</h2></div>
       ${errorMessage ? `<div data-flash-notice class="page-notification page-notification--error">${errorMessage}</div>` : ''}
-      ${renderC2CPhotoGallery(listingPhotos?.photos_json)}${listingPhotos?`<div class="c2c-address-card"><strong>取件地址</strong><p>${escapeHtml(listingPhotos.pickup_address)}</p></div>`:''}<form method="POST" action="/customer/rent/${device.id}">
+      ${renderC2CPhotoGallery(listingPhotos?.photos_json)}${listingPhotos?`<div class="c2c-address-card"><strong>取件地址</strong>${renderShippingAddress(listingPhotos.pickup_address_json,listingPhotos.pickup_address,selfDelivery?'pickup':'shipping')}</div>`:''}<form method="POST" action="/customer/rent/${device.id}">
         <div class="form-group">
           <label class="form-label" for="deviceName">设备名称</label>
           <input type="text" id="deviceName" class="form-control" value="${escapeHtml(device.name)}" readonly />

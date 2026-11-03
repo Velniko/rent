@@ -17,11 +17,12 @@ export async function renderCustomerDevices(c: Context,user: any) {
   const rows=(await c.env.RENT.prepare(`SELECT l.device_id,l.owner_id,l.status,l.listing_mode,l.pickup_address,l.custody_received_at,m.mode AS member_mode,s.managed_commission_bps,u.status AS owner_status,u.deleted_at,l.photos_json,m.user_id AS member_id
     FROM c2c_listings l JOIN users u ON u.id=l.owner_id LEFT JOIN c2c_memberships m ON m.user_id=l.owner_id CROSS JOIN c2c_settings s`).all()).results || []
   const listings=new Map<string,any>(rows.map((l: any)=>[l.device_id,l]))
-  const mode=['c2c','platform'].includes(c.req.query('mode') || '')?c.req.query('mode')!:''
+  const source=c.req.query('mode')==='c2c'?'owner':c.req.query('mode')
+  const mode=['owner','platform'].includes(source || '')?source!:''
   const devices=(await getDevices(c)).filter(device=>{
     const l=listings.get(device.id)
     return device.status==='available' && (!l || (l.status==='approved' && l.owner_id!==user.id && l.owner_status==='active' && !l.deleted_at && l.member_id && l.pickup_address.trim() && l.listing_mode===l.member_mode && (l.listing_mode!=='managed' || (l.custody_received_at && l.managed_commission_bps!=null)) && hasRequiredC2CPhotos(l.photos_json)))
-      && (mode==='c2c'?Boolean(l):mode==='platform'?!l:true)
+      && (mode==='owner'?Boolean(l):mode==='platform'?!l:true)
   })
   const categoryOrder=['游戏笔记本','轻薄商务本','台式工作站','普通笔记本','其他']
   const categories=[...new Set(devices.map(d=>d.category || '其他'))].sort((a,b)=>{
@@ -56,11 +57,11 @@ export async function renderCustomerDevices(c: Context,user: any) {
       <h3><a href="/customer/rent/${encodeURIComponent(device.id)}">${esc(device.name)}</a></h3><p class="customer-catalog__model">${esc(device.category || '其他')}${device.model?` · ${esc(device.model)}`:''}</p>
       <div class="customer-catalog__specs">${specs.length?specs.map(spec=>`<span>${esc(spec)}</span>`).join(''):'<span>配置待更新</span>'}</div>
       <div class="customer-catalog__prices">${price('日租',daily)}${price('周租',weekly,daily*7)}${price('月租',monthly,daily*30)}</div>
-      ${personal?`<p class="customer-catalog__pickup">取件地址：${esc(personal.pickup_address)}</p>`:''}<div class="customer-catalog__deposit"><span>押金</span><strong>${currency.format(Number(device.depositAmount || 0))}</strong></div>
+      ${personal?`<div class="customer-catalog__pickup"><span>取件地址</span><address>${esc(personal.pickup_address)}</address></div>`:''}<div class="customer-catalog__deposit"><span>押金</span><strong>${currency.format(Number(device.depositAmount || 0))}</strong></div>
       <a class="button button-primary customer-catalog__book" href="/customer/rent/${encodeURIComponent(device.id)}"><span>选择租期</span><span aria-hidden="true">→</span></a></div></article>`
   }).join('')
-  const body=`<section class="panel customer-catalog" id="customer-device-catalog"><header class="customer-catalog__header"><div><p class="section-code">DEVICE CATALOG</p><h2>可租设备</h2></div><a class="button button-secondary" href="/customer/c2c">发布我的设备</a></header>
-    <nav class="customer-catalog__sources" aria-label="设备来源">${[['','全部设备'],['platform','平台自营'],['c2c','个人设备']].map(([value,label])=>`<a data-catalog-source="${value}" href="${esc(href({mode:value}))}" ${mode===value?'aria-current="page"':''}>${label}</a>`).join('')}</nav>
+  const body=`<section class="panel customer-catalog" id="customer-device-catalog"><header class="customer-catalog__header"><div><p class="section-code">DEVICE CATALOG</p><h2>可租设备</h2></div><a class="button button-secondary" href="/customer/rental-program">发布我的设备</a></header>
+    <nav class="customer-catalog__sources" aria-label="设备来源">${[['','全部设备'],['platform','平台自营'],['owner','个人设备']].map(([value,label])=>`<a data-catalog-source="${value}" href="${esc(href({mode:value}))}" ${mode===value?'aria-current="page"':''}>${label}</a>`).join('')}</nav>
     <form class="customer-catalog__tools" method="get" action="/customer/devices" role="search" aria-label="搜索和筛选租赁设备"><input type="hidden" name="mode" value="${mode}"><input type="hidden" name="category" value="${esc(category)}" id="catalog-category">
       <label class="customer-catalog__search" for="catalog-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4.5 4.5"></path></svg><input id="catalog-search" name="q" type="search" value="${esc(query)}" placeholder="搜索型号、CPU、显卡、操作系统…" aria-label="搜索租赁设备" aria-controls="customer-device-grid" maxlength="160" autocomplete="off"></label>
       <select class="form-control customer-catalog__sort" id="catalog-sort" name="sort" aria-label="排序方式">${[['default','默认排序'],['price','价格从低到高'],['price-desc','价格从高到低'],['name','名称排序']].map(([value,label])=>`<option value="${value}" ${sort===value?'selected':''}>${label}</option>`).join('')}</select>
