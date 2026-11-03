@@ -19,8 +19,7 @@ function environment({ active = false, expired = false, accountType = 'formal' }
           bind(..._values: unknown[]) { return query },
           async first() {
             if (sql.includes('security_rate_limits')) return { request_count: 1 }
-            if (sql.startsWith('SELECT user_id FROM auth_sessions')) return expired ? null : { user_id: 'test-customer' }
-            if (sql.includes('SELECT * FROM users')) return active ? { id: 'test-customer', name: 'Private Name', email: 'private@example.test', role: 'CUSTOMER', status: 'active', account_type: accountType } : null
+            if (sql.includes('JOIN users')) return active && !expired ? { id: 'test-customer', name: 'Private Name', email: 'private@example.test', role: 'CUSTOMER', status: 'active', account_type: accountType } : null
             throw new Error('Unexpected query: ' + sql)
           },
           async run() { return { success: true } },

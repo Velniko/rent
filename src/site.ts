@@ -16,6 +16,7 @@ const layoutTemplate = rawLayoutTemplate
   .replace('href="/styles.css"', `href="${styleSheetHref}"`)
   .replace('src="{{APP_SCRIPT}}"', `src="${appScriptHref}"`)
   .replace('src="/i18n.js"', `src="${languageScriptHref}"`)
+  .replace('href="/i18n.js"', `href="${languageScriptHref}"`)
 
 // ---------------------------------------------------------------------------
 // 通用工具函数已拆分到 src/lib/*。这里 import 供本文件内部使用，并在文件内
@@ -928,7 +929,7 @@ export async function loadSystemSettingsFromDB(c: Context): Promise<typeof syste
       balancePayment: (parsedPaymentMethods as any).balancePayment === undefined
         ? systemSettings.paymentMethods.balancePayment
         : Boolean((parsedPaymentMethods as any).balancePayment),
-      processingFeeRate: Math.min(1, Math.max(0, Number((parsedPaymentMethods as any).processingFeeRate ?? systemSettings.paymentMethods.processingFeeRate ?? 0.025))),
+      processingFeeRate: 0,
       squareProcessingFeeRate: Math.min(1, Math.max(0, Number((parsedPaymentMethods as any).squareProcessingFeeRate ?? systemSettings.paymentMethods.squareProcessingFeeRate ?? 0.022))),
       alipay: Boolean((parsedPaymentMethods as any).alipay),
       wechat: Boolean((parsedPaymentMethods as any).wechat),
@@ -1374,7 +1375,7 @@ export const DEFAULT_CONTRACT_TEMPLATE_HTML = `<h1>设备租赁合同</h1>
   <tr><td style="border:1px solid #e5e7eb;padding:8px;">交付状况</td><td style="border:1px solid #e5e7eb;padding:8px;">{device_condition}</td></tr>
   <tr><td style="border:1px solid #e5e7eb;padding:8px;">随附配件</td><td style="border:1px solid #e5e7eb;padding:8px;">{device_accessories}</td></tr>
 </table>
-<p>设备在交付时处于可正常使用的状况。承租方应在取件时当场检查并确认上述信息；签署本合同即视为确认设备与描述相符。</p>
+<p>设备在交付时应处于可正常使用的状况。承租方应当场检查设备及配件并及时提出问题；签署本合同不视为已收到或验收设备。</p>
 
 <h2>三、租期、交付与归还</h2>
 <ul>
@@ -1397,27 +1398,31 @@ export const DEFAULT_CONTRACT_TEMPLATE_HTML = `<h1>设备租赁合同</h1>
   <tr><td style="border:1px solid #e5e7eb;padding:8px;">应付余额</td><td style="border:1px solid #e5e7eb;padding:8px;"><strong>{amount_due}</strong></td></tr>
 </table>
 <p>付款方式：{payment_method}　付款日期：{payment_date}　付款参考号：{payment_reference}　税务发票编号：{invoice_number}</p>
-<p>所有价格均以澳元（AUD）标示，并依据《澳大利亚消费者法》（Australian Consumer Law）第 48 条以含商品及服务税（GST）的单一价格显示。甲方依 1999 年《商品及服务税法》开具税务发票。</p>
+<p>所有价格以澳元（AUD）列示，适用 GST 计入展示总价，发票按适用税法开具。配送费、时段服务费及支付手续费应在确认或付款前单独列示。支付费用须符合适用法律及卡组织规则，不得向适用卡种另收支付附加费。人民币付款及退款的币种和兑换汇率应另行明确。</p>
+<p>不足 30 天按完整周及剩余日计算；满 30 天按完整的 30 天月租计算，余期少于 21 天按周租日价折算，满 21 天按月租日价折算。折扣及优惠以确认报价为准。不足 60 天一次性付清；满 60 天且提供月付选项时可选 Stripe 月付或一次性付清。月付为每 30 天一期，末期按剩余天数结算，首期包含适用押金及订单列明的一次性费用，各期支付手续费另列。</p>
+<p>选择月付并完成首次付款时，承租方授权 Stripe 保存支付方式，按订单付款计划收取到期款项；失败或需验证时应按通知补付。月付不自动续租，也不免除已到期款项。取消或归还设备后停止未发生的后续期款，退款按《退款政策》办理。确认后的租金和押金不因后续定价或风险评分变化而自动上调。</p>
 
 <h2>五、押金</h2>
-<p>押金用于担保承租方履行本合同，<strong>不是</strong>预付租金，也不作为惩罚性款项。设备归还并完成验机后，甲方将在 <strong>10 个营业日</strong>内退还可退部分。如需从押金中扣款，甲方将提供逐项说明及相应凭证（维修报价、照片或发票），扣款金额以实际、合理的费用为限，例如超出正常损耗的维修或更换费用、缺件、必要清洁费、逾期费。扣款受《澳大利亚消费者法》不公平合同条款制度约束。对扣款有异议的，按第十四条处理。</p>
+<p>押金用于担保履约，不是租金、保险或罚金。新订单根据身份核验、履约、付款、退款、逾期、损坏及有效风险标记评估，六档押金倍数为设备基础押金的 0、0.5、1、1.25、1.5 或 2 倍；具体金额应在确认前列明，可申请人工复核。满 60 天一次性付清且风险倍数不高于 1 时可免押金；风险加收的押金不因一次性付清而免除。</p>
+<p>月付押金在首期实际收取。其他订单按已选方式收取押金、办理信用卡预授权或通过 SetupIntent 保存后续扣款授权。预授权期限受卡组织及银行限制，通常 Visa、Mastercard 最长 30 天，其他卡最长 7 天；以支付服务商实际期限为准。保存卡片并不表示已冻结或支付押金。出租方仅可就本订单有依据、已披露的应付金额进行授权范围内的扣款；在合理可行时先提供说明及提出异议的机会，不得无限额或重复扣款。</p>
+<p>承租方应按约定归还设备及全部配件，并在归还前备份和移除个人数据。出租方记录实际接收时间并进行验机；归还后的验机或退款等待不继续产生占用租金。完成验机后 10 个营业日内安排退还可退押金、释放预授权或结清后续扣款，银行实际到账或解除冻结时间由支付机构决定。正常损耗不扣款，扣款应逐项列明并提供照片、报价或发票等依据；已收费用不得再次从押金扣除。承租方可对验机及扣款提出异议。</p>
 
 <h2>六、所有权与使用限制</h2>
 <ul>
-<li>设备所有权始终归甲方所有。本合同为短期租赁，租期不超过 4 个月且承租方不享有购买设备的权利或义务，<strong>不构成</strong>《国家信贷法》（National Credit Code）下的「消费者租赁」或信贷合同。</li>
+<li>设备所有权始终归甲方所有，不含购买权或购买义务，租期以订单为准；依法适用的消费者租赁、信贷及其他强制性规定仍然适用。</li>
 <li>承租方不得转租、转借、出售、质押设备，或将设备移出澳大利亚境外。</li>
 <li>设备仅限合法用途；不得拆解、改装，不得移除资产标签或管理软件，不得越权刷写系统。</li>
 <li>承租方应保持操作系统与安全更新为最新，妥善保管登录凭据。</li>
 </ul>
 
 <h2>七、风险、损坏与赔偿</h2>
-<p>自交付时起至设备退还并经甲方确认接收时止，设备的丢失或损坏风险由承租方承担，<strong>正常损耗（fair wear and tear）除外</strong>。因承租方或其允许使用人造成的丢失或超出正常损耗的损坏，承租方应按实际维修费用赔偿；若无法修复，则按扣除折旧后的市场重置价值赔偿，二者取较低者。甲方将提供维修报价或重置价值的证明。承租方可自行投保以覆盖上述风险。</p>
+<p>因承租方或其授权使用人的过错造成丢失或超出正常损耗的损坏，应承担有凭证的合理损失；以合理维修费用或扣除折旧后的重置价值中适用且较低者为限，不包括甲方过错造成的损失。正常损耗不扣款，免押金不免除依法应承担的赔偿责任。</p>
 
 <h2>八、逾期归还</h2>
-<p>未按时归还的，按每日逾期费 {currency} {late_fee_per_day} 计收（作为对逾期占用造成损失的合理预估，而非罚金）。截至目前逾期 {late_days} 天，逾期费合计 {currency} {late_fee}。逾期费不影响甲方依法追偿其他损失或依第十二条取回设备。</p>
+<p>超过约定归还时间 2 小时仍未归还的，收取一次 AUD 25 操作费；跨过约定归还日后，按逾期日数及订单日租金补收占用租金。已结算金额和押金已抵扣金额从应付中扣除。费用在实际接收设备时停止累计，不因验机或退款处理而增加。收费受适用法律限制，仅用于补偿合理损失及成本，不得重复赔偿。</p>
 
 <h2>九、设备管理软件</h2>
-<p>设备可能预装甲方的管理软件，用于上报设备状态、硬件信息与租期信息，并在符合<a href="/software-terms">《软件使用协议》</a>所列情形时执行锁定、重启或数据清除等远程操作。相关个人信息处理见<a href="/privacy">《隐私政策》</a>。数据清除将删除设备上的用户数据，承租方应自行提前备份。</p>
+<p>管理软件可能上报设备状态、硬件、租期及安全信息。远程锁定、重启、注销或清除仅在《软件使用协议》所列必要情形依法实施；合理可行时先通知并给予补救及备份机会。数据清除会删除设备上的用户数据；出租方不以本条排除依法应承担的数据安全责任。信息处理见《隐私政策》。</p>
 
 <h2>十、消费者保障</h2>
 <p>本合同项下提供的商品与服务附带《澳大利亚消费者法》规定的消费者保障，包括设备须具有<strong>可接受的质量</strong>、与描述相符、适合告知的特定用途，服务须以合理的谨慎与技能提供。这些保障<strong>不能被排除、限制或修改</strong>。就重大失败，承租方有权解除本合同并要求退还相应款项，或就价值减损获得赔偿；就非重大失败，甲方将在合理时间内修理或更换。</p>
@@ -1432,7 +1437,7 @@ export const DEFAULT_CONTRACT_TEMPLATE_HTML = `<h1>设备租赁合同</h1>
 <p>因超出一方合理控制的事件（如自然灾害、战争、罢工、电信或电力中断、政府行为）导致的履约迟延或不能，该方在受影响范围内不承担违约责任，但应尽快通知对方并努力减轻影响。</p>
 
 <h2>十四、适用法律与争议解决</h2>
-<p>本合同受澳大利亚 {jurisdiction} 州法律管辖，双方服从该州法院的非专属管辖。如发生争议，请先通过第一条所列方式联系甲方协商解决；承租方亦可向维多利亚州消费者事务局（Consumer Affairs Victoria）或澳大利亚竞争与消费者委员会（ACCC）寻求协助。</p>
+<p>本合同受澳大利亚 {jurisdiction} 法律管辖，适用法院非专属管辖，不影响承租方依法可选择的其他争议渠道。请按《投诉与争议解决政策》申请复核或向消费者机构、VCAT 或有管辖权法院寻求协助；ACCC 接收系统性问题报告，不处理个别纠纷。</p>
 
 <h2>十五、电子签名</h2>
 <p>双方同意以电子方式订立与签署本合同。依据 1999 年《电子交易法》（Electronic Transactions Act 1999 (Cth)）及《2000 年电子交易（维多利亚）法》，电子签名与手写签名具有同等法律效力。系统记录的签署证据如下：</p>
@@ -1444,12 +1449,15 @@ export const DEFAULT_CONTRACT_TEMPLATE_HTML = `<h1>设备租赁合同</h1>
 </ul>
 
 <h2>十六、其他条款</h2>
-<p>本合同连同其引用的政策构成双方就本次设备租赁的完整约定，取代此前一切口头或书面沟通。对本合同的任何修改须经双方书面确认。若任何条款被认定无效或不可执行，不影响其余条款的效力。</p>
+<p>本合同连同其引用的政策构成双方就本次设备租赁的完整约定，取代此前一切口头或书面沟通。新增费用或实质变更须经双方另行书面确认，不追溯改写已签合同。若任何条款被认定无效或不可执行，不影响其余条款的效力。</p>
 
 <h2>十七、银行账户</h2>
 <p>开户行：{bank_name}　账户名：{account_name}　BSB：{bank_bsb}　账号：{bank_account}</p>
 
-<h2>十八、双方签署</h2>
+<h2>十八、取消、未取货与提前归还</h2>
+<p>订单确认前取消不收取消手续费；确认后、实际取货或交付前，承租方个人原因取消按订单总额的 5% 收费。门店自提超过预约取货开始时间 2 小时仍未领取的，订单可被取消并释放设备，收取 AUD 25 未取货操作费，剩余款项退还；该费用不与同一次取消的 5% 手续费叠加。配送订单不适用门店未取货规则。提前归还的未使用租金及押金分别结算，详见<a href="/refund-policy">《退款政策》</a>。上述个人原因收费不适用于出租方原因或法定退款。</p>
+
+<h2>十九、双方签署</h2>
 <table style="width:100%;border-collapse:collapse;margin:12px 0;">
   <tr style="background:#f3f4f6;"><th style="border:1px solid #e5e7eb;padding:8px;text-align:left;width:50%;">出租方（甲方）</th><th style="border:1px solid #e5e7eb;padding:8px;text-align:left;">承租方（乙方）</th></tr>
   <tr>
@@ -1839,7 +1847,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
         ['/admin/rental-rules', '租赁规则', '租赁管理', '取还时间 营业时段 不营业 服务费 最短租期 缓冲天数 周租 月租 折扣'],
         ['/admin/settings#requireEmailVerification', '注册安全与邮箱验证', '系统设置', '注册 安全 邮箱验证 验证码'],
         ['/admin/marketing-emails#feedbackRewards', '反馈奖励与礼品卡', '营销增长', 'Tally 反馈 奖励 余额 优惠码 礼品卡'],
-        ['/admin/settings#processingFeeRate', '支付方式与手续费', '系统设置', '支付 Stripe Square 银行转账 余额 手续费'],
+        ['/admin/settings#enableStripe', '支付方式与手续费', '系统设置', '支付 Stripe Square 银行转账 余额 手续费'],
         ['/admin/settings#bankName', '银行转账账户信息', '系统设置', '银行 BSB 账号 账户 转账'],
         ['/admin/settings#alipayQrUrl', '支付宝 / 微信收款码', '系统设置', '支付宝 微信 收款码 二维码 RMB 人民币 图片付款'],
         ['/admin/settings#defaultReferralRate', '推荐返佣规则', '系统设置', '推荐 返佣 分成 结算'],

@@ -48,7 +48,7 @@ async function setup(t: any, method = 'card', authorization = false) {
     headers: { Cookie: `session=${sessions.get(actor)}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), env, { waitUntil() {} } as any)
   const refunds: any[] = []
-  let posts = 0, loseResponse = false, remoteStatus = 'succeeded', captures = 0
+  let posts = 0, loseResponse = false, remoteStatus = 'succeeded', captures = 0, releases = 0
   let intent: any = { id: 'pi_refund', currency: 'aud', amount: 22550, amount_received: authorization ? 0 : 22550, status: authorization ? 'requires_capture' : 'succeeded', metadata: { order_id: 'order', customer_id: 'customer' } }
   t.mock.method(globalThis, 'fetch', async (url: any, init: any) => {
     const path = String(url).replace('https://api.stripe.com/v1/', '')
@@ -66,6 +66,9 @@ async function setup(t: any, method = 'card', authorization = false) {
     if (path === 'payment_intents/pi_refund/capture') {
       captures++
       intent = { ...intent, status: 'succeeded', amount_received: Number(new URLSearchParams(init.body).get('amount_to_capture')) }
+    } else if (path === 'payment_intents/pi_refund/cancel') {
+      releases++
+      intent = { ...intent, status: 'canceled' }
     } else assert.equal(path, 'payment_intents/pi_refund', `Unexpected external request: ${path}`)
     return Response.json(intent)
   })
@@ -88,8 +91,73 @@ async function setup(t: any, method = 'card', authorization = false) {
     const signature = createHmac('sha256', 'whsec_refund').update(`${time}.${body}`).digest('hex')
     return worker.fetch(new Request('https://rent.example.test/webhooks/stripe', { method: 'POST', body, headers: { 'stripe-signature': `t=${time},v1=${signature}` } }), env, { waitUntil() {} } as any)
   }
-  return { sqlite, request, preview, submit, application, approve, webhook, refunds, posts: () => posts, captures: () => captures, loseResponse: () => { loseResponse = true }, pending: () => { remoteStatus = 'pending' } }
+  return { sqlite, request, preview, submit, application, approve, webhook, refunds, posts: () => posts, captures: () => captures, releases: () => releases, loseResponse: () => { loseResponse = true }, pending: () => { remoteStatus = 'pending' } }
 }
+
+test('every pre-confirmation state quotes a full refund without a cancellation fee', async t => {
+  const f = await setup(t)
+  for (const status of ['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment']) {
+    f.sqlite.prepare('UPDATE orders SET status = ?').run(status)
+    const { html } = await f.preview()
+    assert.match(html, /我确认申请全额退款/)
+    assert.doesNotMatch(html, /我确认扣除订单总额 5%|<dt>退款手续费（订单总额的 5%）<\/dt>/)
+    assert.match(html, /225\.50/)
+  }
+  assert.equal((await f.submit()).status, 303)
+  assert.equal(f.application().fee_amount, 0)
+  assert.equal((await f.approve()).status, 303)
+  assert.equal(f.refunds[0].amount, 22550)
+  const refund = f.sqlite.prepare('SELECT * FROM payment_refunds').get()!
+  assert.equal(refund.deduction_amount, 0)
+  assert.equal(refund.deduction_reason, '取消订单全额退款')
+})
+
+test('pre-confirmation authorisation is fully released without capturing a fee', async t => {
+  const f = await setup(t, 'card', true)
+  f.sqlite.exec("UPDATE orders SET status = 'pending_payment'")
+  assert.equal((await f.submit()).status, 303)
+  const response = await f.approve()
+  assert.equal(response.status, 303, await response.text())
+  assert.equal(f.captures(), 0)
+  assert.equal(f.releases(), 1)
+  assert.equal(f.posts(), 0)
+  assert.equal(f.application().fee_amount, 0)
+  const refund = f.sqlite.prepare('SELECT * FROM payment_refunds').get()!
+  assert.equal(refund.refund_amount, 0)
+  assert.equal(refund.deduction_amount, 0)
+})
+
+test('pre-confirmation balance refunds credit the full payment and describe no deducted fee', async t => {
+  const f = await setup(t, 'balance')
+  f.sqlite.exec("UPDATE orders SET status = 'approved'")
+  assert.equal((await f.submit()).status, 303)
+  assert.equal((await f.approve()).status, 303)
+  assert.equal(f.sqlite.prepare("SELECT balance FROM users WHERE id = 'customer'").get()?.balance, 232)
+  assert.equal(f.sqlite.prepare('SELECT reason FROM balance_transactions').get()?.reason, '取消订单全额退款')
+  assert.equal(f.sqlite.prepare("SELECT description FROM financial_ledger_entries WHERE entry_type = 'REFUND'").get()?.description, '取消订单全额退款')
+})
+
+test('confirmed orders awaiting pickup retain the 5% fee', async t => {
+  const f = await setup(t, 'balance')
+  f.sqlite.exec("UPDATE orders SET status = 'pending_pickup'")
+  assert.equal((await f.submit()).status, 303)
+  assert.equal(f.application().fee_amount, 11)
+  assert.equal((await f.approve()).status, 303)
+  assert.equal(f.sqlite.prepare('SELECT refund_amount FROM payment_refunds').get()?.refund_amount, 209)
+})
+
+test('confirmation changes invalidate a fee-free quote at submission and approval', async t => {
+  const f = await setup(t, 'balance')
+  f.sqlite.exec("UPDATE orders SET status = 'approved'")
+  const { quoteToken } = await f.preview()
+  f.sqlite.exec("UPDATE orders SET status = 'paid'")
+  assert.equal((await f.request('/customer/orders/order/refund-request', 'customer', { quoteToken, confirmRefund: '1', reason: '取消' })).status, 409)
+  f.sqlite.exec("UPDATE orders SET status = 'approved'")
+  assert.equal((await f.submit()).status, 303)
+  f.sqlite.exec("UPDATE orders SET status = 'paid'")
+  assert.equal((await f.approve()).status, 409)
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM payment_refunds').get()?.n, 0)
+})
 
 test('customer confirms the fee, admin approves and Stripe refunds the net amount exactly once', async t => {
   const f = await setup(t)

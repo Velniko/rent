@@ -12566,8 +12566,18 @@ select.form-control {
 
   .mobile-bottom-nav a:hover { text-decoration: none; }
 
+  .mobile-bottom-nav a:hover,
+  .mobile-bottom-nav a:focus,
   .mobile-bottom-nav a.active,
-  .mobile-bottom-nav a[aria-current] { color: var(--c-accent); }
+  .mobile-bottom-nav a[aria-current="page"] { color: var(--c-accent); }
+
+  .mobile-bottom-nav a.active,
+  .mobile-bottom-nav a[aria-current="page"] { background: var(--c-accent-tint); }
+
+  .mobile-bottom-nav a .nav-icon,
+  .mobile-bottom-nav a.active .nav-icon,
+  .mobile-bottom-nav a small,
+  .mobile-bottom-nav a.active small { color: inherit; }
 
   .mobile-bottom-nav .nav-icon,
   .mobile-bottom-nav svg { width: 18px; height: 18px; }

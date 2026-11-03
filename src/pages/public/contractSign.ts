@@ -340,7 +340,6 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
       }
       const stripePublishableKey = systemSettings.paymentMethods.stripe ? await getStripePublishableKey(c).catch(() => '') : '';
       const stripeFeeRate = getStripeProcessingFeeRate();
-      const stripeFeePercent = (stripeFeeRate * 100).toFixed(2).replace(/\.00$/, '');
       const depositPaymentMode = hasSavedCard ? depositPaymentModeForOrder(order) : depositPaymentModeForRental(Number(order.rentalPeriod || 0));
       const orderDepositAmount = Math.max(0, Number(order.depositAmount || 0));
       const orderServiceFee = Math.max(0, Number((order as any).serviceFee || (order as any).service_fee || 0));
@@ -406,7 +405,7 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
               ${systemSettings.paymentMethods.stripe ? `
               <label class="payment-option">
                 <input type="radio" name="paymentMethod" value="stripe" required />
-                <span><strong>信用卡支付（Stripe）</strong><small>${monthlyPayment ? `首期合计 <span data-price="stripeTotal">${formatCurrency(stripeTotal)}</span>，含押金 ${formatCurrency(orderDepositAmount)}。每 30 天自动支付下一期租金。` : depositPaymentMode === 'PREAUTH' ? `一次性预授权总额 <span data-price="stripeTotal">${formatCurrency(stripeTotal)}</span>（包含租金及服务费、押金和手续费）；归还结算时，退回账户余额会捕获全部预授权并将可退押金入账余额；原路退回只捕获租金、手续费及实际扣款，释放剩余押金。` : `租金及已确定的时段服务费即时扣款 <span data-price="stripeTotal">${formatCurrency(stripeTotal)}</span>，其中支付手续费 <span data-price="stripeFee">${formatCurrency(stripeFee)}</span>（${stripeFeePercent}%）。${depositPaymentMode === 'SETUP_INTENT' ? '本订单使用 SetupIntent 保存卡片，押金不预扣。' : ''}`}</small></span>
+                <span><strong>信用卡支付（Stripe）</strong><small>${monthlyPayment ? `首期合计 <span data-price="stripeTotal">${formatCurrency(stripeTotal)}</span>，含押金 ${formatCurrency(orderDepositAmount)}。每 30 天自动支付下一期租金。` : depositPaymentMode === 'PREAUTH' ? `一次性预授权总额 <span data-price="stripeTotal">${formatCurrency(stripeTotal)}</span>` : `租金及服务费 <span data-price="stripeTotal">${formatCurrency(stripeTotal)}</span>`}</small></span>
               </label>
               ` : ''}
               ${systemSettings.paymentMethods.balancePayment && canUseBalance ? `
@@ -430,9 +429,8 @@ export async function renderContractSignPage(c: Context, tokenOrNumber: string, 
             <aside id="stripe-fee-notice" class="payment-fee-notice" hidden aria-live="polite">
               <div id="sign-stripe-preview" style="margin:14px 0;min-height:44px"></div>
               <p id="sign-stripe-preview-error" role="alert" style="color:#b42318" hidden></p>
-              <div class="payment-fee-notice__header"><strong>信用卡支付手续费</strong><span class="mono">${stripeFeePercent}%</span></div>
-              <p>${monthlyPayment ? '押金随首期收取，每 30 天自动支付下一期租金。' : depositPaymentMode === 'PREAUTH' ? '信用卡只创建一笔预授权；手续费按租金及服务费计算，不按押金计算。归还时按退款方式捕获：退余额捕获全部授权，原路退回只捕获实际应收金额。' : '选择 Stripe 信用卡支付时，租金及已确定的时段服务费会立即扣款；手续费按这两项计算，不按押金计算。'}</p>
-              ${monthlyPayment ? `<dl><div><dt>首期租金及服务费</dt><dd data-price="stripePrincipal">${formatCurrency(stripePrincipal)}</dd></div><div><dt>押金</dt><dd>${formatCurrency(orderDepositAmount)}</dd></div><div><dt>Stripe 支付手续费</dt><dd data-price="stripeFee">${formatCurrency(stripeFee)}</dd></div><div class="payment-fee-notice__total"><dt>首期合计</dt><dd data-price="stripeTotal">${formatCurrency(stripeTotal)}</dd></div></dl><p>继续付款即同意每 30 天自动扣取下一期租金。</p>` : depositPaymentMode === 'PREAUTH' ? `<dl><div class="payment-fee-notice__total"><dt>信用卡预授权总额</dt><dd data-price="stripeTotal">${formatCurrency(stripeTotal)}</dd></div></dl>` : `<dl><div><dt>租金及服务费</dt><dd data-price="stripePrincipal">${formatCurrency(stripePrincipal)}</dd></div><div><dt>${depositPaymentMode === 'SETUP_INTENT' ? '押金（SetupIntent，不预扣）' : '押金'}</dt><dd>${formatCurrency(orderDepositAmount)}</dd></div><div><dt>Stripe 支付手续费</dt><dd data-price="stripeFee">${formatCurrency(stripeFee)}</dd></div><div class="payment-fee-notice__total"><dt>信用卡最终扣款</dt><dd data-price="stripeTotal">${formatCurrency(stripeTotal)}</dd></div></dl>`}
+              <div class="payment-fee-notice__header"><strong>付款金额</strong></div>
+              ${monthlyPayment ? `<dl><div><dt>首期租金及服务费</dt><dd data-price="stripePrincipal">${formatCurrency(stripePrincipal)}</dd></div><div><dt>押金</dt><dd>${formatCurrency(orderDepositAmount)}</dd></div><div class="payment-fee-notice__total"><dt>首期合计</dt><dd data-price="stripeTotal">${formatCurrency(stripeTotal)}</dd></div></dl><p>继续付款即同意每 30 天自动扣取下一期租金。</p>` : depositPaymentMode === 'PREAUTH' ? `<dl><div class="payment-fee-notice__total"><dt>信用卡预授权总额</dt><dd data-price="stripeTotal">${formatCurrency(stripeTotal)}</dd></div></dl>` : `<dl><div><dt>租金及服务费</dt><dd data-price="stripePrincipal">${formatCurrency(stripePrincipal)}</dd></div><div><dt>${depositPaymentMode === 'SETUP_INTENT' ? '押金（SetupIntent，不预扣）' : '押金'}</dt><dd>${formatCurrency(orderDepositAmount)}</dd></div><div class="payment-fee-notice__total"><dt>信用卡最终扣款</dt><dd data-price="stripeTotal">${formatCurrency(stripeTotal)}</dd></div></dl>`}
               <small class="payment-fee-notice__warning">付款全程由 Stripe 安全处理，本网站不存储您的银行卡号、有效期或安全码。继续付款即表示您已阅读并同意我们的《服务条款》和《隐私政策》，并同意 Stripe 的相关服务条款及隐私政策。</small>
             </aside>
             ` : ''}

@@ -61,12 +61,7 @@ export function renderAdminSettings(user: any) {
         </section>
 
         <section class="form-section">
-          <div class="form-section-title"><span class="mono">PAY</span><div><h3>支付方式配置</h3><p>启用或停用面向客户的支付渠道，并设置支付手续费。</p></div></div>
-          <div class="form-group">
-            <label class="form-label" for="processingFeeRate">支付手续费比例（%）</label>
-            <input class="form-control" id="processingFeeRate" name="processingFeeRate" type="number" min="0" max="100" step="0.01" value="${(Number(settings.paymentMethods.processingFeeRate ?? 0.025) * 100).toFixed(2)}">
-            <small class="form-text">Stripe 手续费按租金及立即支付的时段服务费（不含押金）计算；押金预授权、释放和长期押金扣款不加手续费。</small>
-          </div>
+          <div class="form-section-title"><span class="mono">PAY</span><div><h3>支付方式配置</h3><p>启用或停用支付渠道。</p></div></div>
           <div class="form-group">
             <label class="form-label" for="squareProcessingFeeRate">Square 礼品卡手续费比例（%）</label>
             <input class="form-control" id="squareProcessingFeeRate" name="squareProcessingFeeRate" type="number" min="0" max="100" step="0.01" value="${(Number(settings.paymentMethods.squareProcessingFeeRate ?? 0.022) * 100).toFixed(2)}">
@@ -164,7 +159,6 @@ export function renderAdminSettings(user: any) {
             balancePayment: formData.has('enableBalancePayment'),
             alipay: formData.has('enableAlipay'),
             wechat: formData.has('enableWechat'),
-            processingFeeRate: Number(formData.get('processingFeeRate') || 0) / 100,
             squareProcessingFeeRate: Number(formData.get('squareProcessingFeeRate') || 0) / 100,
           },
           registrationSettings: {

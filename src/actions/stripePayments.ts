@@ -62,9 +62,10 @@ export async function hasOpenPaymentDispute(c: Context, paymentId: string): Prom
   return Boolean(row)
 }
 
-export const STRIPE_PROCESSING_FEE_RATE = 0.025
+export const STRIPE_PROCESSING_FEE_RATE = 0
 export function getStripeProcessingFeeRate(): number {
-  return Math.min(1, Math.max(0, Number(getSystemSettings().paymentMethods.processingFeeRate ?? STRIPE_PROCESSING_FEE_RATE)))
+  // Card surcharges are disabled even when an older saved setting is non-zero.
+  return STRIPE_PROCESSING_FEE_RATE
 }
 
 function stripeFeeItems(feeCents: number): StripeCheckoutItem[] {
@@ -171,11 +172,14 @@ async function upsertPaymentIntent(c: Context, opts: {
 }): Promise<any> {
   if (opts.checkout && (opts.checkout.existingSessionId || (!opts.existingIntentId && !opts.confirmNow))) {
     if (!opts.customerId) throw new Error('Stripe 客户资料无效，请重试')
-    return upsertStripeCheckout(c, { ...opts, ...opts.checkout, customerId: opts.customerId })
+    const intent = await upsertStripeCheckout(c, { ...opts, ...opts.checkout, customerId: opts.customerId })
+    if (intent.status === 'succeeded' && Number(intent.amount) !== opts.amountCents) throw new Error('Stripe 正在确认付款，请稍后重试')
+    return intent
   }
   const reusableStatuses = ['requires_payment_method', 'requires_confirmation', 'requires_action', 'processing']
   if (opts.existingIntentId) {
     const current = await stripeRequest(c, `payment_intents/${opts.existingIntentId}`).catch(() => null)
+    if (current?.status === 'processing') throw new Error('Stripe 正在确认付款，请稍后重试')
     if (current && reusableStatuses.includes(String(current.status)) && String(current.status) !== 'processing') {
       const params = new URLSearchParams({ amount: String(opts.amountCents), currency: 'aud' })
       if (opts.paymentMethodId) params.set('payment_method', opts.paymentMethodId)
@@ -198,6 +202,7 @@ async function upsertPaymentIntent(c: Context, opts: {
       return current
     } else if (current && current.status === 'succeeded') {
       // 已经付过款：直接返回，调用方据此判断无需再收款。
+      if (Number(current.amount) !== opts.amountCents) throw new Error('Stripe 正在确认付款，请稍后重试')
       return current
     }
   }
@@ -677,6 +682,14 @@ export function stripeAuthorizationAmount(orderTotal: number, depositAmount = 0,
   return amounts.chargedCents + Math.max(0, cents(depositAmount))
 }
 
+// Webhooks use the persisted quote, including fees on historical payments.
+// Changing the current surcharge policy must not invalidate an in-flight receipt.
+function recordedStripePaymentAmounts(order: any, payment: any) {
+  const baseCents = Math.max(0, cents(order.totalAmount) - cents(orderDeposit(order)))
+  const feeCents = cents(Number(payment.processing_fee || 0))
+  return { baseCents, feeCents, chargedCents: baseCents + feeCents }
+}
+
 export function paidRentalPaymentCoversOrder(payment: any, orderTotal: number, depositAmount = 0): boolean {
   const requiredRentalCents = Math.max(0, cents(orderTotal) - cents(depositAmount))
   return String(payment?.status || '').toLowerCase() === 'paid' && cents(payment?.rental_amount || 0) >= requiredRentalCents
@@ -1034,7 +1047,7 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
     if (topupId) {
       const topup = await c.env.RENT.prepare("SELECT * FROM balance_topups WHERE id = ? AND status = 'pending'").bind(topupId).first() as any
       const customerId = String(session?.metadata?.customer_id || '')
-      const expected = topup ? cents(topup.amount) + Math.round(cents(topup.amount) * getStripeProcessingFeeRate()) : 0
+      const expected = topup ? cents(topup.amount) + cents(Number(topup.processing_fee || 0)) : 0
       if (!topup || topup.user_id !== customerId || Number(session.amount_total) !== expected || session.payment_status !== 'paid') return c.text('Stripe 充值数据不匹配', 400)
       const user = await c.env.RENT.prepare('SELECT balance FROM users WHERE id = ?').bind(customerId).first() as any
       const next = Number((Number(user?.balance || 0) + Number(topup.amount)).toFixed(2))
@@ -1046,7 +1059,7 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
       const order = await getOrderById(c, orderId)
       paidOrderId = orderId
       const payment = await c.env.RENT.prepare('SELECT rental_id, customer_id, amount, processing_fee FROM payments WHERE stripe_checkout_session_id = ?').bind(session.id).first() as any
-      const expected = order ? stripePaymentAmounts(order.totalAmount, orderDeposit(order), orderServiceFee(order)) : null
+      const expected = order && payment ? recordedStripePaymentAmounts(order, payment) : null
       if (!order || !payment || !expected || payment.rental_id !== order.id || payment.customer_id !== customerId || cents(payment.amount) !== expected.chargedCents || cents(payment.processing_fee) !== expected.feeCents || order.userId !== customerId || String(session.currency).toLowerCase() !== 'aud' || Number(session.amount_total) !== expected.chargedCents || session.payment_status !== 'paid') {
         return c.text('Stripe 支付数据与订单不匹配', 400)
       }
@@ -1062,10 +1075,10 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
       c.env.RENT.prepare("UPDATE payments SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE stripe_checkout_session_id = ? AND status = 'pending'").bind(session.id),
     )
   } else if (event.type === 'payment_intent.amount_capturable_updated') {
-    const payment = await c.env.RENT.prepare("SELECT id, rental_id, customer_id, amount, deposit_amount FROM payments WHERE stripe_payment_intent_id = ? AND status = 'pending'").bind(session.id).first() as any
+    const payment = await c.env.RENT.prepare("SELECT id, rental_id, customer_id, amount, deposit_amount, processing_fee FROM payments WHERE stripe_payment_intent_id = ? AND status = 'pending'").bind(session.id).first() as any
     if (payment && Number(payment.deposit_amount || 0) > 0 && String(session?.metadata?.type || '') === 'rental_authorization') {
       const order = await getOrderById(c, payment.rental_id)
-      const expectedAuthorization = order ? stripeAuthorizationAmount(order.totalAmount, orderDeposit(order), orderServiceFee(order)) : 0
+      const expectedAuthorization = order ? cents(order.totalAmount) + cents(Number(payment.processing_fee || 0)) : 0
       const capturableCents = Number(session?.amount_capturable || 0)
       const paymentMethodId = typeof session?.payment_method === 'string' ? session.payment_method : String(session?.payment_method?.id || '')
       if (!order || session.status !== 'requires_capture' || session.capture_method !== 'manual' || String(session.currency).toLowerCase() !== 'aud' || String(session.metadata?.order_id || '') !== order.id || String(session.metadata?.customer_id || '') !== String(order.userId) || payment.customer_id !== String(order.userId) || payment.rental_id !== order.id || cents(payment.amount) !== expectedAuthorization || Number(session.amount) !== expectedAuthorization || capturableCents !== expectedAuthorization) return c.text('Stripe 订单预授权数据不匹配', 400)
@@ -1115,7 +1128,7 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
       const topup = await c.env.RENT.prepare("SELECT * FROM balance_topups WHERE id = ? AND stripe_payment_intent_id = ? AND status = 'pending'").bind(topupId, session.id).first() as any
       const customerId = String(session?.metadata?.customer_id || '')
       const isSquareSplit = ['square_split_topup', 'square_residual_topup'].includes(String(session?.metadata?.type || ''))
-      const expected = isSquareSplit ? Number(session?.metadata?.remainder_amount || 0) : (topup ? cents(topup.amount) + Math.round(cents(topup.amount) * getStripeProcessingFeeRate()) : 0)
+      const expected = isSquareSplit ? Number(session?.metadata?.remainder_amount || 0) : (topup ? cents(topup.amount) + cents(Number(topup.processing_fee || 0)) : 0)
       if (!topup || topup.user_id !== customerId || paidCents !== expected) return c.text('Stripe 充值数据不匹配', 400)
       if (isSquareSplit) await completeSplitSquarePayment(c, String(session?.metadata?.square_payment_id || topup.transaction_id || ''), Number(session?.metadata?.target_amount || 0))
       const user = await c.env.RENT.prepare('SELECT balance FROM users WHERE id = ?').bind(customerId).first() as any
@@ -1174,7 +1187,7 @@ export async function handleStripeWebhook(c: Context): Promise<Response> {
           c.env.RENT.prepare("UPDATE orders SET status = 'paid', order_status = 'CONFIRMED', payment_status = 'PAID', rental_status = 'READY_FOR_PICKUP', paymentMethod = 'card', stripe_payment_method_id = COALESCE(NULLIF(?, ''), stripe_payment_method_id), updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending_payment'").bind(String(session.payment_method || ''), order.id),
         )
       } else {
-        const expected = stripePaymentAmounts(order.totalAmount, orderDeposit(order), orderServiceFee(order))
+        const expected = recordedStripePaymentAmounts(order, payment)
         if (cents(payment.amount) !== expected.chargedCents || cents(payment.processing_fee) !== expected.feeCents || paidCents !== expected.chargedCents) return c.text('Stripe 支付数据不匹配', 400)
         statements.push(
           c.env.RENT.prepare(`UPDATE payments SET status = 'paid', transaction_id = COALESCE(transaction_id, ?), paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_intent_id = ? AND status != 'paid'`)

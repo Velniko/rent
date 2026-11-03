@@ -727,19 +727,18 @@ test('retry of full capture credits the deposit to balance once', async t => {
   assert.equal(sqlite.prepare("SELECT balance FROM users WHERE id='customer'").get()?.balance, 212)
 })
 
-test('new balance top-up uses Checkout line items, customer identity and a separate surcharge', async t => {
+test('new balance top-up uses Checkout line items and customer identity without a surcharge', async t => {
   const { sqlite, context, calls } = await setup(t)
   sqlite.exec("INSERT INTO balance_topups (id, user_id, amount, payment_method, status) VALUES ('topup', 'customer', 10, 'card', 'pending'); INSERT INTO addresses (id, user_id, address_line1, city, state, postcode, country, is_default) VALUES ('address', 'customer', '18 Test Street', 'Carlton', 'VIC', '3053', 'AU', 1)")
   const result = await createBalanceTopUpIntent(context, { id: 'customer', name: 'Test Customer', email: 'customer@example.test' }, 'topup')
   assert.match(result.clientSecret, /^cs_test_/)
-  assert.equal(result.amountCents, 1025)
+  assert.equal(result.amountCents, 1000)
   const create = calls.find(call => call.path === 'checkout/sessions')!
   assert.equal(create.params.get('ui_mode'), 'elements')
   assert.equal(create.params.get('customer'), 'cus_test')
   assert.equal(create.params.get('line_items[0][price_data][product_data][name]'), '账户余额充值')
   assert.equal(create.params.get('line_items[0][price_data][unit_amount]'), '1000')
-  assert.equal(create.params.get('line_items[1][price_data][product_data][name]'), '信用卡支付手续费（2.50%）')
-  assert.equal(create.params.get('line_items[1][price_data][unit_amount]'), '25')
+  assert.equal(create.params.has('line_items[1][price_data][unit_amount]'), false)
   assert.equal(create.params.get('line_items[0][quantity]'), '1')
   assert.equal(create.params.get('payment_intent_data[metadata][topup_id]'), 'topup')
   const profile = calls.find(call => call.path === 'customers/cus_test' && call.params.has('address[line1]'))!
@@ -902,7 +901,7 @@ test('115-day monthly checkout charges one month plus deposit, preserves pricing
   sqlite.prepare('UPDATE orders SET rental_pricing_json=? WHERE id=?').run(rentalPricingSnapshot(pricing), 'order')
   const customer = { id: 'customer', role: 'CUSTOMER', email: 'customer@example.test', stripe_customer_id: 'cus_test' }
   const checkout = await createOrderPaymentIntent(context, customer, 'order')
-  assert.equal(checkout.amountCents, 69700)
+  assert.equal(checkout.amountCents, 68000)
   assert.deepEqual(sqlite.prepare('SELECT rental_amount FROM rental_installments ORDER BY installment_number').all().map(row => row.rental_amount), [480,480,480,400])
   assert.equal(sqlite.prepare("SELECT billing_mode FROM orders WHERE id='order'").get()?.billing_mode, 'MONTHLY')
   sqlite.exec("UPDATE devices SET pricePerDay=999 WHERE id='device'")
@@ -912,7 +911,7 @@ test('115-day monthly checkout charges one month plus deposit, preserves pricing
   const session = [...sessions.values()][0]
   session.payment_intent = 'pi_auth'
   session.status = 'complete'
-  const intent = { id:'pi_auth', status:'succeeded', amount:69700, amount_received:69700, currency:'aud', customer:'cus_test', payment_method:'pm_saved', metadata:{ ...session.metadata, type:'rental_installment', installment_id:first.id, payment_record_id:first.payment_id, order_id:'order', customer_id:'customer' } }
+  const intent = { id:'pi_auth', status:'succeeded', amount:68000, amount_received:68000, currency:'aud', customer:'cus_test', payment_method:'pm_saved', metadata:{ ...session.metadata, type:'rental_installment', installment_id:first.id, payment_record_id:first.payment_id, order_id:'order', customer_id:'customer' } }
   const webhook = new Hono()
   webhook.post('/', c => handleStripeWebhook(c))
   const send = async (object: any, id: string) => {
@@ -932,7 +931,7 @@ test('115-day monthly checkout charges one month plus deposit, preserves pricing
     if(path==='payment_intents' && init?.method==='POST') {
       const id=`pi_month_${++creations}`, metadata=Object.fromEntries([...params].filter(([key])=>key.startsWith('metadata[')).map(([key,value])=>[key.slice(9,-1),value]))
       const value={id,status:'requires_confirmation',amount:Number(params.get('amount')),amount_received:0,currency:'aud',customer:params.get('customer'),payment_method:params.get('payment_method'),metadata,client_secret:id+'_secret'}
-      assert.equal(value.amount,creations === 3 ? 41000 : 49200)
+      assert.equal(value.amount,creations === 3 ? 41000 : 48000)
       monthlyIntents.set(id,value)
       return Response.json(value)
     }
@@ -1006,11 +1005,11 @@ test('a failed monthly charge is visible, is not charged again by cron and can b
   assert.equal(await chargeDueRentalInstallments(context),0);assert.equal(confirmations,1)
   await assert.rejects(()=>createOrderInstallmentPaymentIntent(context,{...customer,id:'other'},'order',part.id),/无权访问/)
   const retry=await createOrderInstallmentPaymentIntent(context,customer,'order',part.id)
-  assert.equal(retry.clientSecret,'pi_month_failed_secret');assert.equal(retry.amountCents,49200)
+  assert.equal(retry.clientSecret,'pi_month_failed_secret');assert.equal(retry.amountCents,48000)
   for(const change of [{amount_received:1},{currency:'usd'},{customer:'cus_other'},{metadata:{...intent.metadata,customer_id:'other'}}]) {
-    await assert.rejects(()=>settleRentalInstallment(context,{...intent,status:'succeeded',amount_received:49200,...change}),/月付数据不匹配/)
+    await assert.rejects(()=>settleRentalInstallment(context,{...intent,status:'succeeded',amount_received:48000,...change}),/月付数据不匹配/)
   }
-  await settleRentalInstallment(context,{...intent,status:'succeeded',amount_received:49200})
+  await settleRentalInstallment(context,{...intent,status:'succeeded',amount_received:48000})
   assert.equal(sqlite.prepare('SELECT status FROM rental_installments WHERE installment_number=2').get()?.status,'paid')
 })
 
@@ -1148,7 +1147,7 @@ test('a long rental can switch between full payment without deposit and monthly 
   order=await setRentalPaymentPlan(context,await getOrderById(context,'order'),'MONTHLY')
   assert.equal(order.depositAmount,200);assert.equal(order.totalAmount,2040)
   const monthly=await createOrderPaymentIntent(context,customer,'order')
-  assert.equal(monthly.amountCents,69700)
+  assert.equal(monthly.amountCents,68000)
   assert.deepEqual(sqlite.prepare('SELECT rental_amount FROM rental_installments ORDER BY installment_number').all().map(row=>row.rental_amount),[480,480,480,400])
   const html=renderRentalPaymentPlan(order,{pricePerDay:20,depositAmount:999},'/customer/orders/order/payment-plan')
   assert.match(html,/一次性付清（免押金）/);assert.match(html,/AUD\$1886\.00/)
@@ -1241,7 +1240,7 @@ test('switching payment plans preserves the risk-adjusted deposit and its base p
     const html = renderRentalPaymentPlan(order, { pricePerDay: 20, depositAmount: 999 }, '/payment-plan')
     if (multiplier > 1) {
       assert.doesNotMatch(html, /免押金/)
-      assert.match(html, new RegExp('AUD\\$' + (1200 + deposit + Math.round((1200 + deposit) * 100 * 0.025) / 100).toFixed(2).replace('.', '\\.')))
+      assert.match(html, new RegExp('AUD\\$' + (1200 + deposit).toFixed(2).replace('.', '\\.')))
     }
     order = await setRentalPaymentPlan(context, order, 'MONTHLY')
     assert.equal(order.depositAmount, deposit)

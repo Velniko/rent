@@ -72,7 +72,7 @@ async function setup(t: any) {
   const collection = (id: string) => sqlite.prepare('SELECT * FROM return_collections WHERE id=?').get(id) as any
   const webhook = async (id: string, overrides = {}, valid = true, eventId = 'evt_return') => {
     const rc = collection(id)
-    const intent = { id: 'pi_return', latest_charge: 'ch_return', customer: 'cus_return', status: 'succeeded', currency: 'aud', amount: 4613, amount_received: 4613, description: rc.reference, created: Math.floor(Date.now()/1000), ...overrides }
+    const intent = { id: 'pi_return', latest_charge: 'ch_return', customer: 'cus_return', status: 'succeeded', currency: 'aud', amount: 4500, amount_received: 4500, description: rc.reference, created: Math.floor(Date.now()/1000), ...overrides }
     const body = JSON.stringify({ id: eventId, type: 'payment_intent.succeeded', data: { object: intent } })
     const timestamp = Math.floor(Date.now()/1000)
     const signature = createHmac('sha256', valid ? 'whsec_return' : 'wrong').update(`${timestamp}.${body}`).digest('hex')
@@ -150,11 +150,11 @@ test('Stripe App remains pending until a signed matching receipt, and webhook re
   const f=await setup(t)
   const id=await f.collect('card')
   assert.equal(f.collection(id).status,'pending')
-  assert.equal(f.collection(id).processing_fee,1.13)
+  assert.equal(f.collection(id).processing_fee,0)
   const page=await (await f.request(`/staff/return-collections/${id}`)).text()
   for(const script of extractInlineScripts(page)) new Function(script)
   assert.match(page,/https:\/\/dashboard.stripe.com\/test\/customers\/cus_return/)
-  assert.match(page,/value="46.13"/)
+  assert.match(page,/value="45.00"/)
   assert.match(page,/客户&lt;img src=x&gt;/)
   assert.equal((await f.request(`/staff/return-collections/${id}/verify-stripe`,'staff',{receiptId:'pi_return'})).status,409)
   assert.equal((await f.webhook(id,{},false)).status,400)

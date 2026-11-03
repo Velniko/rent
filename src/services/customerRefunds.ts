@@ -31,7 +31,8 @@ export async function getCustomerRefundQuote(c: Context, order: any): Promise<Cu
   })
   const paidCents = payments.reduce((sum, p) => sum + cents(p.amount), 0)
   if (!paidCents) throw new Error('暂无已到账付款，不能申请退款')
-  const feeCents = Math.round(cents(total) * 5 / 100)
+  // paid is displayed as “已确认”; earlier application/signing/payment states cancel without a fee.
+  const feeCents = ['paid', 'pending_pickup'].includes(order.status) ? Math.round(cents(total) * 5 / 100) : 0
   if (feeCents > paidCents) throw new Error('已付款金额不足以扣除退款手续费，请联系管理员')
   const refundCents = paidCents - feeCents
   const allocations = refundCents > 0 ? buildRefundAllocation(payments.map(p => ({ id: p.id, amount: p.amount })), refundCents / 100) : []
@@ -91,10 +92,10 @@ export async function finishCustomerRefundPayment(c: Context, admin: any, refund
   const results = await c.env.RENT.batch([
     ...(refund.refund_method === 'balance' ? [
       c.env.RENT.prepare("UPDATE users SET balance = balance + ? WHERE id = ? AND EXISTS (SELECT 1 FROM payment_refunds WHERE id = ? AND status = 'pending')").bind(amount, request.customer_id, refund.id),
-      c.env.RENT.prepare("INSERT OR IGNORE INTO balance_transactions (id, user_id, amount, balance_after, type, reason, created_by) SELECT ?, id, ?, balance, 'refund_credit', '取消订单退款（已扣 5% 手续费）', ? FROM users WHERE id = ? AND EXISTS (SELECT 1 FROM payment_refunds WHERE id = ? AND status = 'pending')").bind(`bt-${refund.id}`, amount, admin.id, request.customer_id, refund.id),
+      c.env.RENT.prepare("INSERT OR IGNORE INTO balance_transactions (id, user_id, amount, balance_after, type, reason, created_by) SELECT ?, id, ?, balance, 'refund_credit', ?, ? FROM users WHERE id = ? AND EXISTS (SELECT 1 FROM payment_refunds WHERE id = ? AND status = 'pending')").bind(`bt-${refund.id}`, amount, Number(request.fee_amount) > 0 ? '取消订单退款（已扣 5% 手续费）' : '取消订单全额退款', admin.id, request.customer_id, refund.id),
     ] : []),
-    c.env.RENT.prepare("INSERT OR IGNORE INTO financial_ledger_entries (id, entry_number, entry_type, amount, customer_id, order_id, source_type, source_id, description, created_by) SELECT ?, ?, 'REFUND', ?, ?, ?, 'PAYMENT_REFUND', id, '取消订单退款（已扣 5% 手续费）', ? FROM payment_refunds WHERE id = ? AND status = 'pending'")
-      .bind(`fle-${refund.id}`, `FLE-${crypto.randomUUID()}`, -amount, request.customer_id, request.order_id, admin.id, refund.id),
+    c.env.RENT.prepare("INSERT OR IGNORE INTO financial_ledger_entries (id, entry_number, entry_type, amount, customer_id, order_id, source_type, source_id, description, created_by) SELECT ?, ?, 'REFUND', ?, ?, ?, 'PAYMENT_REFUND', id, ?, ? FROM payment_refunds WHERE id = ? AND status = 'pending'")
+      .bind(`fle-${refund.id}`, `FLE-${crypto.randomUUID()}`, -amount, request.customer_id, request.order_id, Number(request.fee_amount) > 0 ? '取消订单退款（已扣 5% 手续费）' : '取消订单全额退款', admin.id, refund.id),
     c.env.RENT.prepare("UPDATE payment_refunds SET status = 'succeeded', processed_by = ? WHERE id = ? AND status = 'pending'").bind(admin.id, refund.id),
     c.env.RENT.prepare("UPDATE payments SET status = 'refunded', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND EXISTS (SELECT 1 FROM payment_refunds WHERE id = ? AND status = 'succeeded')").bind(refund.payment_id, refund.id),
   ])

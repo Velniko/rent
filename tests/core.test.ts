@@ -179,13 +179,13 @@ test('account type shows deletion requests before the stored account type', () =
 
 test('session lookup loads the complete user without schema probes', async () => {
   const statements: string[] = []
-  const db = { prepare(sql: string) { statements.push(sql); return { bind() { return this }, async run() { return { success: true } }, async first() { return sql.includes('auth_sessions') ? { user_id: 'guest-1' } : { id: 'guest-1', name: 'Guest', email: 'guest@example.com', role: 'CUSTOMER', status: 'active', account_type: 'guest', guest_order_id: 'order-1', bsb: '062-001', account: '12345678' } } } } }
+  const db = { prepare(sql: string) { statements.push(sql); return { bind() { return this }, async run() { return { success: true } }, async first() { return sql.includes('JOIN users') ? { id: 'guest-1', name: 'Guest', email: 'guest@example.com', role: 'CUSTOMER', status: 'active', account_type: 'guest', guest_order_id: 'order-1', bsb: '062-001', account: '12345678' } : null } } } }
   const user = await findUserBySession({ env: { RENT: db } } as any, `session=${'a'.repeat(32)}`)
   assert.equal(user?.accountType, 'guest')
   assert.equal(user?.guestOrderId, 'order-1')
   assert.equal(user?.accountNumber, '12345678')
   assert.equal(statements.some(sql => /PRAGMA table_info/i.test(sql)), false)
-  assert.equal(statements.filter(sql => /SELECT \* FROM users/i.test(sql)).length, 1)
+  assert.equal(statements.filter(sql => /SELECT u\.\* FROM auth_sessions s JOIN users/i.test(sql)).length, 1)
 })
 
 test('guest passwords are strong and generated independently', () => {
@@ -489,13 +489,13 @@ test('contract signing progress renders readable step labels and one current ste
   assert.doesNotMatch(websiteHtml, /\*\*/)
 })
 
-test('Stripe adds 2.5% to rent and service fees while excluding the deposit', () => {
-  assert.deepEqual(stripePaymentAmounts(220, 200), { baseCents: 2000, feeCents: 50, chargedCents: 2050 })
-  assert.deepEqual(stripePaymentAmounts(1100), { baseCents: 110000, feeCents: 2750, chargedCents: 112750 })
-  assert.deepEqual(stripePaymentAmounts(99.99), { baseCents: 9999, feeCents: 250, chargedCents: 10249 })
-  assert.deepEqual(stripePaymentAmounts(1100, 1000), { baseCents: 10000, feeCents: 250, chargedCents: 10250 })
-  assert.deepEqual(stripePaymentAmounts(1100, 1000, 50), { baseCents: 10000, feeCents: 250, chargedCents: 10250 })
-  assert.equal(stripeAuthorizationAmount(220, 200), 22050)
+test('Stripe charges rent and service fees without a card surcharge', () => {
+  assert.deepEqual(stripePaymentAmounts(220, 200), { baseCents: 2000, feeCents: 0, chargedCents: 2000 })
+  assert.deepEqual(stripePaymentAmounts(1100), { baseCents: 110000, feeCents: 0, chargedCents: 110000 })
+  assert.deepEqual(stripePaymentAmounts(99.99), { baseCents: 9999, feeCents: 0, chargedCents: 9999 })
+  assert.deepEqual(stripePaymentAmounts(1100, 1000), { baseCents: 10000, feeCents: 0, chargedCents: 10000 })
+  assert.deepEqual(stripePaymentAmounts(1100, 1000, 50), { baseCents: 10000, feeCents: 0, chargedCents: 10000 })
+  assert.equal(stripeAuthorizationAmount(220, 200), 22000)
 })
 
 test('a paid Stripe payment only suppresses a new authorization when it covers rent and delivery', () => {
@@ -527,10 +527,9 @@ test('security deposit methods are explicit and separate from Stripe rent paymen
   assert.equal(normalizeSecurityDepositMethod('unknown'), 'card_hold')
 })
 
-test('Stripe checkout contains rent and processing fee but no deposit', () => {
+test('Stripe checkout contains rent without a surcharge or deposit', () => {
   assert.deepEqual(stripeCheckoutItems({ totalAmount: 1100, depositAmount: 1000, rentalPeriod: 5, startDate: '2026-08-10', endDate: '2026-08-15' }), [
     { name: '设备租金（5 天，2026-08-10 至 2026-08-15）', amountCents: 10000 },
-    { name: '信用卡支付手续费（2.50%）', amountCents: 250 },
   ])
 })
 

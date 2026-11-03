@@ -129,7 +129,7 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
       balancePayment: payload.paymentMethods?.balancePayment ?? getSystemSettings().paymentMethods.balancePayment,
       alipay: payload.paymentMethods?.alipay ?? getSystemSettings().paymentMethods.alipay,
       wechat: payload.paymentMethods?.wechat ?? getSystemSettings().paymentMethods.wechat,
-      processingFeeRate: Math.min(1, Math.max(0, Number(payload.paymentMethods?.processingFeeRate ?? getSystemSettings().paymentMethods.processingFeeRate ?? 0.025))),
+      processingFeeRate: 0,
       squareProcessingFeeRate: Math.min(1, Math.max(0, Number(payload.paymentMethods?.squareProcessingFeeRate ?? getSystemSettings().paymentMethods.squareProcessingFeeRate ?? 0.022))),
     },
     bankDetails: {

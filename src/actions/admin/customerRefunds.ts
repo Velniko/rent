@@ -20,11 +20,11 @@ export async function approveCustomerRefund(c: Context, admin: any, requestId: s
     for (const payment of quote.payments) if (await hasOpenPaymentDispute(c, payment.id)) throw new Error('该笔付款存在未解决的拒付争议，暂不能退款')
     await prepareCustomerRefundPayments(c, order, quote)
     const results = await c.env.RENT.batch([
-      c.env.RENT.prepare("UPDATE customer_refund_requests SET status = 'processing', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'").bind(admin.id, request.id),
+      c.env.RENT.prepare("UPDATE customer_refund_requests SET status = 'processing', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM orders WHERE id = customer_refund_requests.order_id AND status = ? AND handover_completed_at IS NULL AND deleted_at IS NULL AND totalAmount = ? AND serviceFee = ?)").bind(admin.id, request.id, order.status, quote.total, quote.serviceFee),
       c.env.RENT.prepare("UPDATE orders SET status = 'cancelled', order_status = 'CANCELLED', rental_status = 'CANCELLED', payment_status = 'REFUND_PENDING', refund_ignored_at = NULL, refund_ignored_by = NULL, refund_ignore_reason = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND EXISTS (SELECT 1 FROM customer_refund_requests WHERE id = ? AND status = 'processing' AND reviewed_by = ?)").bind(order.id, request.id, admin.id),
       ...quote.payments.map((payment, index) => c.env.RENT.prepare(`INSERT OR IGNORE INTO payment_refunds (id, refund_number, order_id, payment_id, type, refundable_amount, refund_amount, deduction_amount, deduction_reason, refunded_processing_fee, status, processed_by, refund_method, refund_bsb, refund_account_number, refund_account_name, customer_request_id)
-        SELECT ?, ?, order_id, ?, 'cancellation', ?, ?, ?, '退款手续费（订单总额的 5%）', ?, 'pending', ?, ?, refund_bsb, refund_account_number, refund_account_name, id FROM customer_refund_requests WHERE id = ? AND status = 'processing' AND reviewed_by = ?`)
-        .bind(`${request.id}-${index}`, generateReferenceNumber('RFD'), payment.id, payment.authorization ? payment.fee : payment.amount, payment.refundAmount, payment.fee, Math.min(payment.refundAmount, payment.processingFee), admin.id, payment.channel, request.id, admin.id)),
+        SELECT ?, ?, order_id, ?, 'cancellation', ?, ?, ?, ?, ?, 'pending', ?, ?, refund_bsb, refund_account_number, refund_account_name, id FROM customer_refund_requests WHERE id = ? AND status = 'processing' AND reviewed_by = ?`)
+        .bind(`${request.id}-${index}`, generateReferenceNumber('RFD'), payment.id, payment.authorization ? payment.fee : payment.amount, payment.refundAmount, payment.fee, quote.fee > 0 ? '退款手续费（订单总额的 5%）' : '取消订单全额退款', Math.min(payment.refundAmount, payment.processingFee), admin.id, payment.channel, request.id, admin.id)),
     ])
     if (!results[0].meta?.changes) throw new Error('退款申请不存在或已处理')
     await createAuditLog(c, { actor: admin, action: 'CUSTOMER_REFUND_APPROVED', targetType: 'ORDER', targetId: order.id, after: { requestId: request.id, ...quote } })
@@ -36,7 +36,7 @@ export async function approveCustomerRefund(c: Context, admin: any, requestId: s
   await c.env.RENT.prepare("UPDATE orders SET payment_status = 'REFUND_PENDING' WHERE id = ?").bind(order.id).run()
   await executeCustomerRefund(c, admin, request.id)
   await c.env.RENT.prepare("UPDATE orders SET payment_status = CASE WHEN EXISTS (SELECT 1 FROM payment_refunds WHERE customer_request_id = ? AND status = 'pending') THEN 'REFUND_PENDING' ELSE 'REFUNDED' END WHERE id = ?").bind(request.id, order.id).run()
-  await createNotification(c, { recipientId: request.customer_id, senderId: admin.id, type: 'customer_refund_approved', title: '退款申请已通过', message: `退款 ${quote.refund.toFixed(2)} AUD，已扣除手续费 ${quote.fee.toFixed(2)} AUD。`, orderId: order.id, dedupeKey: `customer-refund-approved:${request.id}` })
+  await createNotification(c, { recipientId: request.customer_id, senderId: admin.id, type: 'customer_refund_approved', title: '退款申请已通过', message: `退款 ${quote.refund.toFixed(2)} AUD${quote.fee > 0 ? `，已扣除手续费 ${quote.fee.toFixed(2)} AUD` : ''}。`, orderId: order.id, dedupeKey: `customer-refund-approved:${request.id}` })
 }
 
 export async function rejectCustomerRefund(c: Context, admin: any, requestId: string, note: string): Promise<void> {

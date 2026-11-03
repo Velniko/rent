@@ -11,15 +11,46 @@ import { upsertStripeCheckout } from './stripeCheckout'
 import { createNotification } from './notifications'
 
 const cents = (value: unknown) => Math.round(Number(value || 0) * 100)
-const feeRate = () => Math.min(1, Math.max(0, Number(getSystemSettings().paymentMethods.processingFeeRate ?? 0.025)))
+const feeRate = () => 0
 
 export async function getRentalInstallments(c: Context, orderId: string): Promise<RentalInstallment[]> {
   return ((await c.env.RENT.prepare('SELECT * FROM rental_installments WHERE order_id = ? ORDER BY installment_number').bind(orderId).all()).results || []) as RentalInstallment[]
 }
 
+async function removeUnpaidInstallmentSurcharge(c: Context, part: RentalInstallment): Promise<RentalInstallment> {
+  if (Number(part.processing_fee) <= 0 || ['paid', 'cancelled'].includes(part.status)) return part
+  const payment = part.payment_id ? await c.env.RENT.prepare('SELECT * FROM payments WHERE id = ?').bind(part.payment_id).first() as any : null
+  if (payment && ['paid', 'refunded'].includes(payment.status)) return part
+  let intentId = payment?.stripe_payment_intent_id || part.stripe_payment_intent_id
+  if (payment?.stripe_checkout_session_id) {
+    const session = await stripeRequest(c, `checkout/sessions/${payment.stripe_checkout_session_id}`)
+    if (session.status === 'complete') throw new Error('Stripe 正在确认付款，请稍后重试')
+    if (session.status === 'open') await stripeRequest(c, `checkout/sessions/${session.id}/expire`, new URLSearchParams())
+    intentId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id || intentId
+  }
+  if (intentId) {
+    const intent = await stripeRequest(c, `payment_intents/${intentId}`)
+    if (['processing', 'succeeded'].includes(intent.status)) return part
+    if (intent.status !== 'canceled') await stripeRequest(c, `payment_intents/${intentId}/cancel`, new URLSearchParams(), `remove-surcharge-${intentId}`)
+  }
+  const amount = (cents(part.rental_amount) + cents(part.deposit_amount)) / 100
+  await c.env.RENT.batch([
+    c.env.RENT.prepare(`UPDATE rental_installments SET processing_fee = 0, amount = ?, stripe_payment_intent_id = NULL
+    WHERE id = ? AND status IN ('pending', 'failed', 'processing') AND processing_fee = ?
+      AND NOT EXISTS (SELECT 1 FROM payments WHERE id = rental_installments.payment_id AND status IN ('paid', 'refunded'))`)
+      .bind(amount, part.id, part.processing_fee),
+    ...(payment ? [c.env.RENT.prepare("UPDATE payments SET amount = ?, processing_fee = 0, stripe_payment_intent_id = NULL, stripe_checkout_session_id = NULL WHERE id = ? AND status IN ('pending', 'failed') AND EXISTS (SELECT 1 FROM rental_installments WHERE id = ? AND processing_fee = 0 AND stripe_payment_intent_id IS NULL)")
+      .bind(amount, payment.id, part.id)] : []),
+  ])
+  return (await c.env.RENT.prepare('SELECT * FROM rental_installments WHERE id = ?').bind(part.id).first()) as RentalInstallment
+}
+
 export async function prepareMonthlyRental(c: Context, order: any): Promise<RentalInstallment[]> {
   const paid = await c.env.RENT.prepare("SELECT id FROM payments WHERE rental_id = ? AND status = 'paid' LIMIT 1").bind(order.id).first()
   if (paid) throw new Error('已有付款，请刷新订单')
+  for (const part of await getRentalInstallments(c, order.id)) {
+    if (['pending', 'failed', 'processing'].includes(part.status) && Number((await removeUnpaidInstallmentSurcharge(c, part)).processing_fee) > 0) throw new Error('Stripe 正在确认付款，请稍后重试')
+  }
   const device = await getDeviceById(c, order.deviceId)
   if (!device) throw new Error('设备不存在')
   const plan = buildMonthlyRentalInstallments({ ...order, deposit_method: 'card_hold' }, device, feeRate())
@@ -62,23 +93,25 @@ async function installmentIntent(c: Context, order: any, part: RentalInstallment
   if (payment.stripe_payment_intent_id) return stripeRequest(c, `payment_intents/${payment.stripe_payment_intent_id}`)
   const params = new URLSearchParams({ amount: String(cents(part.amount)), currency: 'aud', customer: customerId, payment_method: order.stripe_payment_method_id, 'payment_method_types[0]': 'card', setup_future_usage: 'off_session', 'metadata[type]': 'rental_installment', 'metadata[installment_id]': part.id, 'metadata[order_id]': order.id, 'metadata[customer_id]': order.userId, 'metadata[payment_record_id]': payment.id, description: `设备租赁订单 ${order.orderNo || order.id}｜第 ${part.installment_number} 期租金` })
   // 创建与确认分开，先落库真实 PI，Webhook 即使早于确认响应也能核验。
-  const intent = await stripeRequest(c, 'payment_intents', params, `monthly-create-${part.id}`)
+  const intent = await stripeRequest(c, 'payment_intents', params, `monthly-create-${part.id}-${cents(part.amount)}`)
   await c.env.RENT.batch([c.env.RENT.prepare('UPDATE payments SET stripe_payment_intent_id = ? WHERE id = ?').bind(intent.id, payment.id), c.env.RENT.prepare('UPDATE rental_installments SET stripe_payment_intent_id = ? WHERE id = ?').bind(intent.id, part.id)])
   return intent
 }
 
 export async function createMonthlyRentalCheckout(c: Context, user: any, order: any, customerId: string, installmentId?: string, confirmNow = false) {
   const plan = order.status === 'pending_payment' ? await prepareMonthlyRental(c, order) : await getRentalInstallments(c, order.id)
-  const part = plan.find(row => installmentId ? row.id === installmentId : row.installment_number === 1)
+  let part = plan.find(row => installmentId ? row.id === installmentId : row.installment_number === 1)
   if (!part || part.status === 'cancelled' || order.return_received_at || ['completed', 'cancelled', 'returned', 'pending_return'].includes(order.status)) throw new Error('该订单当前不能支付')
   if (part.status === 'paid') return { clientSecret: '', publishableKey: '', amountCents: cents(part.amount), alreadyPaid: true }
   if (part.installment_number > 1 && part.due_date > melbourneToday()) throw new Error('尚未到付款日期')
-  if (plan.some(earlier => earlier.installment_number < part.installment_number && earlier.status !== 'paid')) throw new Error('请先支付上一期租金')
+  const installmentNumber = part.installment_number
+  if (plan.some(earlier => earlier.installment_number < installmentNumber && earlier.status !== 'paid')) throw new Error('请先支付上一期租金')
+  part = await removeUnpaidInstallmentSurcharge(c, part)
   const payment = await ensureInstallmentPayment(c, order, part)
   let intent: any
   if (!payment.stripe_checkout_session_id && (payment.stripe_payment_intent_id || (confirmNow && order.stripe_payment_method_id))) {
     intent = await installmentIntent(c, order, part, payment, customerId)
-    if (confirmNow && ['requires_confirmation', 'requires_payment_method'].includes(intent.status)) intent = await stripeRequest(c, `payment_intents/${intent.id}/confirm`, new URLSearchParams({ off_session: 'true' }), `monthly-confirm-${part.id}`)
+    if (confirmNow && ['requires_confirmation', 'requires_payment_method'].includes(intent.status)) intent = await stripeRequest(c, `payment_intents/${intent.id}/confirm`, new URLSearchParams({ off_session: 'true' }), `monthly-confirm-${part.id}-${intent.id}`)
     if (intent.status === 'processing') throw new Error('Stripe 正在确认付款，请稍后重试')
     if (intent.status === 'canceled') throw new Error('该笔付款已取消，请联系工作人员')
   } else {
@@ -154,7 +187,7 @@ export async function chargeDueRentalInstallments(c: Context): Promise<number> {
     AND NOT EXISTS (SELECT 1 FROM rental_installments earlier WHERE earlier.order_id = i.order_id AND earlier.installment_number < i.installment_number AND earlier.status != 'paid')
     ORDER BY i.due_date LIMIT 50`).bind(melbourneToday()).all()).results || []) as RentalInstallment[]
   let count = 0
-  for (const part of rows) {
+  for (let part of rows) {
     const claim = await c.env.RENT.prepare("UPDATE rental_installments SET status = 'processing', attempted_at = CURRENT_TIMESTAMP WHERE id = ? AND (status = 'pending' OR (status = 'processing' AND attempted_at < datetime('now', '-15 minutes')))").bind(part.id).run()
     if (!claim.meta?.changes) continue
     const order = await getOrderById(c, part.order_id) as any
@@ -163,6 +196,7 @@ export async function chargeDueRentalInstallments(c: Context): Promise<number> {
       continue
     }
     try {
+      part = await removeUnpaidInstallmentSurcharge(c, part)
       if (cents(part.amount) === 0) {
         await c.env.RENT.prepare("UPDATE rental_installments SET status = 'paid', paid_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'processing'").bind(part.id).run()
         count++
@@ -172,7 +206,7 @@ export async function chargeDueRentalInstallments(c: Context): Promise<number> {
       if (!customer?.stripe_customer_id || !order.stripe_payment_method_id) throw new Error('缺少已保存的信用卡')
       const payment = await ensureInstallmentPayment(c, order, part)
       let intent = await installmentIntent(c, order, part, payment, customer.stripe_customer_id)
-      if (['requires_confirmation', 'requires_payment_method'].includes(intent.status)) intent = await stripeRequest(c, `payment_intents/${intent.id}/confirm`, new URLSearchParams({ off_session: 'true' }), `monthly-confirm-${part.id}`)
+      if (['requires_confirmation', 'requires_payment_method'].includes(intent.status)) intent = await stripeRequest(c, `payment_intents/${intent.id}/confirm`, new URLSearchParams({ off_session: 'true' }), `monthly-confirm-${part.id}-${intent.id}`)
       if (intent.status === 'succeeded') { await settleRentalInstallment(c, intent); count++ }
       else if (intent.status !== 'processing') await installmentFailure(c, part, order, '请重新完成信用卡付款')
     } catch (error: any) {

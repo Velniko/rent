@@ -93,7 +93,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   const settledDepositRefund = refundRows.find((refund: any) => refund.type === 'deposit' && refund.status === 'succeeded')
   const cardDepositSettled = isCardDepositSettled(order, Boolean(settledDepositRefund))
   const preauthReleased = isPreauthDeposit && cardDepositSettled && (settledDepositRefund ? settledDepositRefund.refund_method === 'stripe' && Number(settledDepositRefund.refund_amount) === 0 : order.refundMethod === 'original')
-  const preauthFee = Math.round(Math.max(0, Number(order.totalAmount) - depositAmount) * 0.025 * 100) / 100
+  const preauthFee = Number(paymentSources.find((payment: any) => payment.stripe_payment_intent_id === order.stripe_deposit_payment_intent_id)?.processing_fee || 0)
   const depositMethod = normalizeSecurityDepositMethod((order as any).deposit_method, isSetupIntentDeposit ? 'card_hold' : 'bank_transfer')
   let proofImage = ''
   try { proofImage = transferProof?.image_url ? validateHostedImageUrls(transferProof.image_url, 1)[0] : '' } catch { }

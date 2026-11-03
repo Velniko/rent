@@ -40,7 +40,7 @@ async function ensureAuthSessionsSchema(c: Context): Promise<void> {
 }
 
 // 请求级缓存：同一个请求里 middleware + 各路由处理器会反复调用 findUserBySession，
-// 每次都是 3 条串行 D1 查询。用 Request 对象做 key 把一次请求内的结果收敛成一次。
+// 用 Request 对象做 key，把一次请求内的结果收敛成一次联表查询。
 const perRequestSessionUser = new WeakMap<object, Promise<User | null>>()
 
 export async function findUserBySession(c: Context, cookieHeader: string | null): Promise<User | null> {
@@ -64,16 +64,11 @@ async function resolveUserBySession(c: Context, cookieHeader: string | null): Pr
   if (!/^[A-Za-z0-9_-]{32,}$/.test(token)) return null
   await ensureAuthSessionsSchema(c)
   const tokenHash = await sha256Hex(token)
-  const session = await db.prepare('SELECT user_id FROM auth_sessions WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP').bind(tokenHash).first() as any
-  if (!session?.user_id) return null
-  const id = String(session.user_id)
-  await db.prepare('UPDATE auth_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?').bind(tokenHash).run()
-  const user: User | null = await db
-    .prepare("SELECT * FROM users WHERE id = ? AND status = 'active'")
-    .bind(id)
-    .first()
+  // 联表读取；不跨请求缓存认证结果，撤销或停用仍在下次请求立即生效。
+  const user: User | null = await db.prepare("SELECT u.* FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.status = 'active'").bind(tokenHash).first()
 
   if (!user) return null
+  const id = String(user.id)
   const guestExpiry = user.account_type === 'guest' ? String(user.guest_expires_at || '').slice(0, 10) : ''
   const todayMelbourne = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   if (guestExpiry && guestExpiry < todayMelbourne) {
@@ -81,6 +76,10 @@ async function resolveUserBySession(c: Context, cookieHeader: string | null): Pr
     await db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(id).run()
     return null
   }
+  // 活跃时间不参与鉴权或续期，通过 waitUntil 更新，避免阻塞页面返回。
+  const touch = db.prepare("UPDATE auth_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP AND last_seen_at < datetime('now', '-5 minutes')").bind(tokenHash).run()
+    .catch((error: unknown) => { console.error('Failed to update session activity:', error) })
+  try { c.executionCtx.waitUntil(touch) } catch (_) { await touch }
   const normalized = normalizeUserRow(user as any)
   return normalized
 }

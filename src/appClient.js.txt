@@ -711,145 +711,25 @@
       });
     });
 
+    // 使用浏览器导航：每页脚本按完整生命周期初始化，受保护页面不做悬停预取或内存缓存。
     (function () {
-      const path = window.location.pathname.replace(/\/$/, '') || '/';
-      const links = Array.from(document.querySelectorAll('.sidebar-section a'));
-      const active = links
-        .filter(function (link) {
-          const href = (link.getAttribute('href') || '').replace(/\/$/, '') || '/';
-          return path === href || (href !== '/' && path.startsWith(href + '/'));
-        })
-        .sort(function (a, b) { return b.getAttribute('href').length - a.getAttribute('href').length; })[0];
-      if (active) {
-        active.classList.add('active');
-        active.setAttribute('aria-current', 'page');
-        const group = active.closest('details.sidebar-nav-group');
-        if (group) group.open = true;
-      }
-    })();
-
-    (function () {
-      const content = document.querySelector('.content');
-      if (!content || !window.fetch) return;
-      document.documentElement.classList.add('spa-navigation-ready');
-      const shouldHandle = function (link, event) {
-        if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
-        if (window.hasUnsavedChanges && window.hasUnsavedChanges() && !window.confirm('当前内容尚未保存，确定要离开吗？')) { event.preventDefault(); event.stopImmediatePropagation(); return false; }
-        if (window.hasUnsavedChanges && window.hasUnsavedChanges()) window.hasUnsavedChanges = null;
-        if (link.target === '_blank' || link.hasAttribute('download') || link.dataset.fullNavigation === 'true') return false;
-        if (link.closest('.sidebar')) return false;
-        const url = new URL(link.href, window.location.href);
-        return url.origin === window.location.origin && url.pathname !== '/logout' && !url.pathname.startsWith('/api/') && !url.pathname.startsWith('/webhooks/');
-      };
-      const runScripts = function (root) {
-        root.querySelectorAll('script').forEach(function (oldScript) {
-          const script = document.createElement('script');
-          Array.from(oldScript.attributes).forEach(function (attribute) { script.setAttribute(attribute.name, attribute.value); });
-          script.textContent = oldScript.textContent;
-          oldScript.replaceWith(script);
-        });
-      };
-      const pageCache = new Map();
-      const prefetch = function (url) {
-        if (pageCache.has(url.href)) return;
-        pageCache.set(url.href, fetch(url.href, { headers: { 'X-Site-Navigation': 'partial', Accept: 'text/html' }, credentials: 'same-origin' }).then(function (response) {
-          if (!response.ok || response.redirected || !response.headers.get('content-type')?.includes('text/html')) throw new Error('prefetch failed');
-          return response.text();
-        }).catch(function () { pageCache.delete(url.href); return null; }));
-      };
-      const setActiveLink = function (nextPath) {
-        const path = String(nextPath || window.location.pathname).split('?')[0].replace(/\/$/, '') || '/';
-        document.querySelectorAll('.sidebar-section a').forEach(function (link) { link.classList.remove('active'); link.removeAttribute('aria-current'); });
-        const active = Array.from(document.querySelectorAll('.sidebar-section a')).filter(function (link) { const href = (link.getAttribute('href') || '').split('?')[0].replace(/\/$/, '') || '/'; return path === href || (href !== '/' && path.startsWith(href + '/')); }).sort(function (a, b) { return (b.getAttribute('href') || '').length - (a.getAttribute('href') || '').length; })[0];
-        const activeGroup = active ? active.closest('details.sidebar-nav-group') : null;
-        document.querySelectorAll('.sidebar-nav-group').forEach(function (group) { if (group !== activeGroup) group.open = false; });
-        if (active) { active.classList.add('active'); active.setAttribute('aria-current', 'page'); if (activeGroup) activeGroup.open = true; }
-      };
-      const navigate = async function (url, addHistory) {
-        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-        try {
-          prefetch(url);
-          const html = await pageCache.get(url.href);
-          if (!html) throw new Error('navigation failed');
-          const parsed = new DOMParser().parseFromString(html, 'text/html');
-          const nextContent = parsed.querySelector('.content');
-          if (!nextContent) throw new Error('content missing');
-          // 轻量淡出/淡入过渡由 CSS 处理（body.is-navigating .content），不隐藏到 0，避免长表格页面白闪。
-          const swap = function () {
-            document.body.classList.add('has-navigated');
-            document.querySelectorAll('.site-toast').forEach(function (notice) { notice.dismissNotice(); });
-            content.replaceChildren(...Array.from(nextContent.childNodes));
-            pageTitle = parsed.title;
-            document.title = pageTitle;
-            runScripts(content);
-            document.dispatchEvent(new Event('site:content-updated'));
-            setActiveLink(url.pathname);
-            if (url.hash) window.setTimeout(function () {
-              const target = document.getElementById(url.hash.slice(1));
-              if (target) target.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-            }, 0);
-            if (window.runFilterTabMotion) window.runFilterTabMotion();
-          };
-          if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-            document.body.classList.add('is-navigating');
-            await new Promise(function (resolve) { window.setTimeout(resolve, 120); });
-          }
-          swap();
-          document.body.classList.remove('is-navigating');
-          if (addHistory) window.history.pushState({}, '', url.href);
-          prepareFlashNotices(false);
-        } catch (error) {
-          // 局部导航失败时回退到浏览器导航，避免侧边栏链接被拦截后毫无反应。
-          document.body.classList.remove('is-navigating');
-          console.error('局部页面切换失败:', error);
-          window.location.assign(url.href);
-        } finally {
-          document.getElementById('navigation-loading')?.remove();
+      const current = new URL(window.location.href);
+      document.querySelectorAll('.sidebar-section, .mobile-bottom-nav').forEach(function (nav) {
+        const links = Array.from(nav.querySelectorAll('a[href]'));
+        links.forEach(function (link) { link.classList.remove('active'); link.removeAttribute('aria-current'); });
+        const active = links.filter(function (link) {
+          const url = new URL(link.href, current);
+          const path = url.pathname.replace(/\/$/, '') || '/';
+          if (url.origin !== current.origin || !(current.pathname === path || (path !== '/' && current.pathname.startsWith(path + '/')))) return false;
+          return Array.from(url.searchParams).every(function (entry) { return current.searchParams.get(entry[0]) === entry[1]; });
+        }).sort(function (a, b) { return b.getAttribute('href').length - a.getAttribute('href').length; })[0];
+        if (active) {
+          active.classList.add('active');
+          active.setAttribute('aria-current', 'page');
+          const group = active.closest('details.sidebar-nav-group');
+          if (group) group.open = true;
         }
-      };
-      document.addEventListener('click', function (event) {
-        const target = event.target instanceof Element ? event.target : null;
-        const link = target?.closest('a');
-        if (!shouldHandle(link, event)) return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        navigate(new URL(link.href), true);
-      }, true);
-      document.addEventListener('pointerover', function (event) {
-        const target = event.target instanceof Element ? event.target : null;
-        const link = target?.closest('a');
-        if (!link || link.closest('.sidebar') || link.dataset.fullNavigation === 'true' || link.target === '_blank' || link.hasAttribute('download')) return;
-        const url = new URL(link.href, window.location.href);
-        if (url.origin === window.location.origin && !url.pathname.startsWith('/api/') && !url.pathname.startsWith('/webhooks/')) prefetch(url);
-      }, { passive: true });
-      window.addEventListener('popstate', function () {
-        if (window.hasUnsavedChanges && window.hasUnsavedChanges()) {
-          if (!window.confirm('当前内容尚未保存，确定要离开吗？')) { window.history.pushState({}, '', window.location.href); return; }
-          window.hasUnsavedChanges = null;
-        }
-        navigate(new URL(window.location.href), false);
       });
-    })();
-
-    // 加载帘幕：以前等 window 'load'（要等完整页面 + 所有子资源，含第三方图标请求），
-    // 感知上很慢。改成 DOM 可交互即收起。此脚本是 defer 加载，执行时 DOM 已解析完成，
-    // 所以直接执行即可；保留一个 DOMContentLoaded 兜底以防万一。
-    (function () {
-      let done = false;
-      const dismissCurtain = function () {
-        if (done) return;
-        done = true;
-        const curtain = document.querySelector('.initial-load-curtain');
-        if (!curtain) return;
-        curtain.classList.add('initial-load-complete');
-        curtain.setAttribute('aria-hidden', 'true');
-        window.setTimeout(function () { curtain.remove(); }, 420);
-      };
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', dismissCurtain, { once: true });
-      } else {
-        dismissCurtain();
-      }
     })();
 
     document.addEventListener('DOMContentLoaded', function () {
