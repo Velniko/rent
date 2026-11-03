@@ -2482,6 +2482,7 @@ const admin: Readonly<Record<string, string>> = {
   '此功能暂未开放': 'Feature unavailable',
   '请稍后再来。': 'Please check back later.',
   '客户端功能': 'Client features',
+  '客户反馈': 'Customer feedback',
   '浏览设备与新租赁': 'Browse devices and new rentals',
   '钱包充值': 'Wallet top-ups',
   '礼品卡服务': 'Gift card services',
