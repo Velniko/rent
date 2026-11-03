@@ -3,8 +3,10 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { getCustomerRiskAssessment } from '../../services/risk';
+import { riskAdjustedDeposit } from '../../domain/riskFlags';
 import { rentalPricingClientScript } from '../../domain/rentalPricing';
-import { buildLayout, getDeviceById, formatCurrency, getDeviceRentalRules } from '../../site';
+import { buildLayout, getDeviceById, formatCurrency, getDeviceRentalRules, sanitizePlainText } from '../../site';
 import { HALF_HOUR_TIME_OPTIONS, legacyPickupSlot, pickupTimeSlots, serviceFeeRate, pickupClosureConfig, isPickupPeriodClosed } from '../../domain/pickupTimeSlots';
 import type { Context } from 'hono';
 
@@ -27,6 +29,8 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
   if (!device) {
     return buildLayout('租赁设备 - 电脑租赁管理系统', '<div class="panel"><h2>设备未找到</h2><p>您请求租赁的设备不存在。</p></div>', user);
   }
+  const risk = await getCustomerRiskAssessment(c, user.id)
+  const depositAmount = riskAdjustedDeposit(Number(device.depositAmount || 0), risk.level)
   const rentalRules = await getDeviceRentalRules(c, deviceId)
   const pickupSlots = pickupTimeSlots(rentalRules)
   const bookingRanges = ((await c.env.RENT.prepare("SELECT startDate, endDate, startPeriod, endPeriod FROM orders WHERE deviceId = ? AND deleted_at IS NULL AND status NOT IN ('completed', 'cancelled')").bind(deviceId).all()).results || []) as any[]
@@ -50,7 +54,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
 
   const body = `
     <div class="panel">
-      <div class="section-title"><h2>租赁设备: ${device.name}</h2></div>
+      <div class="section-title"><h2>租赁设备: <span data-api-translate data-i18n-ignore>${sanitizePlainText(device.name, 200)}</span></h2></div>
       ${errorMessage ? `<div data-flash-notice class="page-notification page-notification--error">${errorMessage}</div>` : ''}
       <form method="POST" action="/customer/rent/${device.id}">
         <div class="form-group">
@@ -67,7 +71,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
         </div>
         <div class="form-group">
           <label class="form-label" for="depositAmount">押金</label>
-          <input type="text" id="depositAmount" class="form-control" value="${formatCurrency(device.depositAmount)}" readonly />
+          <input type="text" id="depositAmount" class="form-control" value="${formatCurrency(depositAmount)}" readonly />
         </div>
 
         <div class="grid grid-2"><div class="form-group">
@@ -114,7 +118,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
                   message.textContent = data.message || '';
                   message.style.color = data.ok ? '#16794f' : '#b42318';
                   if (data.ok) quote.innerHTML = '<strong>优惠后报价</strong><p>原租金：AUD$ ' + Number(data.rent).toFixed(2) + '；优惠：-AUD$ ' + Number(data.discount).toFixed(2) + '；押金：AUD$ ' + Number(data.deposit).toFixed(2) + '；<strong>最终应付：AUD$ ' + Number(data.total).toFixed(2) + '</strong>。</p>' + rentalDiscountPreview(days);
-                  else { const rent = rentalFee(days).toFixed(2); const deposit = Number(${Number(device.depositAmount || 0)}).toFixed(2); quote.innerHTML = '<strong>租赁报价</strong><p>租金：AUD$ ' + rent + '；押金：AUD$ ' + deposit + '；<strong>最终应付：AUD$ ' + Number(Number(rent) + Number(deposit)).toFixed(2) + '</strong>。</p>' + rentalDiscountPreview(days); }
+                  else { const rent = rentalFee(days).toFixed(2); const deposit = Number(${Number(depositAmount)}).toFixed(2); quote.innerHTML = '<strong>租赁报价</strong><p>租金：AUD$ ' + rent + '；押金：AUD$ ' + deposit + '；<strong>最终应付：AUD$ ' + Number(Number(rent) + Number(deposit)).toFixed(2) + '</strong>。</p>' + rentalDiscountPreview(days); }
                 } catch { message.textContent = '暂时无法验证优惠码，请稍后重试。'; message.style.color = '#b42318'; }
               }, 250);
             };
@@ -127,7 +131,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
         <script>
           (() => {
             const delivery = document.getElementById('deliveryMethod'), group = document.getElementById('pickupTimeGroup'), pickup = document.getElementById('pickupTimeSlot'), returned = document.getElementById('returnTimeSlot'), startPeriod = document.getElementById('startPeriod'), endPeriod = document.getElementById('endPeriod'), start = document.getElementById('startDate'), end = document.getElementById('endDate'), quote = document.getElementById('quotePreview');
-            const rate = ${Number(device.pricePerDay || device.dailyRate || 0)}, weeklyDiscount = ${Number(device.weeklyDiscountPercent || device.weekly_discount_percent || 0)}, monthlyDiscount = ${Number(device.monthlyDiscountPercent || device.monthly_discount_percent || 0)}, deposit = ${Number(device.depositAmount || 0)}, serviceFeeRate = ${serviceFeeRate(rentalRules)};
+            const rate = ${Number(device.pricePerDay || device.dailyRate || 0)}, weeklyDiscount = ${Number(device.weeklyDiscountPercent || device.weekly_discount_percent || 0)}, monthlyDiscount = ${Number(device.monthlyDiscountPercent || device.monthly_discount_percent || 0)}, deposit = ${Number(depositAmount)}, serviceFeeRate = ${serviceFeeRate(rentalRules)};
             const slotPeriod = slot => ['afternoon', 'evening_service'].includes(slot) ? 'PM' : 'AM';
             const priceBreakdown = ${rentalPricingClientScript()}; const rentalPrice = days => priceBreakdown({pricePerDay:rate,weeklyDiscountPercent:weeklyDiscount,monthlyDiscountPercent:monthlyDiscount},days); const rentalFee = days => rentalPrice(days).total; const rentalDiscountPreview = days => { const price = rentalPrice(days); return (price.monthlyDiscountAmount ? '<p>月租优惠 −AUD$ ' + price.monthlyDiscountAmount.toFixed(2) + '</p>' : '') + (price.weeklyDiscountAmount ? '<p>周租优惠 −AUD$ ' + price.weeklyDiscountAmount.toFixed(2) + '</p>' : ''); };
             const update = () => {

@@ -93,7 +93,7 @@ import type { PaymentDisputeState } from './domain/paymentDispute'
 import {
   RISK_FLAG_TYPES, RISK_FLAG_SEVERITIES, ORDER_BLOCKING_RISK_FLAG_TYPES,
   isRiskFlagCurrentlyActive, findBlockingRiskFlag, calculateCustomerRiskAssessment, calculateReferralRiskAssessment,
-  RISK_SCORE_BLOCK_THRESHOLD,
+  RISK_SCORE_HIGH_THRESHOLD,
 } from './domain/riskFlags'
 import type { RiskFlagType, RiskFlagLike, CustomerRiskFacts, CustomerRiskAssessment, ReferralRiskFacts, ReferralRiskAssessment } from './domain/riskFlags'
 import { deviceUtilisationRate, paymentMethodBreakdown, rentalRefundAmount } from './domain/operationsReport'
@@ -124,7 +124,7 @@ export {
   canTransitionPaymentDispute, isPaymentDisputeOpen, paymentsBlockedByDispute, mapStripeDisputeStatus,
   RISK_FLAG_TYPES, RISK_FLAG_SEVERITIES, ORDER_BLOCKING_RISK_FLAG_TYPES,
   isRiskFlagCurrentlyActive, findBlockingRiskFlag, calculateCustomerRiskAssessment, calculateReferralRiskAssessment,
-  RISK_SCORE_BLOCK_THRESHOLD,
+  RISK_SCORE_HIGH_THRESHOLD,
   deviceUtilisationRate, paymentMethodBreakdown, rentalRefundAmount,
   RETENTION_ACTIONS, retentionCutoffDate, isPastRetention, retentionSweepActionable,
   rateHealth, countHealth, worstHealthLevel, summarizeMetricHistory, staleMonitoringAlertIds,

@@ -4,6 +4,10 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 // @ts-nocheck
+import { riskDepositSnapshot, riskAdjustedDeposit, calculateCustomerRiskAssessment } from './domain/riskFlags'
+import { getTranslationConfigSummary } from './translationConfig'
+import { handleTranslation } from './services/translation'
+import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
 import { websiteSessionStatus } from './auth/websiteSession'
 import * as pages from './pages/index'
@@ -737,7 +741,7 @@ function applySecurityHeaders(c: any): void {
 
 app.use('*', async (c, next) => {
   // 静态资源不需要鉴权，避免每次加载 CSS 都额外查询 D1 会话表。
-  if (c.req.path === '/styles.css' || c.req.path === '/app.js' || c.req.path === '/i18n.js' || c.req.path === '/favicon.svg' || c.req.path === '/favicon.ico') return next()
+  if (c.req.path === '/styles.css' || c.req.path === '/app.js' || c.req.path === '/i18n.js' || c.req.path === '/translation.js' || c.req.path === '/favicon.svg' || c.req.path === '/favicon.ico') return next()
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)
   if (user) {
     c.set('user', user)
@@ -837,6 +841,7 @@ app.use('*', async (c, next) => {
   }
   const ip = (c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For')?.split(',')[0] || 'unknown').trim()
   const rateRule = c.req.path === '/login' && c.req.method === 'POST' ? ['login', 20, 900] as const
+    : /^\/api\/translate(?:\/[^/]+)?$/.test(c.req.path) && c.req.method === 'POST' ? ['translation', 20, 60] as const
     : c.req.path === '/register' && c.req.method === 'POST' ? ['register', 5, 3600] as const
     : c.req.path === '/register/resend-verification' && c.req.method === 'POST' ? ['verification-resend', 5, 3600] as const
     : c.req.path === '/forgot-password' && c.req.method === 'POST' ? ['forgot', 5, 3600] as const
@@ -2561,7 +2566,9 @@ app.post('/customer/rent/:id', async (c) => {
   const serviceFee = deliveryMethod === 'Pickup'
     ? Number((rentAmount * serviceFeeRate(rentalRules) * [pickupTimeSlot, returnTimeSlot].filter((slot) => SERVICE_FEE_TIME_SLOTS.has(slot)).length).toFixed(2))
     : 0
-  const couponFeeParts = { rentalFee: rentAmount, deliveryFee: 0, depositFee: Number(device.depositAmount || 0) }
+  const depositPricing = riskDepositSnapshot(Number(device.depositAmount || 0), risk)
+  const depositAmount = depositPricing.depositAmountBeforeWaiver
+  const couponFeeParts = { rentalFee: rentAmount, deliveryFee: 0, depositFee: depositAmount }
   let discountAmount = 0
   let appliedCouponCode: string | null = null
   let eligibleCoupon: any = null
@@ -2579,11 +2586,11 @@ app.post('/customer/rent/:id', async (c) => {
   await insertOrder(c, {
     id: orderId, orderNo: generateReferenceNumber('OD'), userId: user.id,
     deviceId: device.id, startDate, endDate, startPeriod, endPeriod, rentalPeriod: Math.ceil(halfDays / 2), status: 'pending_approval',
-    paymentMethod: 'card', totalAmount: rentAmount + serviceFee + device.depositAmount - discountAmount,
-    depositAmount: device.depositAmount, dailyRate: device.pricePerDay, contractId: '', signedAt: null, pickupLocation: deliveryMethod === 'Pickup' ? '到店自取' : deliveryAddress, returnLocation: '到店归还',
+    paymentMethod: 'card', totalAmount: rentAmount + serviceFee + depositAmount - discountAmount,
+    depositAmount, dailyRate: device.pricePerDay, contractId: '', signedAt: null, pickupLocation: deliveryMethod === 'Pickup' ? '到店自取' : deliveryAddress, returnLocation: '到店归还',
     pickupTimeSlot: deliveryMethod === 'Pickup' ? pickupTimeSlot : undefined, returnTimeSlot: deliveryMethod === 'Pickup' ? returnTimeSlot : undefined,
     deliveryMethod, deliveryFee: 0, serviceFee, rentalNote, couponCode: appliedCouponCode, discountAmount,
-    createdAt: new Date().toISOString(), booking_buffer_days: rentalRules.bufferDays || 0, rental_pricing_json: rentalPricingSnapshot(device)
+    createdAt: new Date().toISOString(), booking_buffer_days: rentalRules.bufferDays || 0, rental_pricing_json: JSON.stringify({ ...JSON.parse(rentalPricingSnapshot(device)), ...depositPricing })
   } as any)
   if (couponCode) {
     try {
@@ -3356,6 +3363,10 @@ app.get('/contract/sign', async (c) => {
   return c.html(await pages.renderContractSignPage(c, token, step, error));
 });
 
+app.get('/translation.js', c => c.body(TRANSLATION_CLIENT_SCRIPT, 200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }))
+app.post('/api/translate', c => handleTranslation(c))
+app.post('/api/translate/:provider', c => handleTranslation(c))
+
 app.get('/api/coupons/rental-preview', async (c) => {
   const deviceId = String(c.req.query('deviceId') || '').trim()
   const days = Number(c.req.query('days') || 0)
@@ -3364,7 +3375,9 @@ app.get('/api/coupons/rental-preview', async (c) => {
   const device = await getDeviceById(c, deviceId) as any
   if (!device) return c.json({ ok: false, message: '设备不存在' }, 404)
   const rent = calculateRentalFee(device, days)
-  const deposit = Number(device.depositAmount || 0)
+  const previewUser = c.get('user')
+  const previewRisk = previewUser?.role === 'CUSTOMER' ? await getCustomerRiskAssessment(c, previewUser.id) : calculateCustomerRiskAssessment({})
+  const deposit = riskAdjustedDeposit(Number(device.depositAmount || 0), previewRisk.level)
   const feeParts = { rentalFee: rent, deliveryFee: 0, depositFee: deposit }
   let coupon: any
   try {
@@ -5789,7 +5802,7 @@ app.get('/admin/api-settings', async (c) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)
   if (!user || user.role !== 'ADMIN') return c.redirect('/login')
   await loadSystemSettingsFromDB(c)
-  return c.html(pages.renderAdminApiSettings(user, await getStripeConfigSummary(c), await getNotifyChannelsSummary(c), await getTurnstileConfigSummary(c), await getSquareConfigSummary(c), await getDeliveryConfigSummary(c), await getCloudinaryConfigSummary(c), await getEmailConfigSummary(c)))
+  return c.html(pages.renderAdminApiSettings(user, await getStripeConfigSummary(c), await getNotifyChannelsSummary(c), await getTurnstileConfigSummary(c), await getSquareConfigSummary(c), await getDeliveryConfigSummary(c), await getCloudinaryConfigSummary(c), await getEmailConfigSummary(c), await getTranslationConfigSummary(c)))
 })
 
 app.get('/admin/tax-invoice-template', async (c) => {

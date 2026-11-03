@@ -11,6 +11,7 @@ import { getEmailConfigSummary, saveEmailConfig } from '../../emailConfig'
 import { getSquareConfigSummary, saveSquareConfig } from '../../square'
 import { getNotifyChannelsSummary, saveNotifyChannels } from '../../notifyChannels'
 import { getDeliveryConfigSummary, saveDeliveryConfig } from '../../deliveryConfig'
+import { saveTranslationConfig } from '../../translationConfig'
 import { getCloudinaryConfigSummary, saveCloudinaryConfig } from '../../lib/cloudinary'
 import { enqueueAgreementUpdate } from '../../services/notifications'
 import { normalizeTallyEmbedUrl } from '../../lib/tally'
@@ -178,6 +179,8 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
   }
 
   if (shouldSaveStripeConfig) await saveStripeConfig(c, stripeConfigInput)
+
+  if (payload.translationConfig) await saveTranslationConfig(c, payload.translationConfig)
 
   const cloudinaryConfigInput = payload.cloudinaryConfig
   const shouldSaveCloudinaryConfig = Boolean(cloudinaryConfigInput && (

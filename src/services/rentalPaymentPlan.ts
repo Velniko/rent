@@ -28,7 +28,7 @@ export async function setRentalPaymentPlan(c: Context, order: any, requested: un
   let pricing: any = {}
   try { pricing = JSON.parse(order.rental_pricing_json || rentalPricingSnapshot(device)) } catch { throw new Error('订单定价信息无效') }
   const originalDeposit = Number(pricing.depositAmountBeforeWaiver ?? (Number(order.depositAmount) > 0 ? order.depositAmount : device.depositAmount))
-  const waiveDeposit = mode === 'FULL' && Number(order.rentalPeriod) >= RENTAL_PAYMENT_CHOICE_DAYS
+  const waiveDeposit = mode === 'FULL' && Number(order.rentalPeriod) >= RENTAL_PAYMENT_CHOICE_DAYS && Number(pricing.depositMultiplier ?? 1) <= 1
   const deposit = waiveDeposit ? 0 : originalDeposit
   if (order.billing_mode === mode && pricing.billingMode === mode && Number(order.depositAmount) === deposit) return order
   // 停用旧表单后再改金额，避免两种付款计划同时可以扣款。

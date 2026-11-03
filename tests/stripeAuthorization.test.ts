@@ -1226,3 +1226,25 @@ test('a signing token can select full payment only before signing with a complet
   sqlite.exec("UPDATE contracts SET status='signed'")
   assert.equal((await send()).status,403)
 })
+
+
+test('switching payment plans preserves the risk-adjusted deposit and its base price', async t => {
+  const { sqlite, context } = await setup(t, { status: 'pending_payment' })
+  sqlite.exec('DELETE FROM payment_allocations; DELETE FROM payments; UPDATE orders SET rentalPeriod=60')
+  for (const [level, multiplier, deposit] of [['VERY_LOW', 0, 0], ['LOW', 0.5, 150], ['NORMAL', 1, 300], ['MEDIUM', 1.25, 375], ['HIGH', 1.5, 450], ['CRITICAL', 2, 600]] as const) {
+    const snapshot = JSON.stringify({ billingMode: 'MONTHLY', pricePerDay: 20, baseDepositAmount: 300, depositRiskLevel: level, depositMultiplier: multiplier, depositAmountBeforeWaiver: deposit })
+    sqlite.prepare("UPDATE orders SET billing_mode='MONTHLY', rental_pricing_json=?, depositAmount=?, totalAmount=?, deposit_payment_mode='PAID' WHERE id='order'").run(snapshot, deposit, 1200 + deposit)
+    sqlite.exec('UPDATE devices SET depositAmount=999')
+    let order = await setRentalPaymentPlan(context, await getOrderById(context, 'order'), 'FULL')
+    assert.equal(order.depositAmount, multiplier > 1 ? deposit : 0)
+    assert.equal(order.totalAmount, 1200 + (multiplier > 1 ? deposit : 0))
+    const html = renderRentalPaymentPlan(order, { pricePerDay: 20, depositAmount: 999 }, '/payment-plan')
+    if (multiplier > 1) {
+      assert.doesNotMatch(html, /免押金/)
+      assert.match(html, new RegExp('AUD\\$' + (1200 + deposit + Math.round((1200 + deposit) * 100 * 0.025) / 100).toFixed(2).replace('.', '\\.')))
+    }
+    order = await setRentalPaymentPlan(context, order, 'MONTHLY')
+    assert.equal(order.depositAmount, deposit)
+    assert.equal(JSON.parse(order.rental_pricing_json).baseDepositAmount, 300)
+  }
+})

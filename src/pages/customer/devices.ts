@@ -3,7 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
-import { buildLayout, getDevices, formatCurrency } from '../../site';
+import { buildLayout, getDevices, formatCurrency, sanitizePlainText } from '../../site';
 import type { Context } from 'hono';
 
 export async function renderCustomerDevices(c: Context, user: any) {
@@ -16,7 +16,7 @@ export async function renderCustomerDevices(c: Context, user: any) {
         <div class="device-list grid grid-3">
           ${devices.map(device => `
             <div class="device-card card">
-              <h3>${device.name}</h3>
+              <h3 data-api-translate data-i18n-ignore>${sanitizePlainText(device.name, 200)}</h3>
               <p>分类: ${device.category || '其他'}</p>
               <p>型号: ${device.model}</p>
               <p>日租金: ${formatCurrency(device.pricePerDay ?? device.dailyRate ?? 0)}</p>

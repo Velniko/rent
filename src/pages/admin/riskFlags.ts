@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { CUSTOMER_RISK_LABELS, CUSTOMER_DEPOSIT_MULTIPLIERS, type CustomerRiskLevel } from '../../domain/riskFlags';
 import { buildLayout, sanitizePlainText } from '../../site';
 
 const FLAG_TYPE_LABELS: Record<string, string> = {
@@ -29,8 +30,8 @@ export function renderAdminRiskFlags(user: any, targetUser: any, activeFlags: an
       ? `<form method="post" action="/admin/users/${encodeURIComponent(targetUser.id)}/risk/${encodeURIComponent(flag.id)}/resolve"><input class="form-control" name="resolutionReason" maxlength="500" required placeholder="解除原因（必填）"><button class="button button-sm button-secondary" type="submit" style="margin-top:6px">解除标记</button></form>`
       : `已解除 · ${sanitizePlainText(flag.resolution_reason || '', 500)}（${flag.resolved_at || '-'}）`}</td>
   </tr>`
-  const riskNotice = riskAssessment ? `<div class="page-notification risk-score-notice page-notification--${riskAssessment.blocked ? 'error' : riskAssessment.level === 'MEDIUM' ? 'warning' : 'info'}"${riskAssessment.blocked ? ' data-notice-priority="critical" role="alert"' : ' role="status"'}><strong>${riskAssessment.blocked ? '高风险：已拦截新增租赁' : '客户风险评估'}</strong><p>当前风险分：${sanitizePlainText(riskAssessment.score, 10)}/100（${sanitizePlainText(riskAssessment.level, 20)}）。${riskAssessment.blocked ? '客户无法自助下单，员工也无法为其创建合同。请核实下方风险原因；需要解除标记时，请填写解除原因。' : '当前未触发下单拦截。'}</p>${riskAssessment.reasons?.length ? `<small>${riskAssessment.reasons.map((reason: string) => sanitizePlainText(reason, 120)).join(' · ')}</small>` : ''}</div>` : ''
-  const body = `<div class="page-header"><div><p class="section-code">RISK MANAGEMENT</p><h2>风险标记 · ${sanitizePlainText(targetUser.name, 100)}</h2><p>HIGH 标记、拦截下单或风险分 ≥60 时禁止下单；标记不会自动过期。</p></div><a class="button button-secondary" href="/admin/users/${encodeURIComponent(targetUser.id)}">返回客户</a></div>${riskNotice}
+  const riskNotice = riskAssessment ? `<div class="page-notification risk-score-notice page-notification--${riskAssessment.blocked ? 'error' : ['MEDIUM', 'HIGH', 'CRITICAL'].includes(riskAssessment.level) ? 'warning' : 'info'}"${riskAssessment.blocked ? ' data-notice-priority="critical" role="alert"' : ' role="status"'}><strong>${riskAssessment.blocked ? '高风险：已拦截新增租赁' : '客户风险评估'}</strong><p>当前风险分：${sanitizePlainText(riskAssessment.score, 10)}/100（${sanitizePlainText(CUSTOMER_RISK_LABELS[riskAssessment.level as CustomerRiskLevel] || riskAssessment.level, 20)}）。${riskAssessment.blocked ? '客户无法自助下单，员工也无法为其创建合同。请核实下方风险原因；需要解除标记时，请填写解除原因。' : '当前未触发下单拦截。'}</p><p><span>押金比例</span>：${CUSTOMER_DEPOSIT_MULTIPLIERS[riskAssessment.level as CustomerRiskLevel] * 100}%</p>${riskAssessment.reasons?.length ? `<small>${riskAssessment.reasons.map((reason: string) => sanitizePlainText(reason, 120)).join(' · ')}</small>` : ''}</div>` : ''
+  const body = `<div class="page-header"><div><p class="section-code">RISK MANAGEMENT</p><h2>风险标记 · ${sanitizePlainText(targetUser.name, 100)}</h2></div><a class="button button-secondary" href="/admin/users/${encodeURIComponent(targetUser.id)}">返回客户</a></div>${riskNotice}
   <div class="panel">
     <h3>新增风险标记</h3>
     <form method="post" action="/admin/users/${encodeURIComponent(targetUser.id)}/risk" class="grid grid-2">

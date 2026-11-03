@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { CUSTOMER_RISK_LABELS, type CustomerRiskLevel } from '../../domain/riskFlags';
 import { buildLayout, getAccessLevel, getAccountTypeDisplay, splitPersonName, formatMelbourneDate, getCustomerRiskLevels } from '../../site';
 import { renderPasswordSetupNotice } from '../partials/passwordSetupNotice';
 import { queryAdminUsers } from '../../services/paginatedLists';
@@ -87,11 +88,7 @@ export async function renderAdminUsers(user: any, c: any) {
             const accountType = getAccountTypeDisplay(u)
             const personName = splitPersonName(u.name)
             const risk = u.role === 'CUSTOMER' ? customerRisks.get(u.id) : null
-            const riskBadge = risk?.level === 'MEDIUM'
-              ? `<span class="badge badge-warning">中风险 · ${risk.score}</span>`
-              : risk?.level === 'HIGH' || risk?.level === 'CRITICAL'
-                ? `<span class="badge badge-danger">高风险 · ${risk.score}</span>`
-                : '-'
+            const riskBadge = risk ? `<span class="badge ${risk.level === 'MEDIUM' ? 'badge-warning' : ['HIGH', 'CRITICAL'].includes(risk.level) ? 'badge-danger' : 'badge-info'}">${CUSTOMER_RISK_LABELS[risk.level as CustomerRiskLevel]} · ${risk.score}</span>` : '-'
             return `
               <tr>
                 <td class="mono user-id-cell">${u.id}</td>
