@@ -152,7 +152,7 @@ export async function handleCreateContractAction(c: Context, user: User, body: R
     totalAmount: totalAmount,
     depositAmount: depositAmount,
     dailyRate: dailyRate,
-    rental_pricing_json: rentalPricingSnapshot(device),
+    rental_pricing_json: JSON.stringify({ ...JSON.parse(rentalPricingSnapshot(device)), baseDepositAmount: depositAmount }),
     // The orders table may enforce contractId -> contracts(id). The contract
     // must exist before this field can be populated.
     contractId: null,

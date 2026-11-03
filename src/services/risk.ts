@@ -23,6 +23,7 @@ export async function getCustomerRiskAssessment(c: Context, customerId: string):
   const [account, orderStats, paymentStats, refundStats, damageStats, flags] = await Promise.all([
     c.env.RENT.prepare("SELECT balance, identity_status FROM users WHERE id = ? AND role = 'CUSTOMER'").bind(customerId).first() as Promise<any>,
     c.env.RENT.prepare(`SELECT
+      SUM(CASE WHEN status = 'completed' AND payment_status = 'PAID' AND COALESCE(handover_overdue, 0) = 0 AND COALESCE(deposit_deduction_amount, 0) = 0 THEN 1 ELSE 0 END) AS completed_orders,
       SUM(CASE WHEN status = 'overdue' OR handover_overdue = 1 THEN 1 ELSE 0 END) AS overdue_orders,
       SUM(CASE WHEN status IN ('overdue', 'suspended') THEN 1 ELSE 0 END) AS not_returned_orders,
       SUM(CASE WHEN deposit_deduction_amount > 0 THEN 1 ELSE 0 END) AS deposit_deduction_orders
@@ -33,7 +34,7 @@ export async function getCustomerRiskAssessment(c: Context, customerId: string):
       FROM payments WHERE customer_id = ?`).bind(customerId).first() as Promise<any>,
     c.env.RENT.prepare(`SELECT COALESCE(SUM(refund_amount), 0) AS refunded_amount
       FROM payment_refunds
-      WHERE status = 'succeeded' AND order_id IN (SELECT id FROM orders WHERE userId = ?)`).bind(customerId).first() as Promise<any>,
+      WHERE status = 'succeeded' AND type <> 'deposit' AND order_id IN (SELECT id FROM orders WHERE userId = ?)`).bind(customerId).first() as Promise<any>,
     c.env.RENT.prepare(`SELECT COUNT(*) AS customer_damage_cases
       FROM damage_cases
       WHERE liability_status = 'CUSTOMER'
@@ -49,6 +50,7 @@ export async function getCustomerRiskAssessment(c: Context, customerId: string):
   }
 
   const facts: CustomerRiskFacts = {
+    completedOrderCount: Number(orderStats?.completed_orders || 0),
     balance: Number(account.balance || 0),
     identityStatus: account.identity_status,
     failedPaymentCount: Number(paymentStats?.failed_payments || 0),
@@ -80,6 +82,7 @@ export async function getCustomerRiskLevels(c: Context, customerIds: string[]): 
   const [accounts, orderStats, paymentStats, refundStats, damageStats, flags] = await Promise.all([
     c.env.RENT.prepare(`SELECT id, balance, identity_status FROM users WHERE role = 'CUSTOMER' AND id IN (${placeholders})`).bind(...ids).all() as Promise<any>,
     c.env.RENT.prepare(`SELECT userId AS customer_id,
+      SUM(CASE WHEN status = 'completed' AND payment_status = 'PAID' AND COALESCE(handover_overdue, 0) = 0 AND COALESCE(deposit_deduction_amount, 0) = 0 THEN 1 ELSE 0 END) AS completed_orders,
       SUM(CASE WHEN status = 'overdue' OR handover_overdue = 1 THEN 1 ELSE 0 END) AS overdue_orders,
       SUM(CASE WHEN status IN ('overdue', 'suspended') THEN 1 ELSE 0 END) AS not_returned_orders,
       SUM(CASE WHEN deposit_deduction_amount > 0 THEN 1 ELSE 0 END) AS deposit_deduction_orders
@@ -90,7 +93,7 @@ export async function getCustomerRiskLevels(c: Context, customerIds: string[]): 
       FROM payments WHERE customer_id IN (${placeholders}) GROUP BY customer_id`).bind(...ids).all() as Promise<any>,
     c.env.RENT.prepare(`SELECT o.userId AS customer_id, COALESCE(SUM(r.refund_amount), 0) AS refunded_amount
       FROM payment_refunds r JOIN orders o ON o.id = r.order_id
-      WHERE r.status = 'succeeded' AND o.userId IN (${placeholders}) GROUP BY o.userId`).bind(...ids).all() as Promise<any>,
+      WHERE r.status = 'succeeded' AND r.type <> 'deposit' AND o.userId IN (${placeholders}) GROUP BY o.userId`).bind(...ids).all() as Promise<any>,
     c.env.RENT.prepare(`SELECT o.userId AS customer_id, COUNT(*) AS customer_damage_cases
       FROM damage_cases dc JOIN orders o ON o.id = dc.order_id
       WHERE dc.liability_status = 'CUSTOMER' AND o.userId IN (${placeholders}) GROUP BY o.userId`).bind(...ids).all() as Promise<any>,
@@ -114,6 +117,7 @@ export async function getCustomerRiskLevels(c: Context, customerIds: string[]): 
     const order = orderById.get(id) || {}
     const payment = paymentById.get(id) || {}
     const facts: CustomerRiskFacts = {
+      completedOrderCount: Number(order.completed_orders || 0),
       balance: Number(account?.balance || 0),
       identityStatus: account?.identity_status,
       failedPaymentCount: Number(payment.failed_payments || 0),

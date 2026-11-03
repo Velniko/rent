@@ -33,6 +33,7 @@ test('保存 Stripe 和 Square API 配置不会关闭已有支付方式', async 
       async batch(statements: any[]) { return Promise.all(statements.map(statement => statement.run())) },
     }
     const payload = {
+      translationConfig: { enabled: true, provider: 'deepl', deeplApiKey: 'test-translation-secret', googleApiKey: 'test-google-secret' },
       stripeConfig: { publishableKey: 'pk_test_example', secretKey: 'sk_test_example', webhookSecret: 'whsec_example' },
       squareConfig: { applicationId: 'sq0idp-example', locationId: 'location-example', accessToken: 'square-token-example', environment: 'sandbox' },
     }
@@ -45,7 +46,7 @@ test('保存 Stripe 和 Square API 配置不会关闭已有支付方式', async 
     const response = await handleSaveAdminSettings(context)
     assert.equal(response.status, 200)
     assert.deepEqual(JSON.parse(String((sqlite.prepare("SELECT value FROM systemSettings WHERE key = 'paymentMethods'").get() as any).value)), paymentMethods)
-    for (const key of ['stripeConfig', 'squareConfig']) {
+    for (const key of ['stripeConfig', 'squareConfig', 'translationConfig']) {
       const row = sqlite.prepare('SELECT value, deleted_at FROM systemSettings WHERE key = ?').get(key) as any
       assert.ok(row?.value, `${key} 应保存成功`)
       assert.equal(row.deleted_at, null)

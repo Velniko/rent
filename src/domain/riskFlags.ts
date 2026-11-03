@@ -6,7 +6,7 @@
 // 风险标记与黑名单 (完善.md / TODO.md P2 #10)
 //
 // 不是一个 is_blacklisted 布尔，而是带类型 / 严重程度 / 证据的标记表。
-// “高风险客户禁止自动创建新租赁”：任意 HIGH 级标记，或命中硬拦截类型
+// 任意 HIGH 级标记，或命中硬拦截类型
 // （拒付、疑似欺诈、设备未归还、付款风险）时阻止客户继续自助下单；
 // 标记不会自动过期，只有管理员手动解除（status 置为 RESOLVED）才会失效。
 
@@ -15,9 +15,10 @@ export type RiskFlagType = typeof RISK_FLAG_TYPES[number]
 export const RISK_FLAG_SEVERITIES = ['LOW', 'MEDIUM', 'HIGH'] as const
 
 export const ORDER_BLOCKING_RISK_FLAG_TYPES = new Set<RiskFlagType>(['PAYMENT_RISK', 'DEVICE_NOT_RETURNED', 'CHARGEBACK', 'FRAUD_SUSPECTED'])
-export const RISK_SCORE_BLOCK_THRESHOLD = 60
+export const RISK_SCORE_HIGH_THRESHOLD = 60
 
 export interface CustomerRiskFacts {
+  completedOrderCount?: number
   balance?: number
   identityStatus?: string | null
   failedPaymentCount?: number
@@ -30,9 +31,23 @@ export interface CustomerRiskFacts {
   activeFlags?: RiskFlagLike[]
 }
 
+export type CustomerRiskLevel = 'VERY_LOW' | 'LOW' | 'NORMAL' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+
+export const CUSTOMER_RISK_LABELS: Record<CustomerRiskLevel, string> = { VERY_LOW: '极低风险', LOW: '低风险', NORMAL: '普通', MEDIUM: '中风险', HIGH: '高风险', CRITICAL: '极高风险' }
+export const CUSTOMER_DEPOSIT_MULTIPLIERS: Record<CustomerRiskLevel, number> = { VERY_LOW: 0, LOW: 0.5, NORMAL: 1, MEDIUM: 1.25, HIGH: 1.5, CRITICAL: 2 }
+
+export function riskAdjustedDeposit(baseDeposit: number, level: CustomerRiskLevel): number {
+  if (!Number.isFinite(baseDeposit) || baseDeposit < 0 || !(level in CUSTOMER_DEPOSIT_MULTIPLIERS)) throw new Error('订单金额无效')
+  return Math.round(Math.round(baseDeposit * 100) * CUSTOMER_DEPOSIT_MULTIPLIERS[level]) / 100
+}
+
+export function riskDepositSnapshot(baseDeposit: number, risk: CustomerRiskAssessment) {
+  return { baseDepositAmount: baseDeposit, depositRiskLevel: risk.level, depositRiskScore: risk.score, depositMultiplier: CUSTOMER_DEPOSIT_MULTIPLIERS[risk.level], depositAmountBeforeWaiver: riskAdjustedDeposit(baseDeposit, risk.level) }
+}
+
 export interface CustomerRiskAssessment {
   score: number
-  level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+  level: CustomerRiskLevel
   blocked: boolean
   reasons: string[]
   blockingFlag: RiskFlagLike | null
@@ -99,9 +114,12 @@ export function calculateCustomerRiskAssessment(facts: CustomerRiskFacts, _now: 
   }
 
   const blockingFlag = findBlockingRiskFlag(activeFlags)
-  const blocked = Boolean(blockingFlag) || score >= RISK_SCORE_BLOCK_THRESHOLD
+  const blocked = Boolean(blockingFlag)
   const cappedScore = Math.min(100, Math.max(0, Math.round(score)))
-  const level = cappedScore >= 80 ? 'CRITICAL' : cappedScore >= RISK_SCORE_BLOCK_THRESHOLD ? 'HIGH' : cappedScore >= 30 ? 'MEDIUM' : 'LOW'
+  const trusted = cappedScore === 0 && !activeFlags.length && String(facts.identityStatus || '').toUpperCase() === 'VERIFIED'
+  const completed = Math.max(0, Number(facts.completedOrderCount || 0))
+  const level: CustomerRiskLevel = cappedScore >= 80 ? 'CRITICAL' : cappedScore >= RISK_SCORE_HIGH_THRESHOLD ? 'HIGH' : cappedScore >= 30 ? 'MEDIUM'
+    : trusted && completed >= 5 ? 'VERY_LOW' : trusted && completed >= 2 ? 'LOW' : 'NORMAL'
   return { score: cappedScore, level, blocked, reasons, blockingFlag }
 }
 
@@ -110,8 +128,8 @@ export function calculateCustomerRiskAssessment(facts: CustomerRiskFacts, _now: 
 export function calculateReferralRiskAssessment(facts: ReferralRiskFacts): ReferralRiskAssessment {
   const reasons: string[] = []
   let score = Math.min(100, Math.max(0, Number(facts.customerRiskScore || 0)))
-  if (facts.customerRiskBlocked || score >= RISK_SCORE_BLOCK_THRESHOLD) {
-    reasons.push(facts.customerRiskBlocked && score < RISK_SCORE_BLOCK_THRESHOLD
+  if (facts.customerRiskBlocked || score >= RISK_SCORE_HIGH_THRESHOLD) {
+    reasons.push(facts.customerRiskBlocked && score < RISK_SCORE_HIGH_THRESHOLD
       ? '客户命中风险拦截规则，推荐奖励需审核'
       : `客户风险分 ${Math.round(score)}，推荐奖励需审核`)
   }
@@ -140,8 +158,8 @@ export function calculateReferralRiskAssessment(facts: ReferralRiskFacts): Refer
   }
 
   const cappedScore = Math.min(100, Math.max(0, Math.round(score)))
-  const level = cappedScore >= 80 ? 'CRITICAL' : cappedScore >= RISK_SCORE_BLOCK_THRESHOLD ? 'HIGH' : cappedScore >= 30 ? 'MEDIUM' : 'LOW'
-  return { score: cappedScore, level, requiresReview: Boolean(facts.customerRiskBlocked) || cappedScore >= RISK_SCORE_BLOCK_THRESHOLD, reasons }
+  const level = cappedScore >= 80 ? 'CRITICAL' : cappedScore >= RISK_SCORE_HIGH_THRESHOLD ? 'HIGH' : cappedScore >= 30 ? 'MEDIUM' : 'LOW'
+  return { score: cappedScore, level, requiresReview: Boolean(facts.customerRiskBlocked) || cappedScore >= RISK_SCORE_HIGH_THRESHOLD, reasons }
 }
 
 export interface RiskFlagLike { flag_type?: string; severity?: string; status?: string; expires_at?: string | null }

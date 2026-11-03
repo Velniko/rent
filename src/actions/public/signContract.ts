@@ -10,6 +10,7 @@ import {
   updateSignSession, deleteSignSession, getUserById, getSystemSettings, getOrderById, getDeviceById,
   getContractVariableData, renderContractVariables, ensureOrderNumber, issueInvoice, findUserBySession, uploadCloudinaryImage, validateHostedImageUrls, isStrongPassword, loadSystemSettingsFromDB, generateTemporaryPassword, generateUniqueUserId, updateUser, buildLayout, canUseAccountBalance, createNotification, enqueueRentalUserCreation, recordBalanceTransaction, generateContractNumber, generateReferenceNumber, lockReferralRelationship, createAuthSession, getCustomerSigningUser, getDeviceRentalRules, getContractCustomerSnapshot, getCustomerRiskAssessment
 } from '../../site';
+import { applyOrderRiskDeposit } from '../../services/riskDeposit';
 import { nanoid } from 'nanoid';
 import { getAudCnyRate, roundCnyUp } from '../../rmbExchange';
 import { completeOrderSetupIntent, createOrderPaymentIntent, createOrderSetupIntent, resolveDepositPaymentMode } from '../stripePayments';
@@ -285,6 +286,9 @@ export async function handleSignContractStep(c: Context, identifier: string, ste
           await logError(c, 'INFO', `Email exists and user not forced to continue, returning EMAIL_EXISTS`, undefined, { token, email });
           throw new Error('该邮箱已注册，请直接登录或使用其他邮箱。');
         }
+
+        const quotedOrder = await getOrderById(c, contract.rentalId)
+        if (quotedOrder) await applyOrderRiskDeposit(c, quotedOrder, existingUser?.role === 'CUSTOMER' ? existingUser.id : undefined)
 
         // 保存用户信息到会话
         const windowsPassword = String(signSession.windowsPassword || generateWindowsPassword())
