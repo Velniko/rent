@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { clientPathEnabled,normalizeClientAccess } from '../../clientAccess'
 import { buildLayout, getDevices } from '../../site'
 import { calculateRentalFee } from '../../domain/rentalPricing'
 import { hasRequiredC2CPhotos, parseC2CPhotos } from '../../domain/c2cPhotos'
@@ -60,7 +61,7 @@ export async function renderCustomerDevices(c: Context,user: any) {
       ${personal?`<div class="customer-catalog__pickup"><span>取件地址</span><address>${esc(personal.pickup_address)}</address></div>`:''}<div class="customer-catalog__deposit"><span>押金</span><strong>${currency.format(Number(device.depositAmount || 0))}</strong></div>
       <a class="button button-primary customer-catalog__book" href="/customer/rent/${encodeURIComponent(device.id)}"><span>选择租期</span><span aria-hidden="true">→</span></a></div></article>`
   }).join('')
-  const body=`<section class="panel customer-catalog" id="customer-device-catalog"><header class="customer-catalog__header"><div><p class="section-code">DEVICE CATALOG</p><h2>可租设备</h2></div><a class="button button-secondary" href="/customer/rental-program">发布我的设备</a></header>
+  const body=`<section class="panel customer-catalog" id="customer-device-catalog"><header class="customer-catalog__header"><div><p class="section-code">DEVICE CATALOG</p><h2>可租设备</h2></div>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/rental-program','console') ? '<a class="button button-secondary" href="/customer/rental-program">发布我的设备</a>' : ''}</header>
     <nav class="customer-catalog__sources" aria-label="设备来源">${[['','全部设备'],['platform','平台自营'],['owner','个人设备']].map(([value,label])=>`<a data-catalog-source="${value}" href="${esc(href({mode:value}))}" ${mode===value?'aria-current="page"':''}>${label}</a>`).join('')}</nav>
     <form class="customer-catalog__tools" method="get" action="/customer/devices" role="search" aria-label="搜索和筛选租赁设备"><input type="hidden" name="mode" value="${mode}"><input type="hidden" name="category" value="${esc(category)}" id="catalog-category">
       <label class="customer-catalog__search" for="catalog-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4.5 4.5"></path></svg><input id="catalog-search" name="q" type="search" value="${esc(query)}" placeholder="搜索型号、CPU、显卡、操作系统…" aria-label="搜索租赁设备" aria-controls="customer-device-grid" maxlength="160" autocomplete="off"></label>

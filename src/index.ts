@@ -5,6 +5,7 @@
 
 // @ts-nocheck
 import { Hono } from 'hono'
+import { normalizeClientAccess, readClientAccess, clientFeatureForPath, consoleEssentialPath, clientMaintenanceHtml } from './clientAccess'
 import { websiteSessionStatus } from './auth/websiteSession'
 import * as pages from './pages/index'
 import * as actions from './actions/index'
@@ -744,6 +745,29 @@ app.use('*', async (c, next) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)
   if (user) {
     c.set('user', user)
+  }
+  await next()
+})
+
+app.use('*', async (c, next) => {
+  const path = c.req.path
+  const user = c.get('user')
+  const feature = clientFeatureForPath(path,'console')
+  const clientRoute = path === '/' || /^\/(?:customer|staff|feedback|notifications)(?:\/|$)/.test(path) || path === '/api/search'
+  if (user?.role === 'ADMIN' || (!feature && !clientRoute)) return next()
+  let policy
+  try { policy = await readClientAccess(c.env.RENT) }
+  catch (error) {
+    console.error('Client access settings unavailable',error)
+    if (!feature && consoleEssentialPath(path)) return next()
+    c.header('Cache-Control','private, no-store'); c.header('Retry-After','300')
+    return c.html(clientMaintenanceHtml('',false,'console'),503)
+  }
+  if (user) user.clientAccess = policy
+  const closedFeature = feature && !policy.features[feature]
+  if (closedFeature || (!policy.console.enabled && (clientRoute || feature) && (!consoleEssentialPath(path) || feature))) {
+    c.header('Cache-Control','private, no-store'); c.header('Retry-After','300')
+    return c.html(clientMaintenanceHtml(closedFeature ? '' : policy.console.message,Boolean(closedFeature),'console'),503)
   }
   await next()
 })
@@ -2519,7 +2543,7 @@ app.get('/customer/devices', async (c) => {
 
 app.get('/customer/rent/:id', async (c) => {
   const user = c.get('user')
-  if (!user || user.role !== 'CUSTOMER') return c.redirect('/login')
+  if (!user || user.role !== 'CUSTOMER') return c.redirect('/login?redirect='+encodeURIComponent(c.req.path))
   const risk = await getCustomerRiskAssessment(c, user.id)
   return c.html(await pages.renderCustomerRent(c, c.req.param('id'), user, risk.blocked ? '您的账户当前存在风控限制，暂时无法自助下单，请联系客服协助处理' : undefined))
 })
@@ -5814,6 +5838,16 @@ app.post('/admin/devices/:id/delete', async (c) => {
   return c.redirect('/admin/devices')
 })
 
+
+app.get('/admin/settings/client-features', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'ADMIN') return c.html(renderForbidden(),403)
+  let settings
+  try { settings = await readClientAccess(c.env.RENT) }
+  catch(error) { if (!(error instanceof SyntaxError)) throw error; settings=normalizeClientAccess({console:{enabled:false},web:{enabled:false}}) }
+  return c.html(pages.renderAdminClientFeatures(user,settings,c.req.query('saved') === '1'))
+})
+app.post('/admin/settings/client-features',actions.saveClientFeatures)
 
 app.get('/admin/settings', async (c) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)

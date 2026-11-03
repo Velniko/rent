@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { clientPathEnabled } from './clientAccess'
 import { Context } from 'hono'
 import { stripeRequest } from './stripe'
 import { expireStripeCheckout } from './services/stripeCheckout'
@@ -1679,7 +1680,7 @@ export async function loadDatabaseData(c: Context): Promise<void> {
 }
 
 
-export function buildLayout(title: string, body: string, currentUser?: User | null, options: { compactStaffNav?: boolean; currentPath?: string } = {}): string {
+export function buildLayout(title: string, body: string, currentUser?: (User & { clientAccess?: import('./clientAccess').ClientAccess }) | null, options: { compactStaffNav?: boolean; currentPath?: string } = {}): string {
   const normalizedTitle = title.includes('电脑租赁管理系统') ? title : `${title} - 电脑租赁管理系统`
   // 当前路径：用于手机端底部 tab 的 aria-current 高亮（服务端渲染，无需等脚本）。
   const currentPath = (options.currentPath || '').replace(/\/$/, '') || ''
@@ -1796,6 +1797,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
     return `<svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] || paths['▣']}</svg>`
   }
   const renderNavLink = (href: string, text: string) => {
+    if (currentUser?.role !== 'ADMIN' && currentUser?.clientAccess && !clientPathEnabled(currentUser.clientAccess,href,'console')) return ''
     const icon = navIcons[href] || navIcons[href.split('?')[0]] || '▣'
     return `<a href="${href}"><span class="nav-icon">${navIconSvg(icon)}</span>${text}</a>`
   }
@@ -1816,7 +1818,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
         ? [['/customer/guest', '合同中心', '▤', ['/customer/guest']], ['/customer/guest/upgrade', '升级账户', '✦', ['/customer/guest/upgrade']]]
         : [['/customer/dashboard', '首页', '◉', ['/customer/dashboard']], ['/notifications', '通知', 'N', ['/notifications']], ['/customer/devices', '可租设备', 'laptop', ['/customer/devices']], ['/customer/rental-program', '我的出租', 'laptop', ['/customer/rental-program']], ['/customer/rentals', '租赁', '▤', ['/customer/rentals']], ['/customer/orders', '订单', '▦', ['/customer/orders']], ['/customer/balance', '钱包', '$', ['/customer/balance']], ['/customer/profile', '我的', '◎', ['/customer/profile']]]
   const mobileNav = currentUser
-    ? mobileLinks.map(([href, text, icon, activePaths]) => {
+    ? mobileLinks.filter(([href]) => currentUser?.role === 'ADMIN' || !currentUser?.clientAccess || clientPathEnabled(currentUser.clientAccess,href,'console')).map(([href, text, icon, activePaths]) => {
         const isCurrent = (href === '/staff/mobile' && currentPath === href) || activePaths.some(path => currentPath === path || currentPath.startsWith(`${path}/`))
         return `<a href="${href}"${isCurrent ? ' class="active" aria-current="page"' : ''}><span class="nav-icon">${navIconSvg(navIcons[href] || icon)}</span><small>${text}</small></a>`
       }).join('')
@@ -1898,7 +1900,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
             ${renderNavGroup('设备管理', [['/admin/rental-program', '设备出租管理'], ['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
             ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/documents', '单据中心'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}
             ${renderNavGroup('营销增长', [['/admin/coupons', '优惠码管理'], ['/admin/marketing-emails', '营销邮件'], ['/admin/marketing-emails/data', '营销数据'], ['/admin/referrals', '推荐奖励管理'], ['/admin/feedback-rewards', '反馈奖励记录'], ['/admin/feedback-gift-cards', '礼品卡库存']])}
-            ${renderNavGroup('系统设置', [['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/tax-invoice-template', 'Tax Invoice PDF 模板'], ['/admin/settings', '系统设置'], ['/admin/api-settings', 'API 设置'], ['/admin/connectivity', '通讯检测'], ['/admin/exceptions', '异常任务中心'], ['/admin/monitoring', '系统健康监控'], ['/admin/data-retention', '数据保留策略']])}
+            ${renderNavGroup('系统设置', [['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/tax-invoice-template', 'Tax Invoice PDF 模板'], ['/admin/settings', '系统设置'], ['/admin/settings/client-features', '客户端功能'], ['/admin/api-settings', 'API 设置'], ['/admin/connectivity', '通讯检测'], ['/admin/exceptions', '异常任务中心'], ['/admin/monitoring', '系统健康监控'], ['/admin/data-retention', '数据保留策略']])}
           ` : ''}
         </div>
         <div class="sidebar-footer">

@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { clientPathEnabled,normalizeClientAccess } from '../../clientAccess'
 import { buildLayout, formatCurrency, getOrdersWithDetailsForUser } from '../../site';
 import { deliveryStatusInfo } from '../../deliveryStatus';
 import { renderOrderStatusBadge } from '../partials/orderStatusBadge';
@@ -41,8 +42,8 @@ export async function renderCustomerOrders(c: Context, user: any) {
   const body = `
     <div class="panel">
       <div class="section-title"><h2>我的订单</h2></div>
-      <h3>待付款订单</h3>${renderTable(pendingOrders, '您目前没有待付款订单。', '去支付', '<a class="button button-primary" href="/customer/devices">去挑选设备</a>')}
-      <h3 style="margin-top: 40px;">当前租赁中</h3>${renderTable(activeOrders, '您目前没有正在租赁的设备。', '查看', '<a class="button button-primary" href="/customer/devices">浏览可租设备</a>')}
+      <h3>待付款订单</h3>${renderTable(pendingOrders, '您目前没有待付款订单。', '去支付', `${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/devices','console') ? `<a class="button button-primary" href="/customer/devices">去挑选设备</a>` : ''}`)}
+      <h3 style="margin-top: 40px;">当前租赁中</h3>${renderTable(activeOrders, '您目前没有正在租赁的设备。', '查看', `${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/devices','console') ? `<a class="button button-primary" href="/customer/devices">浏览可租设备</a>` : ''}`)}
       <h3 style="margin-top: 40px;">已完成订单</h3>${renderTable(completedOrders, '您目前没有已完成的订单。', '查看')}
       <h3 style="margin-top: 40px;">已取消订单</h3>${renderTable(cancelledOrders, '您目前没有已取消的订单。', '查看')}
     </div>
