@@ -7,19 +7,20 @@ import { buildLayout, getDevices } from '../../site'
 import { calculateRentalFee } from '../../domain/rentalPricing'
 import { hasRequiredC2CPhotos, parseC2CPhotos } from '../../domain/c2cPhotos'
 import { escapeHtml as esc } from '../../lib/html'
+import { c2cModeLabels } from '../../services/c2c'
 import type { Context } from 'hono'
 
 const currency=new Intl.NumberFormat('en-AU',{style:'currency',currency:'AUD',currencyDisplay:'narrowSymbol',maximumFractionDigits:2})
 const normalize=(value: unknown)=>String(value || '').normalize('NFKD').toLowerCase().replace(/\s+/g,' ').trim()
 
 export async function renderCustomerDevices(c: Context,user: any) {
-  const rows=(await c.env.RENT.prepare(`SELECT l.device_id,l.owner_id,l.status,u.status AS owner_status,u.deleted_at,l.photos_json,m.user_id AS member_id
-    FROM c2c_listings l JOIN users u ON u.id=l.owner_id LEFT JOIN c2c_memberships m ON m.user_id=l.owner_id`).all()).results || []
+  const rows=(await c.env.RENT.prepare(`SELECT l.device_id,l.owner_id,l.status,l.listing_mode,l.pickup_address,l.custody_received_at,m.mode AS member_mode,s.managed_commission_bps,u.status AS owner_status,u.deleted_at,l.photos_json,m.user_id AS member_id
+    FROM c2c_listings l JOIN users u ON u.id=l.owner_id LEFT JOIN c2c_memberships m ON m.user_id=l.owner_id CROSS JOIN c2c_settings s`).all()).results || []
   const listings=new Map<string,any>(rows.map((l: any)=>[l.device_id,l]))
   const mode=['c2c','platform'].includes(c.req.query('mode') || '')?c.req.query('mode')!:''
   const devices=(await getDevices(c)).filter(device=>{
     const l=listings.get(device.id)
-    return device.status==='available' && (!l || (l.status==='approved' && l.owner_id!==user.id && l.owner_status==='active' && !l.deleted_at && l.member_id && hasRequiredC2CPhotos(l.photos_json)))
+    return device.status==='available' && (!l || (l.status==='approved' && l.owner_id!==user.id && l.owner_status==='active' && !l.deleted_at && l.member_id && l.pickup_address.trim() && l.listing_mode===l.member_mode && (l.listing_mode!=='managed' || (l.custody_received_at && l.managed_commission_bps!=null)) && hasRequiredC2CPhotos(l.photos_json)))
       && (mode==='c2c'?Boolean(l):mode==='platform'?!l:true)
   })
   const categoryOrder=['游戏笔记本','轻薄商务本','台式工作站','普通笔记本','其他']
@@ -51,11 +52,11 @@ export async function renderCustomerDevices(c: Context,user: any) {
     const workstation=device.category==='台式工作站'
     return `<article class="customer-catalog__card" data-catalog-device data-category="${esc(device.category || '其他')}" data-search="${esc(search)}" data-price="${daily}" data-name="${esc(device.name)}" data-order="${defaultOrder.get(device.id)}" ${visible?'':'hidden'}>
       <div class="customer-catalog__visual ${workstation?'customer-catalog__visual--workstation':''}">${photo?`<img src="${esc(photo)}" alt="${esc(device.name)}" loading="lazy">`:`<span class="customer-catalog__screen" aria-hidden="true"><i></i></span><span class="customer-catalog__base" aria-hidden="true"></span><span class="customer-catalog__visual-code" aria-hidden="true">${workstation?'WORKSTATION':device.category==='游戏笔记本'?'GAMING':'LAPTOP'}</span>`}</div>
-      <div class="customer-catalog__body"><div class="customer-catalog__top"><span class="customer-catalog__availability"><i aria-hidden="true"></i>可租</span><span class="customer-catalog__source">${personal?'个人设备':'平台自营'}</span></div>
+      <div class="customer-catalog__body"><div class="customer-catalog__top"><span class="customer-catalog__availability"><i aria-hidden="true"></i>可租</span><span class="customer-catalog__source">${personal?c2cModeLabels[personal.listing_mode as 'self'|'managed']:'平台自营'}</span></div>
       <h3><a href="/customer/rent/${encodeURIComponent(device.id)}">${esc(device.name)}</a></h3><p class="customer-catalog__model">${esc(device.category || '其他')}${device.model?` · ${esc(device.model)}`:''}</p>
       <div class="customer-catalog__specs">${specs.length?specs.map(spec=>`<span>${esc(spec)}</span>`).join(''):'<span>配置待更新</span>'}</div>
       <div class="customer-catalog__prices">${price('日租',daily)}${price('周租',weekly,daily*7)}${price('月租',monthly,daily*30)}</div>
-      <div class="customer-catalog__deposit"><span>押金</span><strong>${currency.format(Number(device.depositAmount || 0))}</strong></div>
+      ${personal?`<p class="customer-catalog__pickup">取件地址：${esc(personal.pickup_address)}</p>`:''}<div class="customer-catalog__deposit"><span>押金</span><strong>${currency.format(Number(device.depositAmount || 0))}</strong></div>
       <a class="button button-primary customer-catalog__book" href="/customer/rent/${encodeURIComponent(device.id)}"><span>选择租期</span><span aria-hidden="true">→</span></a></div></article>`
   }).join('')
   const body=`<section class="panel customer-catalog" id="customer-device-catalog"><header class="customer-catalog__header"><div><p class="section-code">DEVICE CATALOG</p><h2>可租设备</h2></div><a class="button button-secondary" href="/customer/c2c">发布我的设备</a></header>

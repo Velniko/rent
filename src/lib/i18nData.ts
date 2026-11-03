@@ -2477,6 +2477,10 @@ const status: Readonly<Record<string, string>> = {}
 
 // @domain admin —— 管理员端页面文案
 const admin: Readonly<Record<string, string>> = {
+  '自行交付手续费 (%)': 'Self handover commission (%)',
+  '托管手续费 (%)': 'Managed rental commission (%)',
+  '保存出租设置': 'Save rental settings',
+  '已收到托管设备': 'Managed device received',
   '微信主页链接': 'WeChat profile link',
   '微信二维码 URL': 'WeChat QR code URL',
   '小红书主页链接': 'Xiaohongshu profile link',
@@ -4170,6 +4174,22 @@ const staff: Readonly<Record<string, string>> = {
 
 // @domain customer —— 客户 / 访客端页面文案
 const customer: Readonly<Record<string, string>> = {
+  '平台手续费': 'Platform commission',
+  '运费自付 · 上架超过 6 个月可下架': 'Shipping at your expense · Unlist after more than 6 months',
+  '自行交付': 'Self handover',
+  '墨尔本托管': 'Melbourne managed rental',
+  '设备自行保管': 'Keep the device with you',
+  '寄给平台出租': 'Send your device to us',
+  '运费自付': 'Shipping at your expense',
+  '上架超过 6 个月可下架': 'Unlist after more than 6 months',
+  '无最短上架期限': 'No minimum listing period',
+  '暂未开放': 'Not available yet',
+  '更改出租模式': 'Change rental mode',
+  '保存出租模式': 'Save rental mode',
+  '托管寄件地址': 'Managed rental shipping address',
+  '取件地址': 'Pickup address',
+  '可下架时间': 'Available to unlist from',
+  '到址自取': 'Collect from the pickup address',
   '一次性付清（含押金）': 'Pay in full (including deposit)',
   '信用卡扣款失败': 'Card charge failed',
   '首期月租付款成功': 'First monthly rental payment successful',
@@ -4856,6 +4876,16 @@ const legal: Readonly<Record<string, string>> = {
 
 // @domain errors —— 错误与空状态提示
 const errors: Readonly<Record<string, string>> = {
+  '请选择出租模式': 'Choose a rental mode',
+  '托管模式暂未开放': 'Managed rentals are not available yet',
+  '请先下架全部设备并完成出租订单': 'Unlist all devices and complete rental orders first',
+  '出租模式已变更，请刷新后重试': 'Rental mode changed. Refresh and try again',
+  '请填写取件地址': 'Enter a pickup address',
+  '请先确认已收到托管设备': 'Confirm receipt of the managed device first',
+  '托管设备上架超过 6 个月后才可下架': 'Managed devices can be unlisted after more than 6 months',
+  '两种模式的手续费应不同': 'Set a different commission for each mode',
+  '请填写有效的托管寄件地址': 'Enter a valid managed rental shipping address',
+  '自行交付设备仅支持到址自取': 'Self handover devices require collection at the pickup address',
   '当前订单不能收取归还费用': 'This order cannot accept return payments.',
   '请选择可用的收款方式': 'Select an available payment method.',
   '应收金额已变化，请刷新页面': 'The amount due has changed. Refresh the page.',

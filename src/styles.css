@@ -12681,3 +12681,22 @@ html body .content > .section-title {
   .customer-catalog__prices strong { font-size: 1.08rem; }
 }
 @media (prefers-reduced-motion: reduce) { .customer-catalog__card { transition: none; } }
+
+/* 出租模式选择与设备交接地址。 */
+.c2c-mode-choices { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin:18px 0 24px; }
+.c2c-mode-choice { display:flex; gap:12px; align-items:flex-start; padding:20px; border:1px solid var(--c-line-2); border-radius:8px; cursor:pointer; background:var(--c-surface); }
+.c2c-mode-choice:has(input:checked) { border-color:var(--c-accent); background:var(--c-accent-tint); box-shadow:inset 0 0 0 1px var(--c-accent); }
+.c2c-mode-choice:has(input:disabled) { opacity:.55; cursor:not-allowed; }
+.c2c-mode-choice input { flex:none; margin:4px 0 0; accent-color:var(--c-accent); }
+.c2c-mode-choice__body { display:flex; flex-direction:column; gap:8px; color:var(--c-text-2); font-size:.85rem; }
+.c2c-mode-choice__body strong { color:var(--c-text); font-size:1.1rem; }
+.c2c-mode-choice__body b { color:var(--c-accent); font-family:var(--f-mono); margin-top:7px; }
+.c2c-mode-choice__body small { color:var(--c-text-2); font-size:.75rem; }
+.c2c-address-card { padding:16px 18px; border-left:3px solid var(--c-accent); background:var(--c-accent-tint); margin:18px 0; overflow-wrap:anywhere; }
+.c2c-address-card p { margin:8px 0; white-space:pre-line; }
+.c2c-address-card span { display:inline-block; margin-right:18px; color:var(--c-text-2); font-size:.8rem; }
+.c2c-account-actions { display:flex; gap:24px; flex-wrap:wrap; align-items:baseline; margin-top:18px; }
+.c2c-account-actions details { width:100%; }
+.c2c-account-actions summary { color:var(--c-accent); cursor:pointer; }
+.customer-catalog__pickup { color:var(--c-text-2); font-size:.73rem; overflow-wrap:anywhere; margin:14px 0 0; }
+@media(max-width:600px) { .c2c-mode-choices { grid-template-columns:minmax(0,1fr); } .c2c-mode-choice { padding:16px; } }

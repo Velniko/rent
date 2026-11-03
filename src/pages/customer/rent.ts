@@ -32,7 +32,8 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
   if (!device) {
     return buildLayout('租赁设备 - 电脑租赁管理系统', '<div class="panel"><h2>设备未找到</h2><p>您请求租赁的设备不存在。</p></div>', user);
   }
-  const listingPhotos = await c.env.RENT.prepare('SELECT photos_json FROM c2c_listings WHERE device_id=?').bind(deviceId).first() as {photos_json:string} | null;
+  const listingPhotos = await c.env.RENT.prepare('SELECT photos_json,pickup_address,listing_mode FROM c2c_listings WHERE device_id=?').bind(deviceId).first() as {photos_json:string;pickup_address:string;listing_mode:string} | null;
+  const selfDelivery=listingPhotos?.listing_mode==='self';
   const rentalRules = await getDeviceRentalRules(c, deviceId)
   const pickupSlots = pickupTimeSlots(rentalRules)
   const bookingRanges = ((await c.env.RENT.prepare("SELECT startDate, endDate, startPeriod, endPeriod FROM orders WHERE deviceId = ? AND deleted_at IS NULL AND status NOT IN ('completed', 'cancelled')").bind(deviceId).all()).results || []) as any[]
@@ -58,7 +59,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
     <div class="panel">
       <div class="section-title"><h2>租赁设备: ${escapeHtml(device.name)}</h2></div>
       ${errorMessage ? `<div data-flash-notice class="page-notification page-notification--error">${errorMessage}</div>` : ''}
-      ${renderC2CPhotoGallery(listingPhotos?.photos_json)}<form method="POST" action="/customer/rent/${device.id}">
+      ${renderC2CPhotoGallery(listingPhotos?.photos_json)}${listingPhotos?`<div class="c2c-address-card"><strong>取件地址</strong><p>${escapeHtml(listingPhotos.pickup_address)}</p></div>`:''}<form method="POST" action="/customer/rent/${device.id}">
         <div class="form-group">
           <label class="form-label" for="deviceName">设备名称</label>
           <input type="text" id="deviceName" class="form-control" value="${escapeHtml(device.name)}" readonly />
@@ -90,7 +91,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
           <label class="form-label" for="endPeriod">结束时段</label>
           <select id="endPeriod" name="endPeriod" class="form-control"><option value="AM"${prefilledEndPeriod === 'AM' ? ' selected' : ''}>上午</option><option value="PM"${prefilledEndPeriod === 'PM' ? ' selected' : ''}>下午</option></select>
         </div></div>
-        <div class="form-group"><label class="form-label" for="deliveryMethod">设备交付方式</label><select id="deliveryMethod" name="deliveryMethod" class="form-control"><option value="Pickup"${prefilledDelivery === 'Pickup' ? ' selected' : ''}>到店自取</option><option value="Delivery"${prefilledDelivery === 'Delivery' ? ' selected' : ''}>送货上门（运费由管理员/员工确认）</option></select></div>
+        <div class="form-group"><label class="form-label" for="deliveryMethod">设备交付方式</label><select id="deliveryMethod" name="deliveryMethod" class="form-control"><option value="Pickup"${prefilledDelivery === 'Pickup' ? ' selected' : ''}>${selfDelivery?'到址自取':'到店自取'}</option>${selfDelivery?'':`<option value="Delivery"${prefilledDelivery === 'Delivery' ? ' selected' : ''}>送货上门（运费由管理员/员工确认）</option>`}</select></div>
         <div class="grid grid-2" id="pickupTimeGroup"><div class="form-group"><label class="form-label" for="pickupTimeSlot">取货时间</label><select id="pickupTimeSlot" name="pickupTimeSlot" class="form-control">${pickupSlots.map(([value, label]) => `<option value="${value}"${value === (prefilledPickup || 'morning') ? ' selected' : ''}>${label}</option>`).join('')}</select></div><div class="form-group"><label class="form-label" for="returnTimeSlot">归还时间</label><select id="returnTimeSlot" name="returnTimeSlot" class="form-control">${pickupSlots.map(([value, label]) => `<option value="${value}"${value === (prefilledReturn || 'morning') ? ' selected' : ''}>${label}</option>`).join('')}</select></div></div>
         <div class="form-group" id="deliveryAddressGroup" hidden><label class="form-label" for="deliveryAddress">送货地址</label><textarea id="deliveryAddress" name="deliveryAddress" class="form-control" rows="3" placeholder="请填写完整的街道、Suburb、州和邮编">${prefilledAddress}</textarea><small class="form-text">运费由工作人员确认后另行通知。</small></div>
         <div class="form-group"><label class="form-label" for="rentalNote">申请备注（选填）</label><textarea id="rentalNote" name="rentalNote" class="form-control" rows="2" maxlength="500" placeholder="例如配送时间、设备使用要求等">${prefilledNote}</textarea></div>

@@ -15,6 +15,7 @@ import { renderAdminFinance } from '../src/pages/admin/finance'
 import { C2C_PHOTO_SLOTS, hasRequiredC2CPhotos, parseC2CPhotos } from '../src/domain/c2cPhotos'
 import { c2cPhotoUploadScript, renderC2CPhotoFields, renderC2CPhotoGallery } from '../src/pages/partials/c2cPhotos'
 import { maxRequestBodyBytes, UPLOAD_BODY_LIMIT_BYTES, DEFAULT_BODY_LIMIT_BYTES } from '../src/lib/security'
+import { deliverC2CEmails } from '../src/services/c2cEmails'
 import { commissionBps, c2cSettlementQuote } from '../src/services/c2c'
 
 test('C2C publishing, booking ownership, rental accounting and manual settlements', async t => {
@@ -29,6 +30,7 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
     ('staff','员工','staff@example.test','STAFF','active','formal',NULL,NULL),
     ('admin','管理员','admin@example.test','ADMIN','active','formal',NULL,NULL),
     ('guest','访客','guest@example.test','CUSTOMER','active','guest',NULL,NULL);`)
+  sqlite.exec("UPDATE users SET access_level='ADMIN' WHERE id='admin'")
   const db={prepare(sql: string) {
     let values: any[]=[]
     const statement={bind(...args: any[]) {values=args;return statement},
@@ -51,10 +53,10 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
   const row=(sql: string,...args: any[])=>sqlite.prepare(sql).get(...args) as any
   const settleForm=(reference: string)=>({reference,quote:c2cSettlementQuote(row("SELECT * FROM c2c_settlement_quotes WHERE order_id='rental'"))})
   const listing=()=>row('SELECT * FROM c2c_listings LIMIT 1')
-  const form: Record<string,string>={name:'个人笔记本 <img src=x onerror=alert(1)>',model:'M4" autofocus onfocus="alert(1)',serialNumber:'C2C-TEST',dailyRate:'20.50',deposit:'200',description:'设备描述 <script>alert(1)</script>'}
+  const form: Record<string,string>={name:'个人笔记本 <img src=x onerror=alert(1)>',model:'M4" autofocus onfocus="alert(1)',serialNumber:'C2C-TEST',dailyRate:'20.50',deposit:'200',description:'设备描述 <script>alert(1)</script>',mode:'self',pickupAddress:'123 Example Street, Carlton VIC 3053'}
 
   let uploaded=0, unsafeUpload=false
-  t.mock.method(globalThis,'fetch',async (input: any,init: RequestInit)=>{
+  const externalFetch=t.mock.method(globalThis,'fetch',async (input: any,init: RequestInit)=>{
     assert.equal(String(input),'https://api.cloudinary.com/v1_1/demo/image/upload')
     const body=init.body as FormData
     assert.equal(body.get('folder'),'rent/c2c')
@@ -75,7 +77,11 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
     assert.equal((await request('/customer/c2c/join','staff',{})).status,403)
     assert.equal((await request('/customer/c2c/join','guest',{})).headers.get('location'),'/customer/guest')
     assert.equal((await request('/customer/c2c/join','owner',{},'https://evil.example.test')).status,403)
-    await request('/customer/c2c/join','owner',{});await request('/customer/c2c/join','owner',{})
+    assert.match((await request('/customer/c2c/join','owner',{})).headers.get('location') || '',/error=/)
+    await request('/admin/c2c/commission','admin',{commission:'10',managedCommission:'',shippingAddress:''})
+    assert.equal(row('SELECT managed_commission_bps FROM c2c_settings').managed_commission_bps,null)
+    assert.match((await request('/customer/c2c/join','owner',{mode:'managed'})).headers.get('location') || '',/error=/)
+    await request('/customer/c2c/join','owner',{mode:'self'});await request('/customer/c2c/join','owner',{mode:'self'})
     assert.equal(row('SELECT COUNT(*) AS n FROM c2c_memberships').n,1)
     const joined=await (await request('/customer/c2c')).text()
     assert.match(joined,/id="c2c-listing-form"/)
@@ -101,7 +107,7 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
       form[`photo_${slot.key}`]=photo.id
     }
     assert.equal(row('SELECT COUNT(*) AS n FROM c2c_photos').n,6)
-    await request('/customer/c2c/join','other',{})
+    await request('/customer/c2c/join','other',{mode:'self'})
     const foreign=await (await request('/customer/c2c/photos','other',photoBody())).json() as {id:string}
     for (const bad of [{...form,photo_power:''},{...form,photo_a:'https://example.test/forged.png'},{...form,photo_a:form.photo_b},{...form,photo_a:foreign.id}]) {
       assert.match((await request('/customer/c2c','owner',bad)).headers.get('location') || '',/error=/)
@@ -173,7 +179,7 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
     assert.throws(()=>insertOrder('self','owner'),/C2C_DEVICE_UNAVAILABLE/)
     insertOrder('rental')
     assert.equal(row("SELECT commission_bps FROM c2c_order_terms WHERE order_id='rental'").commission_bps,1000)
-    await request('/admin/c2c/commission','admin',{commission:'12.34'})
+    await request('/admin/c2c/commission','admin',{commission:'12.34',managedCommission:'20',shippingAddress:'456 Warehouse Road, Melbourne VIC 3000'})
     assert.equal(row('SELECT commission_bps FROM c2c_settings').commission_bps,1234)
     assert.equal(row("SELECT commission_bps FROM c2c_order_terms WHERE order_id='rental'").commission_bps,1000)
     assert.throws(()=>sqlite.exec("UPDATE orders SET userId='owner' WHERE id='rental'"),/C2C_ORDER_OWNERSHIP_LOCKED/)
@@ -247,6 +253,100 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
     assert.equal(row("SELECT commission_bps FROM c2c_order_terms WHERE order_id='new-rate'").commission_bps,1234)
     assert.equal(row('SELECT pricePerDay FROM devices WHERE id=?',listing().device_id).pricePerDay,30)
   })
+  await t.test('two explicit modes, independent fees, custody receipt and atomic six-month restrictions',async()=>{
+    assert.match((await request('/customer/c2c/join','owner',{mode:'managed'})).headers.get('location') || '',/error=/)
+    assert.equal(row("SELECT mode FROM c2c_memberships WHERE user_id='owner'").mode,'self')
+    assert.throws(()=>sqlite.exec("UPDATE c2c_memberships SET mode='managed' WHERE user_id='owner'"),/C2C_UNLIST_ALL_BEFORE_MODE_CHANGE/)
+    assert.match((await request('/admin/c2c/commission','admin',{commission:'10',managedCommission:'10',shippingAddress:'Warehouse'})).headers.get('location') || '',/error=/)
+    assert.equal(row('SELECT managed_commission_bps FROM c2c_settings').managed_commission_bps,2000)
+    await request('/customer/c2c/join','other',{mode:'managed'})
+    const managedForm: Record<string,string>={...form,name:'托管笔记本',serialNumber:'MANAGED-TEST',mode:'managed',pickupAddress:''}
+    for (const slot of C2C_PHOTO_SLOTS) {
+      const photo=await (await request('/customer/c2c/photos','other',photoBody(slot.key))).json() as {id:string}
+      managedForm[`photo_${slot.key}`]=photo.id
+    }
+    await request('/customer/c2c','other',managedForm)
+    const managed=()=>row("SELECT * FROM c2c_listings WHERE owner_id='other'")
+    assert.equal(managed().status,'pending');assert.equal(managed().listing_mode,'managed')
+    assert.equal(managed().pickup_address,'456 Warehouse Road, Melbourne VIC 3000')
+    const ownerPage=await (await request('/customer/c2c','other')).text()
+    assert.match(ownerPage,/托管寄件地址/);assert.match(ownerPage,/运费自付/);assert.doesNotMatch(ownerPage,/name="pickupAddress"/)
+    await request(`/admin/c2c/${managed().id}/review`,'admin',{action:'approve'})
+    assert.equal(managed().status,'pending')
+    await request(`/admin/c2c/${managed().id}/review`,'admin',{action:'approve',received:'1'})
+    assert.equal(managed().status,'approved');assert.ok(managed().custody_received_at);assert.ok(managed().listed_at)
+    assert.match(await (await request('/customer/c2c','other')).text(),/可下架时间/)
+    assert.throws(()=>sqlite.prepare("UPDATE c2c_listings SET status='paused' WHERE id=?").run(managed().id),/C2C_MANAGED_SIX_MONTHS_REQUIRED/)
+    for (const actor of ['other','admin']) {
+      await request(`/${actor==='admin'?'admin':'customer'}/c2c/${managed().id}/pause`,actor,{})
+      assert.equal(managed().status,'approved')
+    }
+    sqlite.prepare(`INSERT INTO orders (id,orderNo,userId,deviceId,startDate,endDate,rentalPeriod,totalAmount,depositAmount,status,paymentMethod)
+      VALUES ('managed-rental','OD-MANAGED','renter',?,'2030-03-04','2030-03-08',4,282,200,'pending_approval','bank_transfer')`).run(managed().device_id)
+    const terms=row("SELECT * FROM c2c_order_terms WHERE order_id='managed-rental'")
+    assert.equal(terms.commission_bps,2000);assert.equal(terms.listing_mode,'managed');assert.equal(terms.pickup_address,managed().pickup_address)
+    assert.equal(row("SELECT pickupLocation FROM orders WHERE id='managed-rental'").pickupLocation,managed().pickup_address)
+    sqlite.exec('UPDATE c2c_settings SET managed_commission_bps=NULL')
+    assert.match(await (await request('/customer/c2c','other')).text(),/平台手续费 —/)
+    assert.doesNotMatch(await (await request('/customer/devices?mode=c2c','renter')).text(),/托管笔记本/)
+    assert.match(await (await request(`/customer/rent/${managed().device_id}`,'renter')).text(),/该设备暂不可租/)
+    await request('/admin/c2c/commission','admin',{commission:'12.34',managedCommission:'22',shippingAddress:'New Warehouse, Melbourne VIC 3000'})
+    assert.equal(row("SELECT commission_bps FROM c2c_order_terms WHERE order_id='managed-rental'").commission_bps,2000)
+    assert.equal(row("SELECT pickup_address FROM c2c_order_terms WHERE order_id='managed-rental'").pickup_address,'456 Warehouse Road, Melbourne VIC 3000')
+    sqlite.prepare("UPDATE c2c_listings SET listed_at=datetime('now','-6 months','-1 day') WHERE id=?").run(managed().id)
+    await request(`/customer/c2c/${managed().id}/pause`,'other',{})
+    assert.equal(managed().status,'approved') // An unfinished order still holds the listing.
+    sqlite.exec("UPDATE orders SET status='cancelled' WHERE id='managed-rental'")
+    await request(`/customer/c2c/${managed().id}/pause`,'other',{})
+    assert.equal(managed().status,'paused')
+    await request(`/customer/c2c/${managed().id}/edit`,'other',managedForm)
+    assert.equal(managed().listed_at,null)
+    await request(`/admin/c2c/${managed().id}/review`,'admin',{action:'approve',received:'1'})
+    assert.throws(()=>sqlite.prepare("UPDATE c2c_listings SET status='paused' WHERE id=?").run(managed().id),/C2C_MANAGED_SIX_MONTHS_REQUIRED/)
+    sqlite.prepare("UPDATE c2c_listings SET listed_at=datetime('now','-7 months') WHERE id=?").run(managed().id)
+    await request(`/customer/c2c/${managed().id}/pause`,'other',{})
+    await request('/customer/c2c/join','other',{mode:'self'})
+    assert.equal(row("SELECT mode FROM c2c_memberships WHERE user_id='other'").mode,'self')
+    assert.equal(row("SELECT listing_mode FROM c2c_order_terms WHERE order_id='managed-rental'").listing_mode,'managed')
+    await request(`/customer/c2c/${managed().id}/edit`,'other',managedForm)
+    assert.equal(managed().status,'paused') // Reject the stale mode form.
+    const rentPage=await (await request(`/customer/rent/${listing().device_id}`,'renter')).text()
+    assert.match(rentPage,/123 Example Street/);assert.match(rentPage,/到址自取/);assert.doesNotMatch(rentPage,/<option value="Delivery"/)
+    assert.equal((await request(`/customer/rent/${listing().device_id}`,'renter',{deliveryMethod:'Delivery'})).status,400)
+    assert.equal(row("SELECT status FROM email_events WHERE order_id='managed-rental'").status,'PENDING')
+  })
+  await t.test('new rental emails are atomic, deduplicated and retry transport failures',async()=>{
+    // Isolate the new event; previous events are covered by the order tests.
+    sqlite.exec("UPDATE email_events SET status='SENT'")
+    insertOrder('email-retry')
+    const mail=()=>row("SELECT * FROM email_events WHERE order_id='email-retry'")
+    assert.equal(mail().recipient,'owner@example.test');assert.equal(mail().event_type,'C2C_NEW_RENTAL')
+    assert.match(mail().text_body,/自行交付/);assert.match(mail().text_body,/OD-email-retry/)
+    assert.equal(await deliverC2CEmails(c),0);assert.equal(mail().status,'PENDING')
+    Object.assign(env,{RESEND_API_KEY:'fake-resend-key',EMAIL_FROM:'PC Rental <test@example.test>'})
+    let attempts=0,expectedOrder='OD-email-retry'
+    externalFetch.mock.mockImplementation(async(input:any,init?:RequestInit)=>{
+      assert.equal(String(input),'https://api.resend.com/emails')
+      const body=JSON.parse(String(init?.body));assert.deepEqual(body.to,['owner@example.test']);assert.ok(body.text.includes(expectedOrder))
+      attempts++
+      return attempts===1?Response.json({message:'Temporary failure'},{status:503}):Response.json({id:'mock-message-id'})
+    })
+    await deliverC2CEmails(c);assert.equal(mail().status,'FAILED');assert.equal(mail().retry_count,1)
+    const delivered=await Promise.all([deliverC2CEmails(c),deliverC2CEmails(c)])
+    assert.equal(delivered.reduce((a,b)=>a+b,0),1);assert.equal(mail().status,'SENT');assert.equal(attempts,2)
+    await deliverC2CEmails(c);assert.equal(attempts,2)
+    assert.equal(row("SELECT COUNT(*) AS n FROM email_events WHERE idempotency_key='c2c-rental:email-retry'").n,1)
+    expectedOrder='OD-email-manual';insertOrder('email-manual')
+    const manual=row("SELECT * FROM email_events WHERE order_id='email-manual'")
+    assert.equal((await request(`/manager/email-events/${manual.id}/retry`,'owner',{})).status,403)
+    const manualResults=await Promise.all([request(`/manager/email-events/${manual.id}/retry`,'admin',{}),request(`/manager/email-events/${manual.id}/retry`,'admin',{})])
+    assert.ok(manualResults.every(result=>[303,409].includes(result.status)),JSON.stringify(manualResults.map(result=>result.status)))
+    assert.equal(row("SELECT status FROM email_events WHERE order_id='email-manual'").status,'SENT');assert.equal(attempts,3)
+    insertOrder('cancelled-email');sqlite.exec("UPDATE orders SET status='cancelled' WHERE id='cancelled-email'")
+    await deliverC2CEmails(c)
+    assert.equal(row("SELECT status FROM email_events WHERE order_id='cancelled-email'").status,'SKIPPED')
+  })
+
 })
 
 test('C2C commission accepts zero and 100 percent and rejects malformed input',()=>{

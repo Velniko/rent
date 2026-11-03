@@ -281,6 +281,7 @@ async function getTableColumns(c: any, tableName: string): Promise<string[]> {
 }
 
 import { c2cBookingError } from './services/c2c'
+import { deliverC2CEmails } from './services/c2cEmails'
 
 const app = new Hono()
 
@@ -2528,6 +2529,8 @@ app.post('/customer/rent/:id', async (c) => {
   const endDate = String(form.endDate || '')
   const todayValue = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const deliveryMethod = String(form.deliveryMethod || 'Pickup') === 'Delivery' ? 'Delivery' : 'Pickup'
+  const c2cDelivery=await c.env.RENT.prepare('SELECT listing_mode FROM c2c_listings WHERE device_id=?').bind(c.req.param('id')).first()
+  if (c2cDelivery?.listing_mode==='self' && deliveryMethod!=='Pickup') return c.text('自行交付设备仅支持到址自取',400)
   const pickupTimeSlot = String(form.pickupTimeSlot || '')
   const returnTimeSlot = String(form.returnTimeSlot || '')
   const deliveryAddress = String(form.deliveryAddress || '').trim().slice(0, 1000)
@@ -2626,6 +2629,7 @@ app.post('/customer/rent/:id', async (c) => {
     await actions.releaseCouponForOrder(c, orderId)
     return c.redirect(`/customer/orders/${orderId}?error=${encodeURIComponent(RENTAL_APPLICATION_CONFLICT_MESSAGE)}`)
   }
+  if (c2cDelivery) c.executionCtx.waitUntil(deliverC2CEmails(c).catch(error=>console.error('C2C email delivery failed',error?.message)))
   const customer = await getUserById(c, user.id)
   const recipients = customer?.staffId ? [customer.staffId] : (await getUsers(c)).filter((account: any) => account.role === 'ADMIN' && account.status !== 'inactive').map((account: any) => account.id)
   await Promise.all(recipients.map((recipientId: string) => createNotification(c, { recipientId, type: 'rental_application', title: deliveryMethod === 'Delivery' ? '新租赁申请及配送确认' : '新租赁申请待审核', message: `${customer?.name || '客户'} 申请租赁 ${device.name}（${startDate} 至 ${endDate}）${deliveryMethod === 'Delivery' ? `，需要配送至：${deliveryAddress}，运费请确认` : '，客户选择到店自取'}。${rentalNote ? `备注：${rentalNote}` : ''}`, orderId: orderId })))
@@ -4196,6 +4200,11 @@ app.post('/manager/email-events/:id/retry', async (c) => {
   if (!user || !['MANAGER', 'ADMIN'].includes(getAccessLevel(user))) return c.html(renderForbidden(), 403)
   const event = await c.env.RENT.prepare("SELECT * FROM email_events WHERE id = ? AND status <> 'SENT' AND retry_count < max_attempts").bind(c.req.param('id')).first() as any
   if (!event) return c.text('邮件事件不存在、已发送或已超过最大重试次数', 409)
+  if (event.event_type==='C2C_NEW_RENTAL') {
+    await deliverC2CEmails(c,event.id)
+    await createAuditLog(c,{actor:user,action:'EMAIL_EVENT_RETRIED',targetType:'EMAIL_EVENT',targetId:event.id})
+    return c.redirect('/manager/email-events',303)
+  }
   const { apiKey, from } = await resolveEmailCredentials(c)
   if (!apiKey || !from) return c.text('邮件服务尚未配置', 503)
   const result = await sendTransactionalEmail(c, { to: event.recipient, subject: event.subject, text: event.text_body, html: event.html_body || undefined })
@@ -6646,6 +6655,7 @@ export default {
     const { cleanupExpiredAndCancelledContracts, cleanupExpiredGuestAccounts, cancelExpiredPendingPaymentOrders, notifyOverduePaymentProofs, runDataConsistencyChecks, releaseQualifiedReferralRewards, runMonitoringSweep, runScheduledJob, deliverPendingAgreementUpdates } = await import('./site')
 
     if (event.cron === '* * * * *') {
+      ctx.waitUntil(runScheduledJob(c,'deliver_c2c_emails',async()=>{await loadSystemSettingsFromDB(c);return deliverC2CEmails(c)}))
       ctx.waitUntil(runScheduledJob(c, 'send_pickup_reminders', async () => {
         await loadSystemSettingsFromDB(c)
         const { sendScheduledPickupReminders } = await import('./site')

@@ -11,7 +11,7 @@ export async function customerC2CAction(c: Context, action: 'submit' | 'edit' | 
   if (!user || user.role!=='CUSTOMER' || (user.accountType ?? user.account_type ?? 'formal')!=='formal') return action==='photo'?c.json({error:'无权访问'},403):c.text('无权访问',403)
   if (action!=='join' && action!=='pause' && !await isC2CMember(c,user.id)) return action==='photo'?c.json({error:'请先加入出租计划'},403):c.text('请先加入出租计划',403)
   try {
-    if (action==='join') await joinC2C(c,user.id)
+    if (action==='join') await joinC2C(c,user.id,(await c.req.parseBody()).mode)
     else if (action==='photo') return c.json(await uploadC2CPhoto(c,user.id,await c.req.parseBody()))
     else if (action==='pause') await pauseC2CListing(c,(c.req.param('id') || ''),user.id)
     else await submitC2CListing(c,user.id,await c.req.parseBody(),action==='edit'?(c.req.param('id') || ''):undefined)
