@@ -857,6 +857,7 @@ app.use('*', async (c, next) => {
     : c.req.method === 'POST' && c.req.path.startsWith('/rent/') ? ['rental-link-booking', 10, 900] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/admin/rental-links') ? ['rental-link-admin', 30, 600] as const
     : c.req.method === 'POST' && (c.req.path === '/admin/orders/new' || /^\/admin\/orders\/[^/]+\/edit$/.test(c.req.path)) ? ['admin-manual-order', 60, 600] as const
+    : c.req.method === 'POST' && c.req.path === '/customer/c2c/photos' ? ['c2c-photo-upload', 20, 3600] as const
     : c.req.method === 'POST' && (c.req.path.startsWith('/customer/c2c') || c.req.path.startsWith('/admin/c2c')) ? ['c2c-write', 30, 600] as const
     : c.req.path === '/verify' ? ['contract-verify', 30, 600] as const
     : c.req.path === '/admin/connectivity/check' ? ['connectivity-check', 10, 60] as const
@@ -2481,6 +2482,8 @@ app.get('/customer/c2c', async (c) => {
   if (user.role!=='CUSTOMER' || (user.accountType ?? user.account_type ?? 'formal')!=='formal') return c.html(renderForbidden(),403)
   return c.html(await pages.renderCustomerC2C(c,user))
 })
+app.post('/customer/c2c/join', c => actions.customerC2CAction(c,'join'))
+app.post('/customer/c2c/photos', c => actions.customerC2CAction(c,'photo'))
 app.post('/customer/c2c', c => actions.customerC2CAction(c,'submit'))
 app.post('/customer/c2c/:id/edit', c => actions.customerC2CAction(c,'edit'))
 app.post('/customer/c2c/:id/pause', c => actions.customerC2CAction(c,'pause'))

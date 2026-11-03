@@ -7,12 +7,16 @@ import type { Context } from 'hono'
 import { nanoid } from 'nanoid'
 import { sanitizePlainText } from '../lib/html'
 import { createAuditLog } from './audit'
+import { getCloudinaryRuntimeConfig, uploadCloudinaryImage } from '../lib/cloudinary'
+import { validateHostedImageUrls } from '../lib/hostedImages'
+import { C2C_PHOTO_SLOTS, hasRequiredC2CPhotos } from '../domain/c2cPhotos'
+import type { C2CPhotos } from '../domain/c2cPhotos'
 import { createNotification } from './notifications'
 import { parsePageRequest, clampPageRequest, buildPaginationMeta } from '../lib/pagination'
 
 export interface C2CListing {
   id: string; owner_id: string; device_id: string; name: string; model: string;
-  serial_number: string; description: string; daily_rate: number; deposit: number;
+  serial_number: string; description: string; photos_json: string; daily_rate: number; deposit: number;
   status: 'pending' | 'approved' | 'rejected' | 'paused'; review_note: string; owner_name?: string;
 }
 export interface C2CQuote {
@@ -21,6 +25,35 @@ export interface C2CQuote {
   eligible: number; bsb: string; account_number: string; transfer_reference?: string; settled_at?: string;
 }
 
+export async function isC2CMember(c: Context,userId: string): Promise<boolean> {
+  return Boolean(await c.env.RENT.prepare('SELECT user_id FROM c2c_memberships WHERE user_id=?').bind(userId).first())
+}
+export async function joinC2C(c: Context,userId: string): Promise<void> {
+  const result=await c.env.RENT.prepare('INSERT OR IGNORE INTO c2c_memberships (user_id) VALUES (?)').bind(userId).run()
+  if (result.meta.changes) await createAuditLog(c,{action:'C2C_JOIN',targetType:'user',targetId:userId})
+}
+export async function uploadC2CPhoto(c: Context,ownerId: string,form: Record<string,unknown>) {
+  if (!await isC2CMember(c,ownerId)) throw new Error('请先加入出租计划')
+  const slot=String(form.slot || '')
+  if (!C2C_PHOTO_SLOTS.some(item=>item.key===slot)) throw new Error('请选择照片部位')
+  const url=validateHostedImageUrls(await uploadCloudinaryImage(form.file,await getCloudinaryRuntimeConfig(c),'rent/c2c'),1)[0]
+  const id=`c2cp-${nanoid(16)}`
+  await c.env.RENT.prepare('INSERT INTO c2c_photos (id,owner_id,slot,url) VALUES (?,?,?,?)').bind(id,ownerId,slot,url).run()
+  return {id,url}
+}
+async function listingPhotos(c: Context,ownerId: string,form: Record<string,unknown>): Promise<C2CPhotos> {
+  const selected=C2C_PHOTO_SLOTS.map(slot=>({...slot,id:String(form[`photo_${slot.key}`] || '')}))
+  if (selected.some(slot=>(slot.required && !slot.id) || (slot.id && !/^c2cp-[A-Za-z0-9_-]{16}$/.test(slot.id)))) throw new Error('请上传设备 A、B、C、D 面及屏幕开机照片')
+  const ids=selected.filter(slot=>slot.id).map(slot=>slot.id)
+  const rows=(await c.env.RENT.prepare(`SELECT id,slot,url FROM c2c_photos WHERE owner_id=? AND id IN (${ids.map(()=>'?').join(',')})`).bind(ownerId,...ids).all()).results as {id:string;slot:string;url:string}[]
+  const photos: C2CPhotos={}
+  for (const slot of selected.filter(slot=>slot.id)) {
+    const photo=rows.find(row=>row.id===slot.id && row.slot===slot.key)
+    if (!photo) throw new Error('照片无效，请重新上传')
+    photos[slot.key]={id:photo.id,url:validateHostedImageUrls(photo.url,1)[0]}
+  }
+  return photos
+}
 export function commissionBps(value: unknown): number {
   const text = String(value ?? '').trim()
   if (!/^\d{1,3}(?:\.\d{1,2})?$/.test(text) || Number(text) > 100) throw new Error('请输入 0 至 100 的佣金比例')
@@ -48,13 +81,14 @@ export async function listC2CQuotes(c: Context, ownerId?: string) {
   return {quotes,meta:buildPaginationMeta(count.total,page,quotes.length)}
 }
 export async function c2cBookingError(c: Context, deviceId: string, customerId: string): Promise<string | null> {
-  const listing = await c.env.RENT.prepare(`SELECT l.owner_id, l.status, u.status AS owner_status, u.deleted_at
-    FROM c2c_listings l JOIN users u ON u.id=l.owner_id WHERE l.device_id=?`).bind(deviceId).first() as any
+  const listing = await c.env.RENT.prepare(`SELECT l.owner_id, l.status, u.status AS owner_status, u.deleted_at, l.photos_json, m.user_id AS member_id
+    FROM c2c_listings l JOIN users u ON u.id=l.owner_id LEFT JOIN c2c_memberships m ON m.user_id=l.owner_id WHERE l.device_id=?`).bind(deviceId).first() as any
   if (!listing) return null
   if (listing.owner_id === customerId) return '不能租赁自己发布的设备'
-  return listing.status !== 'approved' || listing.owner_status !== 'active' || listing.deleted_at ? '该设备暂不可租' : null
+  return listing.status !== 'approved' || listing.owner_status !== 'active' || listing.deleted_at || !listing.member_id || !hasRequiredC2CPhotos(listing.photos_json) ? '该设备暂不可租' : null
 }
 export async function submitC2CListing(c: Context, ownerId: string, form: Record<string, unknown>, id?: string): Promise<void> {
+  if (!await isC2CMember(c,ownerId)) throw new Error('请先加入出租计划')
   const text = (key: string, max: number) => sanitizePlainText(form[key], max)
   const name=text('name',120), model=text('model',120), serial=text('serialNumber',120), description=text('description',2000)
   const amount = (key: string) => {
@@ -65,13 +99,14 @@ export async function submitC2CListing(c: Context, ownerId: string, form: Record
   if (!name || !model || !serial || !Number.isFinite(daily) || daily<=0 || daily>100000 || !Number.isFinite(deposit) || deposit<0 || deposit>1000000) throw new Error('请填写设备信息和有效金额')
   const duplicate=await c.env.RENT.prepare('SELECT id FROM devices WHERE serialNumber=? AND id<>? UNION ALL SELECT id FROM c2c_listings WHERE serial_number=? AND id<>? LIMIT 1').bind(serial,id ? `d-${id}` : '',serial,id || '').first()
   if (duplicate) throw new Error('设备序列号已存在')
+  const photos=JSON.stringify(await listingPhotos(c,ownerId,form))
   if (id) {
-    const result=await c.env.RENT.prepare(`UPDATE c2c_listings SET name=?,model=?,serial_number=?,description=?,daily_rate=?,deposit=?,status='pending',review_note='',reviewed_by=NULL,reviewed_at=NULL,updated_at=CURRENT_TIMESTAMP
-      WHERE id=? AND owner_id=? AND status IN ('rejected','paused')`).bind(name,model,serial,description,daily,deposit,id,ownerId).run()
+    const result=await c.env.RENT.prepare(`UPDATE c2c_listings SET name=?,model=?,serial_number=?,description=?,daily_rate=?,deposit=?,photos_json=?,status='pending',review_note='',reviewed_by=NULL,reviewed_at=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND owner_id=? AND status IN ('rejected','paused')`).bind(name,model,serial,description,daily,deposit,photos,id,ownerId).run()
     if (!result.meta.changes) throw new Error('设备当前不可编辑')
   } else {
     id=`c2c-${nanoid(16)}`
-    await c.env.RENT.prepare('INSERT INTO c2c_listings (id,owner_id,device_id,name,model,serial_number,description,daily_rate,deposit) VALUES (?,?,?,?,?,?,?,?,?)').bind(id,ownerId,`d-${id}`,name,model,serial,description,daily,deposit).run()
+    await c.env.RENT.prepare('INSERT INTO c2c_listings (id,owner_id,device_id,name,model,serial_number,description,daily_rate,deposit,photos_json) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(id,ownerId,`d-${id}`,name,model,serial,description,daily,deposit,photos).run()
   }
   await createAuditLog(c,{action:'C2C_SUBMIT',targetType:'c2c_listing',targetId:id})
 }
@@ -82,6 +117,7 @@ export async function reviewC2CListing(c: Context, id: string, action: string, n
   const db=c.env.RENT
   const statements=[]
   if (action==='approve') {
+    if (!await isC2CMember(c,listing.owner_id) || !hasRequiredC2CPhotos(listing.photos_json)) throw new Error('请先补齐设备照片并加入出租计划')
     // The listing remains pending until the device and review commit together.
     statements.push(db.prepare(`INSERT INTO devices (id,name,model,serialNumber,description,pricePerDay,depositAmount,status,lifecycle_status)
       SELECT device_id,name,model,serial_number,description,daily_rate,deposit,'available','READY' FROM c2c_listings WHERE id=? AND status='pending'

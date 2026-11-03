@@ -12,6 +12,9 @@ import worker from '../src/index'
 import { createAuthSession, invalidateSystemSettingsCache } from '../src/site'
 import { getRevenueData } from '../src/pages/admin/revenueStats'
 import { renderAdminFinance } from '../src/pages/admin/finance'
+import { C2C_PHOTO_SLOTS, hasRequiredC2CPhotos, parseC2CPhotos } from '../src/domain/c2cPhotos'
+import { c2cPhotoUploadScript, renderC2CPhotoFields, renderC2CPhotoGallery } from '../src/pages/partials/c2cPhotos'
+import { maxRequestBodyBytes, UPLOAD_BODY_LIMIT_BYTES, DEFAULT_BODY_LIMIT_BYTES } from '../src/lib/security'
 import { commissionBps, c2cSettlementQuote } from '../src/services/c2c'
 
 test('C2C publishing, booking ownership, rental accounting and manual settlements', async t => {
@@ -38,18 +41,73 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
     try {const result=[];for(const s of statements)result.push(await s.run());sqlite.exec('COMMIT');return result}
     catch(error){sqlite.exec('ROLLBACK');throw error}
   }}
-  const env={RENT:db}; const c={env,req:{url:'https://rent.example.test/',header:()=>undefined}} as any
+  const env={RENT:db,CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'test-key',CLOUDINARY_API_SECRET:'test-secret'}; const c={env,req:{url:'https://rent.example.test/',header:()=>undefined}} as any
   const sessions=new Map<string,string>()
   for (const actor of ['owner','renter','other','staff','admin','guest']) sessions.set(actor,(await createAuthSession(c,actor)).token)
-  const request=(path: string,actor='owner',form?: Record<string,string>,origin='https://rent.example.test')=>worker.fetch(new Request(`https://rent.example.test${path}`,{
-    method:form?'POST':'GET',body:form?new URLSearchParams(form):undefined,
-    headers:{Cookie:`session=${sessions.get(actor)||''}`,Origin:origin,'Sec-Fetch-Site':origin==='https://rent.example.test'?'same-origin':'cross-site'}
+  const request=(path: string,actor='owner',form?: Record<string,string> | FormData,origin='https://rent.example.test')=>worker.fetch(new Request(`https://rent.example.test${path}`,{
+    method:form?'POST':'GET',body:form instanceof FormData?form:form?new URLSearchParams(form):undefined,
+    headers:{Cookie:`session=${sessions.get(actor)||''}`,Origin:origin,'CF-Connecting-IP':actor,'Sec-Fetch-Site':origin==='https://rent.example.test'?'same-origin':'cross-site'}
   }),env,{waitUntil(){}} as any)
   const row=(sql: string,...args: any[])=>sqlite.prepare(sql).get(...args) as any
   const settleForm=(reference: string)=>({reference,quote:c2cSettlementQuote(row("SELECT * FROM c2c_settlement_quotes WHERE order_id='rental'"))})
   const listing=()=>row('SELECT * FROM c2c_listings LIMIT 1')
-  const form={name:'个人笔记本 <img src=x onerror=alert(1)>',model:'M4" autofocus onfocus="alert(1)',serialNumber:'C2C-TEST',dailyRate:'20.50',deposit:'200',description:'设备描述 <script>alert(1)</script>'}
+  const form: Record<string,string>={name:'个人笔记本 <img src=x onerror=alert(1)>',model:'M4" autofocus onfocus="alert(1)',serialNumber:'C2C-TEST',dailyRate:'20.50',deposit:'200',description:'设备描述 <script>alert(1)</script>'}
 
+  let uploaded=0, unsafeUpload=false
+  t.mock.method(globalThis,'fetch',async (input: any,init: RequestInit)=>{
+    assert.equal(String(input),'https://api.cloudinary.com/v1_1/demo/image/upload')
+    const body=init.body as FormData
+    assert.equal(body.get('folder'),'rent/c2c')
+    assert.ok(body.get('file') instanceof File)
+    uploaded++
+    return Response.json({secure_url:unsafeUpload?'https://127.0.0.1/image.png':`https://res.cloudinary.com/demo/image/upload/photo-${uploaded}.png`})
+  })
+  const photoBody=(slot='a',type='image/png',size=32)=>{
+    const body=new FormData();body.set('slot',slot);body.set('file',new File([new Uint8Array(size)],'device.png',{type}));return body
+  }
+  await t.test('membership is explicit, idempotent and required for uploads and publishing',async()=>{
+    const landing=await (await request('/customer/c2c')).text()
+    assert.match(landing,/加入出租计划/);assert.doesNotMatch(landing,/id="c2c-listing-form"/)
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_memberships').n,0)
+    assert.equal((await request('/customer/c2c','owner',form)).status,403)
+    assert.equal((await request('/customer/c2c/photos','owner',photoBody())).status,403)
+    assert.equal(uploaded,0)
+    assert.equal((await request('/customer/c2c/join','staff',{})).status,403)
+    assert.equal((await request('/customer/c2c/join','guest',{})).headers.get('location'),'/customer/guest')
+    assert.equal((await request('/customer/c2c/join','owner',{},'https://evil.example.test')).status,403)
+    await request('/customer/c2c/join','owner',{});await request('/customer/c2c/join','owner',{})
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_memberships').n,1)
+    const joined=await (await request('/customer/c2c')).text()
+    assert.match(joined,/id="c2c-listing-form"/)
+    assert.equal((joined.match(/accept="image\/jpeg,image\/png,image\/webp"/g)||[]).length,6)
+  })
+  await t.test('five required photo angles are enforced and uploaded assets are owner and slot bound',async()=>{
+    assert.match((await request('/customer/c2c','owner',form)).headers.get('location') || '',/error=/)
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_listings').n,0)
+    assert.equal((await request('/customer/c2c/photos','owner',photoBody('wrong'))).status,400)
+    assert.equal((await request('/customer/c2c/photos','owner',photoBody('a','text/plain'))).status,400)
+    assert.equal((await request('/customer/c2c/photos','owner',photoBody('a','image/png',5*1024*1024+1))).status,400)
+    assert.equal((await request('/customer/c2c/photos','owner',photoBody('a','image/png',6*1024*1024+1))).status,413)
+    assert.equal(uploaded,0)
+    unsafeUpload=true
+    assert.equal((await request('/customer/c2c/photos','owner',photoBody())).status,400)
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_photos').n,0)
+    unsafeUpload=false
+    for (const slot of C2C_PHOTO_SLOTS) {
+      const response=await request('/customer/c2c/photos','owner',photoBody(slot.key))
+      assert.equal(response.status,200)
+      const photo=await response.json() as {id:string;url:string}
+      assert.match(photo.id,/^c2cp-/);assert.match(photo.url,/^https:\/\/res.cloudinary.com/)
+      form[`photo_${slot.key}`]=photo.id
+    }
+    assert.equal(row('SELECT COUNT(*) AS n FROM c2c_photos').n,6)
+    await request('/customer/c2c/join','other',{})
+    const foreign=await (await request('/customer/c2c/photos','other',photoBody())).json() as {id:string}
+    for (const bad of [{...form,photo_power:''},{...form,photo_a:'https://example.test/forged.png'},{...form,photo_a:form.photo_b},{...form,photo_a:foreign.id}]) {
+      assert.match((await request('/customer/c2c','owner',bad)).headers.get('location') || '',/error=/)
+      assert.equal(row('SELECT COUNT(*) AS n FROM c2c_listings').n,0)
+    }
+  })
   await t.test('only formal customers can submit; admin actions and CSRF are guarded',async()=>{
     assert.equal((await request('/customer/c2c','staff')).status,403)
     assert.equal((await request('/admin/c2c','owner')).status,403)
@@ -61,6 +119,8 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
     assert.equal(row('SELECT COUNT(*) AS n FROM c2c_listings').n,0)
     await request('/customer/c2c','owner',form)
     assert.equal(listing().status,'pending')
+    assert.ok(hasRequiredC2CPhotos(listing().photos_json))
+    assert.equal(Object.keys(parseC2CPhotos(listing().photos_json)).length,6)
     assert.doesNotMatch(listing().name,/<img/)
     assert.equal(row('SELECT id FROM devices WHERE id=?',listing().device_id),undefined)
     assert.doesNotMatch(await (await request('/customer/devices?mode=c2c','renter')).text(),/C2C-TEST/)
@@ -68,9 +128,13 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
   await t.test('review, isolation, resubmission and owner booking rejection',async()=>{
     assert.equal((await request('/customer/profile/delete-account','owner',{confirmDelete:'on'})).status,409)
     const id=listing().id
+    const review=await (await request('/admin/c2c','admin')).text()
+    assert.match(review,/alt="屏幕开机画面"/);assert.match(review,/photo-2.png/)
     await request(`/admin/c2c/${id}/review`,'admin',{action:'reject',note:'请补充信息'})
     assert.equal(listing().status,'rejected')
     await request(`/customer/c2c/${id}/edit`,'other',form)
+    assert.equal(listing().status,'rejected')
+    await request(`/customer/c2c/${id}/edit`,'owner',{...form,photo_power:''})
     assert.equal(listing().status,'rejected')
     await request(`/customer/c2c/${id}/edit`,'owner',form)
     await request(`/admin/c2c/${id}/review`,'admin',{action:'approve'})
@@ -188,4 +252,17 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
 test('C2C commission accepts zero and 100 percent and rejects malformed input',()=>{
   assert.equal(commissionBps('0'),0);assert.equal(commissionBps('100'),10000);assert.equal(commissionBps('12.34'),1234)
   for(const input of ['',null,'-1','100.01','NaN','Infinity','1.001','0x10'])assert.throws(()=>commissionBps(input))
+})
+
+test('photo rendering is safe and uploads use a bounded dedicated endpoint',()=>{
+  assert.doesNotThrow(()=>new Function(c2cPhotoUploadScript.replace(/^<script>|<\/script>$/g,'')))
+  assert.equal(maxRequestBodyBytes('/customer/c2c/photos','POST'),UPLOAD_BODY_LIMIT_BYTES)
+  assert.equal(maxRequestBodyBytes('/customer/c2c','POST'),DEFAULT_BODY_LIMIT_BYTES)
+  assert.equal(maxRequestBodyBytes('/customer/c2c/photos','GET'),DEFAULT_BODY_LIMIT_BYTES)
+  assert.equal(hasRequiredC2CPhotos('{}'),false)
+  assert.deepEqual(parseC2CPhotos('{"a":{"id":"c2cp-1234567890123456","url":"https://127.0.0.1/x"}}'),{})
+  assert.equal(renderC2CPhotoGallery('{"a":{"id":"c2cp-1234567890123456","url":"javascript:alert(1)"}}'),'')
+  const saved=JSON.stringify({a:{id:'c2cp-1234567890123456',url:'https://images.example.test/a.png'}})
+  assert.match(renderC2CPhotoFields(saved),/name="photo_a" value="c2cp-1234567890123456"/)
+  assert.match(renderC2CPhotoGallery(saved),/target="_blank" rel="noopener noreferrer"/)
 })

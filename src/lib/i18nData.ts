@@ -25,6 +25,31 @@ export interface I18nDomainGroup {
 // @domain common —— 早期扁平字典（导航 / 表格 / 状态 / 表单混在一起，保留避免回归）
 // 新条目请按语义追加到下方对应分区，不要在这里继续堆。
 const common: Readonly<Record<string, string>> = {
+  '面（顶盖）': 'Lid',
+  '面（屏幕）': 'Screen',
+  '面（键盘）': 'Keyboard',
+  '面（底盖）': 'Base',
+  '立即加入': 'Join now',
+
+  '出租计划': 'Rental owner program',
+  '加入出租计划': 'Join the rental owner program',
+  '已加入出租计划': 'Joined the rental owner program',
+  '请先加入出租计划': 'Join the rental owner program first',
+  '请选择照片部位': 'Select a photo angle',
+  '请上传设备 A、B、C、D 面及屏幕开机照片': 'Upload all four sides and the powered-on screen',
+  '照片无效，请重新上传': 'Invalid photo. Upload it again',
+  '请先补齐设备照片并加入出租计划': 'Complete the photos and join the rental owner program first',
+  'A 面（顶盖）': 'Side A (lid)',
+  'B 面（屏幕）': 'Side B (screen)',
+  'C 面（键盘）': 'Side C (keyboard)',
+  'D 面（底盖）': 'Side D (base)',
+  '屏幕开机画面': 'Powered-on screen',
+  '配件与接口（选填）': 'Accessories and ports (optional)',
+  '设备照片': 'Device photos',
+  'JPG、PNG、WebP，单张不超过 5MB': 'JPG, PNG or WebP, up to 5 MB each',
+  '已上传': 'Uploaded',
+  '正在上传…': 'Uploading…',
+
   '请刷新后核对结算金额和收款账户': 'Refresh and verify the settlement amount and bank account',
   '请先下架个人设备并结清出租订单': 'Withdraw your personal devices and settle rental orders first',
 

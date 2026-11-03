@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { renderC2CPhotoGallery } from '../partials/c2cPhotos';
 import { c2cBookingError } from '../../services/c2c';
 import { rentalPricingClientScript } from '../../domain/rentalPricing';
 import { buildLayout, getDeviceById, formatCurrency, getDeviceRentalRules } from '../../site';
@@ -31,6 +32,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
   if (!device) {
     return buildLayout('租赁设备 - 电脑租赁管理系统', '<div class="panel"><h2>设备未找到</h2><p>您请求租赁的设备不存在。</p></div>', user);
   }
+  const listingPhotos = await c.env.RENT.prepare('SELECT photos_json FROM c2c_listings WHERE device_id=?').bind(deviceId).first() as {photos_json:string} | null;
   const rentalRules = await getDeviceRentalRules(c, deviceId)
   const pickupSlots = pickupTimeSlots(rentalRules)
   const bookingRanges = ((await c.env.RENT.prepare("SELECT startDate, endDate, startPeriod, endPeriod FROM orders WHERE deviceId = ? AND deleted_at IS NULL AND status NOT IN ('completed', 'cancelled')").bind(deviceId).all()).results || []) as any[]
@@ -56,7 +58,7 @@ export async function renderCustomerRent(c: Context, deviceId: string, user: any
     <div class="panel">
       <div class="section-title"><h2>租赁设备: ${escapeHtml(device.name)}</h2></div>
       ${errorMessage ? `<div data-flash-notice class="page-notification page-notification--error">${errorMessage}</div>` : ''}
-      <form method="POST" action="/customer/rent/${device.id}">
+      ${renderC2CPhotoGallery(listingPhotos?.photos_json)}<form method="POST" action="/customer/rent/${device.id}">
         <div class="form-group">
           <label class="form-label" for="deviceName">设备名称</label>
           <input type="text" id="deviceName" class="form-control" value="${escapeHtml(device.name)}" readonly />
