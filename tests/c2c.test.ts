@@ -225,7 +225,7 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
     assert.equal(row('SELECT COUNT(*) AS n FROM c2c_settlements').n,0)
     sqlite.exec("UPDATE users SET account_number='12345678' WHERE id='owner'")
     const adminPage=await (await request('/admin/rental-program','admin')).text()
-    assert.match(adminPage,/登记结算/)
+    assert.match(adminPage,/出租结算转账/)
     const [first,second]=await Promise.all([request('/admin/rental-program/orders/rental/settle','admin',settleForm('TRANSFER-1')),request('/admin/rental-program/orders/rental/settle','admin',settleForm('TRANSFER-1'))])
     assert.equal(first.status,303);assert.equal(second.status,303)
     assert.equal(row('SELECT COUNT(*) AS n FROM c2c_settlements').n,1)

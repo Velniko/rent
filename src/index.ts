@@ -9,6 +9,8 @@ import { getTranslationConfigSummary } from './translationConfig'
 import { handleTranslation } from './services/translation'
 import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
+import { runRentalPayouts } from './services/rentalPayouts'
+import { rentalPickupBlocks,rentalPickupBlocked } from './services/rentalPickup'
 import { normalizeClientAccess, readClientAccess, clientFeatureForPath, consoleEssentialPath, clientMaintenanceHtml } from './clientAccess'
 import { websiteSessionStatus } from './auth/websiteSession'
 import * as pages from './pages/index'
@@ -16,7 +18,7 @@ import * as actions from './actions/index'
 import { sendPasswordResetEmail } from './auth/passwordReset'
 import { expireRentalLinkDrafts } from './services/rentalLinks'
 import { resolveRentalApplicationConflicts, RENTAL_APPLICATION_CONFLICT_MESSAGE } from './services/rentalApplications'
-import { serviceFeeRate, isUnavailablePickupTime } from './domain/pickupTimeSlots'
+import { HALF_HOUR_TIME_OPTIONS,pickupTimeMode,serviceFeeRate, isUnavailablePickupTime } from './domain/pickupTimeSlots'
 import { searchBusinessDocuments, documentPath, documentStatus, DOCUMENT_TYPES } from './services/documents'
 import { isCardDepositSettled } from './domain/paymentPlan'
 import { readAnnouncementForm, renderAnnouncementContent, renderAnnouncementTitle, renderAnnouncementMessage } from './domain/announcement'
@@ -222,11 +224,11 @@ function rentalPeriodPassed(date: string, period: string, today: string): boolea
   return date === today && melbourneMinutesNow() >= (period === 'AM' ? 12 * 60 : 23 * 60)
 }
 
-const PICKUP_TIME_SLOTS = new Set(['morning_service', 'morning', 'afternoon', 'evening_service'])
+const PICKUP_TIME_SLOTS = new Set(['morning_service', 'morning', 'afternoon', 'evening_service',...HALF_HOUR_TIME_OPTIONS])
 const SERVICE_FEE_TIME_SLOTS = new Set(['morning_service', 'evening_service'])
 
 function pickupTimeSlotPeriod(slot: string): 'AM' | 'PM' {
-  return slot === 'afternoon' || slot === 'evening_service' ? 'PM' : 'AM'
+  return slot === 'afternoon' || slot === 'evening_service' || (HALF_HOUR_TIME_OPTIONS.includes(slot) && slot>='12:00') ? 'PM' : 'AM'
 }
 
 function pickupTimeSlotPassed(date: string, slot: string, today: string, rentalRules: any): boolean {
@@ -285,7 +287,7 @@ async function getTableColumns(c: any, tableName: string): Promise<string[]> {
   return Array.from(await getCachedTableColumns(c.env.RENT, tableName))
 }
 
-import { c2cBookingError } from './services/c2c'
+import { c2cBookingError,isC2CMember } from './services/c2c'
 import { deliverC2CEmails } from './services/c2cEmails'
 
 const app = new Hono()
@@ -905,7 +907,7 @@ app.use('*', async (c, next) => {
     : /^\/customer\/orders\/[^/]+\/square\/(?:config|payment)$/.test(c.req.path) ? ['square-payment', 10, 600] as const
     : c.req.method === 'POST' && /^\/customer\/orders\/[^/]+\/(?:receipt|invoice\/send)/.test(c.req.path) ? ['receipt-send', 10, 3600] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/admin/contracts/template') ? ['contract-template-write', 30, 600] as const
-    : c.req.method === 'POST' && c.req.path.startsWith('/admin/settings') ? ['admin-settings-write', 60, 600] as const
+    : c.req.method === 'POST' && (c.req.path.startsWith('/admin/settings') || c.req.path.startsWith('/admin/rental-settlements')) ? ['admin-settings-write', 60, 600] as const
     : c.req.path === '/admin/orders/export' ? ['orders-export', 10, 3600] as const
     : c.req.path === '/api/search' ? ['global-search', 120, 60] as const
     : c.req.path === '/api/contract-sign/coupon-preview' ? ['coupon-preview', 30, 60] as const
@@ -1842,7 +1844,7 @@ app.get('/admin/notifications', async (c) => {
   if (!user || user.role !== 'ADMIN') return c.redirect('/login')
   await ensureNotificationsTable(c)
   const notifications = (await getNotifications(c, user.id)).filter((item: any) => item.type !== 'announcement')
-  const body = `<div class="page-header"><div><p class="section-code">ADMIN INBOX</p><h2>管理员通知中心</h2><p>这里显示充值、退款、付款审核、推荐风险审核和其他系统业务通知。</p></div><a class="button button-secondary" href="/notifications">发布通知</a></div><section class="panel"><div class="section-title"><h3>业务通知</h3><span class="section-note">共 ${notifications.length} 条</span></div>${notifications.length ? `<div class="admin-notification-cards">${notifications.map((item: any) => { const typeLabel = item.type === 'rental_application' ? '租赁申请' : item.type === 'referral_risk_review' ? '推荐风险审核' : item.type === 'payment_review_submitted' ? '付款凭证待审核' : item.type === 'payment_review_overdue' ? '付款审核逾期' : item.type || '系统通知'; return `<a class="admin-notification-card ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><span class="admin-notification-card__type">${sanitizePlainText(typeLabel, 40)}</span><div class="admin-notification-card__content"><strong>${sanitizePlainText(item.title, 200)}</strong><p>${sanitizePlainText(notificationPlainText(item.message), 180)}</p><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` }).join('')}</div>` : '<p class="empty-state">暂无业务通知</p>'}</section>`
+  const body = `<div class="page-header"><div><p class="section-code">ADMIN INBOX</p><h2>管理员通知中心</h2><p>这里显示充值、退款、付款审核、推荐风险审核和其他系统业务通知。</p></div><a class="button button-secondary" href="/notifications">发布通知</a></div><section class="panel"><div class="section-title"><h3>业务通知</h3><span class="section-note">共 ${notifications.length} 条</span></div>${notifications.length ? `<div class="admin-notification-cards">${notifications.map((item: any) => { const typeLabel = item.type === 'c2c_payout_pending' ? '出租结算待转账' : item.type === 'rental_application' ? '租赁申请' : item.type === 'referral_risk_review' ? '推荐风险审核' : item.type === 'payment_review_submitted' ? '付款凭证待审核' : item.type === 'payment_review_overdue' ? '付款审核逾期' : item.type || '系统通知'; return `<a class="admin-notification-card ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><span class="admin-notification-card__type">${sanitizePlainText(typeLabel, 40)}</span><div class="admin-notification-card__content"><strong>${sanitizePlainText(item.title, 200)}</strong><p>${sanitizePlainText(notificationPlainText(item.message), 180)}</p><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` }).join('')}</div>` : '<p class="empty-state">暂无业务通知</p>'}</section>`
   return c.html(buildLayout('管理员通知中心', body, user))
 })
 
@@ -2431,6 +2433,7 @@ app.get('/notifications/:id', async (c) => {
   const item = await c.env.RENT.prepare("SELECT * FROM notifications WHERE id = ? AND recipient_id = ? AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)").bind(c.req.param('id'), user.id).first() as any
   if (!item) return c.html(renderNotFound(), 404)
   await c.env.RENT.prepare('UPDATE notifications SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP) WHERE id = ? AND recipient_id = ?').bind(item.id, user.id).run()
+  if (user.role === 'ADMIN' && item.type === 'c2c_payout_pending') return c.redirect('/admin/rental-settlements')
   if (user.role === 'ADMIN' && item.type === 'rental_application') return c.redirect('/admin/order-review')
   const orderPath = item.order_id ? (user.role === 'ADMIN' ? `/admin/orders/${item.order_id}` : user.role === 'STAFF' ? `/staff/orders/${item.order_id}` : `/customer/orders/${item.order_id}`) : ''
   const body = `<div class="panel notification-detail"><div class="section-title"><div><p class="section-code">NOTIFICATION DETAIL</p><h2>${item.type === 'announcement' ? renderAnnouncementTitle(item) : sanitizePlainText(item.title, 200)}</h2><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div><a class="button button-secondary" href="/notifications">返回通知中心</a></div><div class="notification-message">${item.type === 'announcement' ? renderAnnouncementMessage(item) : renderNotificationMarkdown(normalizeDisplayedNotification(item))}</div>${orderPath ? `<a class="button button-secondary" href="${orderPath}">查看订单</a>` : ''}</div>`
@@ -2518,6 +2521,30 @@ app.post('/admin/c2c/:id/review',c=>actions.adminC2CAction(c,'review'))
 app.post('/admin/c2c/:id/pause',c=>actions.adminC2CAction(c,'pause'))
 app.post('/admin/c2c/orders/:orderId/settle',c=>actions.adminC2CAction(c,'settle'))
 
+app.get('/customer/rental-program/settlements',async c=>{
+  const user=c.get('user')
+  if(!user||user.role!=='CUSTOMER'||(user.accountType ?? user.account_type ?? 'formal')!=='formal'||!await isC2CMember(c,user.id))return c.html(renderForbidden(),403)
+  return c.html(await pages.renderCustomerRentalSettlements(c,user))
+})
+app.post('/customer/rental-program/settlements/preferences',c=>actions.customerRentalSettlementAction(c,'preferences'))
+app.post('/customer/rental-program/settlements/request',c=>actions.customerRentalSettlementAction(c,'request'))
+app.get('/admin/rental-settlements',async c=>{
+  const user=c.get('user')
+  if(!user||user.role!=='ADMIN')return c.html(renderForbidden(),403)
+  return c.html(await pages.renderAdminRentalSettlements(c,user))
+})
+app.post('/admin/rental-settlements/:id/paid',c=>actions.adminRentalSettlementAction(c,'paid'))
+app.post('/admin/rental-settlements/:id/refresh',c=>actions.adminRentalSettlementAction(c,'refresh'))
+app.get('/customer/rental-program/:id/pickup',async c=>{
+  const user=c.get('user')
+  if(!user||user.role!=='CUSTOMER'||(user.accountType ?? user.account_type ?? 'formal')!=='formal')return c.html(renderForbidden(),403)
+  const listing=await c.env.RENT.prepare('SELECT * FROM c2c_listings WHERE id=? AND owner_id=?').bind(c.req.param('id'),user.id).first()
+  if(!listing)return c.html(renderForbidden(),403)
+  return c.html(await pages.renderRentalPickupEditor(c,user,listing))
+})
+app.post('/customer/rental-program/:id/pickup-blocks',c=>actions.customerC2CAction(c,'pickup-add'))
+app.post('/customer/rental-program/:id/pickup-blocks/:blockId/remove',c=>actions.customerC2CAction(c,'pickup-remove'))
+
 app.get('/customer/rental-program', async (c) => {
   const user=c.get('user')
   if (!user) return c.redirect('/login')
@@ -2577,6 +2604,10 @@ app.post('/customer/rent/:id', async (c) => {
   const deliveryAddress = String(form.deliveryAddress || '').trim().slice(0, 1000)
   const rentalNote = String(form.rentalNote || '').trim().slice(0, 500)
   const couponCode = String(form.couponCode || '').trim().toUpperCase().slice(0, 40)
+  if(c2cDelivery && deliveryMethod==='Pickup'){
+    const blocks=await rentalPickupBlocks(c,c.req.param('id'))
+    if(rentalPickupBlocked(blocks,startDate,pickupTimeSlot)||rentalPickupBlocked(blocks,endDate,returnTimeSlot))return c.html(await pages.renderCustomerRent(c,c.req.param('id'),user,'设备主人在所选时段无法交付，请选择其他取还时间'),400)
+  }
   // 校验失败重新渲染时回填用户已填内容（不包含敏感字段）。
   const rentPrefill = { startDate, endDate, startPeriod: String(form.startPeriod || ''), endPeriod: String(form.endPeriod || ''), deliveryMethod, pickupTimeSlot, returnTimeSlot, deliveryAddress, rentalNote, couponCode }
   const start = new Date(`${startDate}T00:00:00Z`)
@@ -2600,6 +2631,7 @@ app.post('/customer/rent/:id', async (c) => {
   }
   const selectedTimeUnavailable = deliveryMethod === 'Pickup' && (
     !PICKUP_TIME_SLOTS.has(pickupTimeSlot) || !PICKUP_TIME_SLOTS.has(returnTimeSlot)
+    || [pickupTimeSlot,returnTimeSlot].some(slot=>HALF_HOUR_TIME_OPTIONS.includes(slot)&&!pickupTimeMode(slot,rentalRules))
     || pickupTimeSlotPassed(startDate, pickupTimeSlot, todayValue, rentalRules) || pickupTimeSlotPassed(endDate, returnTimeSlot, todayValue, rentalRules)
     || (rentalRules.unavailableTimeSlots?.[startDate] || []).includes(pickupTimeSlot)
     || (rentalRules.unavailableTimeSlots?.[endDate] || []).includes(returnTimeSlot)
@@ -2631,7 +2663,7 @@ app.post('/customer/rent/:id', async (c) => {
   }
   const rentAmount = calculateRentalFee(device, Math.ceil(halfDays / 2))
   const serviceFee = deliveryMethod === 'Pickup'
-    ? Number((rentAmount * serviceFeeRate(rentalRules) * [pickupTimeSlot, returnTimeSlot].filter((slot) => SERVICE_FEE_TIME_SLOTS.has(slot)).length).toFixed(2))
+    ? Number((rentAmount * serviceFeeRate(rentalRules) * [pickupTimeSlot, returnTimeSlot].filter((slot) => SERVICE_FEE_TIME_SLOTS.has(slot)||pickupTimeMode(slot,rentalRules)==='non_business').length).toFixed(2))
     : 0
   const depositPricing = riskDepositSnapshot(Number(device.depositAmount || 0), risk)
   const depositAmount = depositPricing.depositAmountBeforeWaiver
@@ -6714,6 +6746,7 @@ export default {
     const { cleanupExpiredAndCancelledContracts, cleanupExpiredGuestAccounts, cancelExpiredPendingPaymentOrders, notifyOverduePaymentProofs, runDataConsistencyChecks, releaseQualifiedReferralRewards, runMonitoringSweep, runScheduledJob, deliverPendingAgreementUpdates } = await import('./site')
 
     if (event.cron === '* * * * *') {
+      ctx.waitUntil(runScheduledJob(c,'rental_payout_requests',()=>runRentalPayouts(c)))
       ctx.waitUntil(runScheduledJob(c,'deliver_c2c_emails',async()=>{await loadSystemSettingsFromDB(c);return deliverC2CEmails(c)}))
       ctx.waitUntil(runScheduledJob(c, 'send_pickup_reminders', async () => {
         await loadSystemSettingsFromDB(c)

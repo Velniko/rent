@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { readRentalCity } from './rentalPickup'
 import type { Context } from 'hono'
 import { shippingAddressFromForm,formatShippingAddress } from '../domain/rentalProgramAddress'
 import { nanoid } from 'nanoid'
@@ -18,7 +19,7 @@ import { parsePageRequest, clampPageRequest, buildPaginationMeta } from '../lib/
 export interface C2CListing {
   id: string; owner_id: string; device_id: string; name: string; model: string;
   serial_number: string; description: string; photos_json: string; daily_rate: number; deposit: number;
-  listing_mode: C2CMode; pickup_address: string; pickup_address_json:string; listed_at: string | null; custody_received_at: string | null; pause_locked?:number; unlist_after?:string;
+  public_city:string; listing_mode: C2CMode; pickup_address: string; pickup_address_json:string; listed_at: string | null; custody_received_at: string | null; pause_locked?:number; unlist_after?:string;
   status: 'pending' | 'approved' | 'rejected' | 'paused'; review_note: string; owner_name?: string;
 }
 export interface C2CQuote {
@@ -122,6 +123,7 @@ export async function submitC2CListing(c: Context, ownerId: string, form: Record
   if (membership.mode==='self' && form.pickupAddress) throw new Error('地址表单已更新，请刷新后填写')
   const address=membership.mode==='managed'?null:shippingAddressFromForm(form,'pickup')
   const pickupAddress=membership.mode==='managed'?settings.shipping_address:formatShippingAddress(address!)
+  const publicCity=membership.mode==='managed'?'墨尔本':readRentalCity(form.publicCity,address?.city)
   const pickupAddressJson=membership.mode==='managed'?settings.shipping_address_json:JSON.stringify(address)
   if (pickupAddress.length>500) throw new Error('请填写有效的取件地址')
   if (!pickupAddress.trim()) throw new Error(membership.mode==='managed'?'托管模式暂未开放':'请填写取件地址')
@@ -137,12 +139,12 @@ export async function submitC2CListing(c: Context, ownerId: string, form: Record
   if (duplicate) throw new Error('设备序列号已存在')
   const photos=JSON.stringify(await listingPhotos(c,ownerId,form))
   if (id) {
-    const result=await c.env.RENT.prepare(`UPDATE c2c_listings SET name=?,model=?,serial_number=?,description=?,daily_rate=?,deposit=?,photos_json=?,listing_mode=?,pickup_address=?,pickup_address_json=?,listed_at=NULL,custody_received_at=NULL,status='pending',review_note='',reviewed_by=NULL,reviewed_at=NULL,updated_at=CURRENT_TIMESTAMP
-      WHERE id=? AND owner_id=? AND status IN ('rejected','paused') AND EXISTS(SELECT 1 FROM c2c_memberships WHERE user_id=? AND mode=?)`).bind(name,model,serial,description,daily,deposit,photos,membership.mode,pickupAddress,pickupAddressJson,id,ownerId,ownerId,membership.mode).run()
+    const result=await c.env.RENT.prepare(`UPDATE c2c_listings SET name=?,model=?,serial_number=?,description=?,daily_rate=?,deposit=?,photos_json=?,listing_mode=?,pickup_address=?,pickup_address_json=?,public_city=?,listed_at=NULL,custody_received_at=NULL,status='pending',review_note='',reviewed_by=NULL,reviewed_at=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND owner_id=? AND status IN ('rejected','paused') AND EXISTS(SELECT 1 FROM c2c_memberships WHERE user_id=? AND mode=?)`).bind(name,model,serial,description,daily,deposit,photos,membership.mode,pickupAddress,pickupAddressJson,publicCity,id,ownerId,ownerId,membership.mode).run()
     if (!result.meta.changes) throw new Error('设备当前不可编辑')
   } else {
     id=`c2c-${nanoid(16)}`
-    const result=await c.env.RENT.prepare('INSERT INTO c2c_listings (id,owner_id,device_id,name,model,serial_number,description,daily_rate,deposit,photos_json,listing_mode,pickup_address,pickup_address_json) SELECT ?,?,?,?,?,?,?,?,?,?,mode,?,? FROM c2c_memberships WHERE user_id=? AND mode=?').bind(id,ownerId,`d-${id}`,name,model,serial,description,daily,deposit,photos,pickupAddress,pickupAddressJson,ownerId,membership.mode).run()
+    const result=await c.env.RENT.prepare('INSERT INTO c2c_listings (id,owner_id,device_id,name,model,serial_number,description,daily_rate,deposit,photos_json,listing_mode,pickup_address,pickup_address_json,public_city) SELECT ?,?,?,?,?,?,?,?,?,?,mode,?,?,? FROM c2c_memberships WHERE user_id=? AND mode=?').bind(id,ownerId,`d-${id}`,name,model,serial,description,daily,deposit,photos,pickupAddress,pickupAddressJson,publicCity,ownerId,membership.mode).run()
     if (!result.meta.changes) throw new Error('出租模式已变更，请刷新后重试')
   }
   await createAuditLog(c,{action:'C2C_SUBMIT',targetType:'c2c_listing',targetId:id})

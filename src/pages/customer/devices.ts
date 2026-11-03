@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { rentalCity } from '../../services/rentalPickup'
 import { clientPathEnabled,normalizeClientAccess } from '../../clientAccess'
 import { buildLayout, getDevices } from '../../site'
 import { calculateRentalFee } from '../../domain/rentalPricing'
@@ -15,7 +16,7 @@ const currency=new Intl.NumberFormat('en-AU',{style:'currency',currency:'AUD',cu
 const normalize=(value: unknown)=>String(value || '').normalize('NFKD').toLowerCase().replace(/\s+/g,' ').trim()
 
 export async function renderCustomerDevices(c: Context,user: any) {
-  const rows=(await c.env.RENT.prepare(`SELECT l.device_id,l.owner_id,l.status,l.listing_mode,l.pickup_address,l.custody_received_at,m.mode AS member_mode,s.managed_commission_bps,u.status AS owner_status,u.deleted_at,l.photos_json,m.user_id AS member_id
+  const rows=(await c.env.RENT.prepare(`SELECT l.device_id,l.owner_id,l.status,l.listing_mode,l.pickup_address,l.pickup_address_json,l.public_city,l.custody_received_at,m.mode AS member_mode,s.managed_commission_bps,u.status AS owner_status,u.deleted_at,l.photos_json,m.user_id AS member_id
     FROM c2c_listings l JOIN users u ON u.id=l.owner_id LEFT JOIN c2c_memberships m ON m.user_id=l.owner_id CROSS JOIN c2c_settings s`).all()).results || []
   const listings=new Map<string,any>(rows.map((l: any)=>[l.device_id,l]))
   const source=c.req.query('mode')==='c2c'?'owner':c.req.query('mode')
@@ -58,7 +59,7 @@ export async function renderCustomerDevices(c: Context,user: any) {
       <h3><a href="/customer/rent/${encodeURIComponent(device.id)}"><span data-api-translate data-i18n-ignore>${esc(device.name)}</span></a></h3><p class="customer-catalog__model">${esc(device.category || '其他')}${device.model?` · ${esc(device.model)}`:''}</p>
       <div class="customer-catalog__specs">${specs.length?specs.map(spec=>`<span>${esc(spec)}</span>`).join(''):'<span>配置待更新</span>'}</div>
       <div class="customer-catalog__prices">${price('日租',daily)}${price('周租',weekly,daily*7)}${price('月租',monthly,daily*30)}</div>
-      ${personal?`<div class="customer-catalog__pickup"><span>取件地址</span><address>${esc(personal.pickup_address)}</address></div>`:''}<div class="customer-catalog__deposit"><span>押金</span><strong>${currency.format(Number(device.depositAmount || 0))}</strong></div>
+      ${personal?`<div class="customer-catalog__pickup"><span>所在城市</span><span>${esc(rentalCity(personal))}</span></div>`:''}<div class="customer-catalog__deposit"><span>押金</span><strong>${currency.format(Number(device.depositAmount || 0))}</strong></div>
       <a class="button button-primary customer-catalog__book" href="/customer/rent/${encodeURIComponent(device.id)}"><span>选择租期</span><span aria-hidden="true">→</span></a></div></article>`
   }).join('')
   const body=`<section class="panel customer-catalog" id="customer-device-catalog"><header class="customer-catalog__header"><div><p class="section-code">DEVICE CATALOG</p><h2>可租设备</h2></div>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/rental-program','console') ? '<a class="button button-secondary" href="/customer/rental-program">发布我的设备</a>' : ''}</header>

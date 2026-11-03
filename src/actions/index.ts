@@ -23,3 +23,5 @@ export * from './customer/c2c'
 export * from './admin/c2c'
 
 export * from './admin/clientFeatures'
+
+export * from './customer/rentalSettlements'
