@@ -25,6 +25,24 @@ export interface I18nDomainGroup {
 // @domain common —— 早期扁平字典（导航 / 表格 / 状态 / 表单混在一起，保留避免回归）
 // 新条目请按语义追加到下方对应分区，不要在这里继续堆。
 const common: Readonly<Record<string, string>> = {
+  '搜索和筛选租赁设备': 'Search and filter rental devices',
+  '搜索租赁设备': 'Search rental devices',
+  '搜索型号、CPU、显卡、操作系统…': 'Search model, CPU, graphics or OS…',
+  '排序方式': 'Sort by',
+  '默认排序': 'Default order',
+  '价格从低到高': 'Price: low to high',
+  '价格从高到低': 'Price: high to low',
+  '名称排序': 'Name',
+  '配置待更新': 'Specifications coming soon',
+  '日租': 'Daily',
+  '周租': 'Weekly',
+  '月租': 'Monthly',
+  '选择租期': 'Choose rental dates',
+  '没有匹配的设备': 'No matching devices',
+  '清除筛选': 'Clear filters',
+  '应用筛选': 'Apply filters',
+  '可租设备 - 电脑租赁管理系统': 'Available devices - PC Rental',
+
   '面（顶盖）': 'Lid',
   '面（屏幕）': 'Screen',
   '面（键盘）': 'Keyboard',
