@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { clientPathEnabled, normalizeClientAccess } from '../../clientAccess'
 import { buildLayout, getUserById, formatCurrency } from '../../site';
 import { Context } from 'hono';
 
@@ -94,7 +95,7 @@ export async function renderCustomerProfile(c: Context, user: any, message?: str
       <section class="panel" style="margin-top:24px;">
         <div class="section-title"><h3>营销邮件</h3></div>
         ${marketingOptedOut
-      ? `<p class="form-text">当前未订阅营销邮件。</p><form method="POST" action="/customer/profile/marketing-subscription"><input type="hidden" name="action" value="subscribe"><button class="button button-primary" type="submit">重新订阅营销邮件</button></form>`
+      ? `<p class="form-text">当前未订阅营销邮件。</p>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/profile/marketing-subscription','console') ? `<form method="POST" action="/customer/profile/marketing-subscription"><input type="hidden" name="action" value="subscribe"><button class="button button-primary" type="submit">重新订阅营销邮件</button></form>` : ''}`
       : `<p class="form-text">当前已订阅营销邮件。订单、合同和付款通知不受影响。</p>`}
       </section>
       <section class="danger-zone" style="margin-top:32px;">

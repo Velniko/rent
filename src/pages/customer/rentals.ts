@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { clientPathEnabled,normalizeClientAccess } from '../../clientAccess'
 import { buildLayout, getOrdersForUser, getDeviceById, formatCurrency } from '../../site';
 import { renderOrderStatusBadge } from '../partials/orderStatusBadge';
 import { Context } from 'hono';
@@ -43,7 +44,7 @@ export async function renderCustomerRentals(c: Context, user: any) {
             })).then(results => results.join(''))}
           </tbody>
         </table>
-      ` : '<div class="empty-state"><p>您当前没有正在租赁的设备。</p><a class="button button-primary" href="/customer/devices">浏览可租设备</a></div>'}
+      ` : `<div class="empty-state"><p>您当前没有正在租赁的设备。</p>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/devices','console') ? `<a class="button button-primary" href="/customer/devices">浏览可租设备</a>` : ''}</div>`}
 
       <h3 style="margin-top: 32px;">租赁历史记录</h3>
       ${rentals.filter(r => r.status !== 'active').length > 0 ? `
@@ -72,7 +73,7 @@ export async function renderCustomerRentals(c: Context, user: any) {
             })).then(results => results.join(''))}
           </tbody>
         </table>
-      ` : '<div class="empty-state"><p>您还没有租赁历史记录。</p><a class="button button-primary" href="/customer/devices">开始第一次租赁</a></div>'}
+      ` : `<div class="empty-state"><p>您还没有租赁历史记录。</p>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/devices','console') ? `<a class="button button-primary" href="/customer/devices">开始第一次租赁</a>` : ''}</div>`}
     </div>
   `;
 

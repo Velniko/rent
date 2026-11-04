@@ -10,13 +10,17 @@ import { handleTranslation } from './services/translation'
 import { ensureBankTransferReference, listBankTransferPayments } from './services/bankTransferReferences'
 import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
+import { createNotificationWithDelivery } from './services/notifications'
+import { runRentalPayouts } from './services/rentalPayouts'
+import { rentalPickupBlocks,rentalPickupBlocked } from './services/rentalPickup'
+import { normalizeClientAccess, readClientAccess, clientFeatureForPath, consoleEssentialPath, clientMaintenanceHtml } from './clientAccess'
 import { websiteSessionStatus } from './auth/websiteSession'
 import * as pages from './pages/index'
 import * as actions from './actions/index'
 import { sendPasswordResetEmail } from './auth/passwordReset'
 import { expireRentalLinkDrafts } from './services/rentalLinks'
 import { resolveRentalApplicationConflicts, RENTAL_APPLICATION_CONFLICT_MESSAGE } from './services/rentalApplications'
-import { serviceFeeRate, isUnavailablePickupTime } from './domain/pickupTimeSlots'
+import { HALF_HOUR_TIME_OPTIONS,pickupTimeMode,serviceFeeRate, isUnavailablePickupTime } from './domain/pickupTimeSlots'
 import { searchBusinessDocuments, documentPath, documentStatus, DOCUMENT_TYPES } from './services/documents'
 import { isCardDepositSettled } from './domain/paymentPlan'
 import { scheduledBatches } from './domain/scheduledBatches'
@@ -223,11 +227,11 @@ function rentalPeriodPassed(date: string, period: string, today: string): boolea
   return date === today && melbourneMinutesNow() >= (period === 'AM' ? 12 * 60 : 23 * 60)
 }
 
-const PICKUP_TIME_SLOTS = new Set(['morning_service', 'morning', 'afternoon', 'evening_service'])
+const PICKUP_TIME_SLOTS = new Set(['morning_service', 'morning', 'afternoon', 'evening_service',...HALF_HOUR_TIME_OPTIONS])
 const SERVICE_FEE_TIME_SLOTS = new Set(['morning_service', 'evening_service'])
 
 function pickupTimeSlotPeriod(slot: string): 'AM' | 'PM' {
-  return slot === 'afternoon' || slot === 'evening_service' ? 'PM' : 'AM'
+  return slot === 'afternoon' || slot === 'evening_service' || (HALF_HOUR_TIME_OPTIONS.includes(slot) && slot>='12:00') ? 'PM' : 'AM'
 }
 
 function pickupTimeSlotPassed(date: string, slot: string, today: string, rentalRules: any): boolean {
@@ -285,6 +289,9 @@ async function getTableColumns(c: any, tableName: string): Promise<string[]> {
   // 表结构运行期不变，走 isolate 级缓存，避免每次都发 PRAGMA。
   return Array.from(await getCachedTableColumns(c.env.RENT, tableName))
 }
+
+import { c2cBookingError,isC2CMember } from './services/c2c'
+import { deliverC2CEmails } from './services/c2cEmails'
 
 const app = new Hono()
 
@@ -752,6 +759,29 @@ app.use('*', async (c, next) => {
 })
 
 app.use('*', async (c, next) => {
+  const path = c.req.path
+  const user = c.get('user')
+  const feature = clientFeatureForPath(path,'console')
+  const clientRoute = path === '/' || /^\/(?:customer|staff|feedback|notifications)(?:\/|$)/.test(path) || path === '/api/search'
+  if (user?.role === 'ADMIN' || (!feature && !clientRoute)) return next()
+  let policy
+  try { policy = await readClientAccess(c.env.RENT) }
+  catch (error) {
+    console.error('Client access settings unavailable',error)
+    if (!feature && consoleEssentialPath(path)) return next()
+    c.header('Cache-Control','private, no-store'); c.header('Retry-After','300')
+    return c.html(clientMaintenanceHtml('',false,'console'),503)
+  }
+  if (user) user.clientAccess = policy
+  const closedFeature = feature && !policy.features[feature]
+  if (closedFeature || (!policy.console.enabled && (clientRoute || feature) && (!consoleEssentialPath(path) || feature))) {
+    c.header('Cache-Control','private, no-store'); c.header('Retry-After','300')
+    return c.html(clientMaintenanceHtml(closedFeature ? '' : policy.console.message,Boolean(closedFeature),'console'),503)
+  }
+  await next()
+})
+
+app.use('*', async (c, next) => {
   if (c.req.path.startsWith('/notifications')) {
     try {
       await ensureNotificationsTable(c)
@@ -862,6 +892,8 @@ app.use('*', async (c, next) => {
     : c.req.method === 'POST' && c.req.path.startsWith('/rent/') ? ['rental-link-booking', 10, 900] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/admin/rental-links') ? ['rental-link-admin', 30, 600] as const
     : c.req.method === 'POST' && (c.req.path === '/admin/orders/new' || /^\/admin\/orders\/[^/]+\/edit$/.test(c.req.path)) ? ['admin-manual-order', 60, 600] as const
+    : c.req.method === 'POST' && ['/customer/rental-program/photos','/customer/c2c/photos'].includes(c.req.path) ? ['c2c-photo-upload', 20, 3600] as const
+    : c.req.method === 'POST' && ['/customer/rental-program','/admin/rental-program','/customer/c2c','/admin/c2c'].some(prefix=>c.req.path.startsWith(prefix)) ? ['c2c-write', 30, 600] as const
     : c.req.path === '/verify' ? ['contract-verify', 30, 600] as const
     : c.req.path === '/admin/connectivity/check' ? ['connectivity-check', 10, 60] as const
     : c.req.path.startsWith('/api/address/') ? ['address-search', 120, 60] as const
@@ -878,8 +910,9 @@ app.use('*', async (c, next) => {
     : /^\/customer\/orders\/[^/]+\/square\/(?:config|payment)$/.test(c.req.path) ? ['square-payment', 10, 600] as const
     : c.req.method === 'POST' && /^\/customer\/orders\/[^/]+\/(?:receipt|invoice\/send)/.test(c.req.path) ? ['receipt-send', 10, 3600] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/admin/contracts/template') ? ['contract-template-write', 30, 600] as const
-    : c.req.method === 'POST' && c.req.path.startsWith('/admin/settings') ? ['admin-settings-write', 60, 600] as const
+    : c.req.method === 'POST' && (c.req.path.startsWith('/admin/settings') || c.req.path.startsWith('/admin/rental-settlements')) ? ['admin-settings-write', 60, 600] as const
     : c.req.path === '/admin/orders/export' ? ['orders-export', 10, 3600] as const
+    : c.req.method === 'POST' && (c.req.path === '/notifications/send' || c.req.path === '/admin/email-templates/send' || /^\/manager\/email-events\/[^/]+\/retry$/.test(c.req.path)) ? ['notification-email-send', 30, 600] as const
     : c.req.path === '/api/search' ? ['global-search', 120, 60] as const
     : c.req.path === '/api/contract-sign/coupon-preview' ? ['coupon-preview', 30, 60] as const
     : c.req.path === '/api/payment/status' ? ['payment-status-poll', 300, 60] as const
@@ -1096,8 +1129,8 @@ async function sendEmailVerification(c: any, user: any) {
   await c.env.RENT.prepare('INSERT INTO email_verifications (id, user_id, email, token_hash, sent_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)').bind(nanoid(), user.id, user.email, tokenHash, now.toISOString(), expiresAt).run()
   const claimed = await c.env.RENT.prepare("INSERT OR IGNORE INTO email_events (id, event_type, recipient, idempotency_key, status) VALUES (?, 'EMAIL_VERIFICATION', ?, ?, 'PENDING')").bind(`email-${nanoid(12)}`, user.email, eventKey).run() as any
   if (!claimed.meta?.changes) return
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) { await c.env.RENT.prepare("UPDATE email_events SET status = 'SKIPPED', error_message = 'Email transport is not configured' WHERE idempotency_key = ?").bind(eventKey).run(); return }
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) { await c.env.RENT.prepare("UPDATE email_events SET status = 'SKIPPED', error_message = 'Email transport is not configured' WHERE idempotency_key = ?").bind(eventKey).run(); return }
   const verifyUrl = `${new URL(c.req.url).origin}/verify-email?token=${encodeURIComponent(token)}`
   const result = await sendTransactionalEmail(c, { to: user.email, subject: '验证您的邮箱 - PC Rental', text: `您好 ${user.name}，请在 24 小时内打开以下链接验证邮箱：\n${verifyUrl}` })
   await c.env.RENT.prepare("UPDATE email_events SET status = ?, provider_message_id = ?, error_message = ?, sent_at = CASE WHEN ? THEN CURRENT_TIMESTAMP END WHERE idempotency_key = ?").bind(result.ok ? 'SENT' : 'FAILED', result.id, result.error, result.ok ? 1 : 0, eventKey).run()
@@ -1786,6 +1819,7 @@ function notificationListMessage(item: any): string {
 }
 
 app.get('/notifications', async (c) => {
+  await loadSystemSettingsFromDB(c)
   const user = c.get('user')
   if (!user) return c.redirect('/login')
   await ensureNotificationsTable(c)
@@ -1802,8 +1836,13 @@ app.get('/notifications', async (c) => {
   if (user.role === 'ADMIN' || user.role === 'STAFF') await ensureInAppNotificationTemplates(c)
   const inAppNotificationTemplates = user.role === 'ADMIN' || user.role === 'STAFF' ? ((await c.env.RENT.prepare("SELECT id, name FROM in_app_notification_templates WHERE enabled = 1 AND deleted_at IS NULL ORDER BY name").all()).results || []) as any[] : []
   const inAppNotificationTemplateOptions = `<option value="custom">自定义通知</option>${inAppNotificationTemplates.map((item: any) => `<option value="${sanitizePlainText(item.id, 120)}">使用模板：${sanitizePlainText(item.name, 120)}</option>`).join('')}`
+  const defaultDelivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
+  const deliveryChoice = `<div class="form-group"><label class="form-label" for="notificationDelivery">发送方式</label><select class="form-control" id="notificationDelivery" name="delivery"><option value="in_app_email" ${defaultDelivery === 'in_app_email' ? 'selected' : ''}>站内通知 + 邮件</option><option value="in_app_only" ${defaultDelivery === 'in_app_only' ? 'selected' : ''}>仅站内通知</option></select></div>`
+  const resultCount = (key: string) => Math.min(10000, Math.max(0, Number.parseInt(c.req.query(key) || '0', 10) || 0))
+  const sentCount = resultCount('sent'), emailSent = resultCount('emailSent'), emailFailed = resultCount('emailFailed')
+  const sendResult = c.req.query('sent') ? `<div role="status" data-flash-notice class="page-notification page-notification--${emailFailed ? 'error' : 'success'}"><span>站内通知已发送：</span> ${sentCount}${c.req.query('delivery') === 'in_app_email' ? ` · <span>邮件已提交：</span> ${emailSent} · <span>邮件失败：</span> ${emailFailed}` : ''}${user.role === 'ADMIN' ? ' · <a href="/manager/email-events">查看邮件发送记录</a>' : ''}</div>` : ''
   const recipientOptions = recipients.map((account: any) => `<option value="${sanitizePlainText(account.id, 120)}">${sanitizePlainText(account.name || account.email, 120)} · ${sanitizePlainText(account.email, 160)}</option>`).join('')
-  const body = `<div class="panel"><div class="section-title"><h2>通知中心</h2><span class="section-note">订单和归还提醒</span></div>${user.role === 'ADMIN' ? `<form method="post" action="/notifications/announcement" class="panel notification-compose"><h3>发布通告</h3>${renderAnnouncementEditor()}<div class="form-group"><label class="form-label" for="announcementExpiresAt">下架日期和时间（选填）</label><input class="form-control" id="announcementExpiresAt" name="expiresAt" type="datetime-local"></div><button class="button button-primary" type="submit">发布通告</button></form>` : ''}${user.role === 'ADMIN' || user.role === 'STAFF' ? `<form method="post" action="/notifications/send" class="panel notification-compose"><h3>发送通知</h3><div class="form-group"><label class="form-label" for="notificationRecipient">收件人（可多选）</label><input class="form-control recipient-search" id="notificationRecipientSearch" type="search" placeholder="搜索姓名或邮箱…" autocomplete="off"><div class="recipient-picker-actions"><button type="button" class="button button-sm button-secondary" id="selectVisibleRecipients">全选当前结果</button><button type="button" class="button button-sm button-secondary" id="clearRecipients">清空选择</button><span id="recipientCount" class="section-note">已选 0 人</span></div><select class="form-control recipient-select" id="notificationRecipient" name="recipientId" multiple size="7" required>${recipientOptions}</select><small class="form-text">可搜索后全选当前结果，也可以按住 Command（Mac）或 Ctrl（Windows）逐个选择。</small></div><div class="form-group"><label class="form-label" for="notificationTitle">标题（自定义通知时必填）</label><input class="form-control" id="notificationTitle" name="title" maxlength="120" required></div><div class="form-group"><label class="form-label" for="notificationMessage">内容（支持 HTML，自定义通知时必填）</label><textarea class="form-control html-editor" id="notificationMessage" name="message" maxlength="1000" required></textarea></div><button class="button button-primary" type="submit">发送通知</button></form><script>(()=>{const search=document.getElementById('notificationRecipientSearch'),select=document.getElementById('notificationRecipient'),count=document.getElementById('recipientCount'),template=document.getElementById('notificationTemplate'),title=document.getElementById('notificationTitle'),message=document.getElementById('notificationMessage');if(!search||!select)return;const update=()=>{const query=search.value.trim().toLowerCase();Array.from(select.options).forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});count.textContent='已选 '+Array.from(select.selectedOptions).length+' 人';};const syncTemplateFields=()=>{const custom=!template||template.value==='custom';[title,message].forEach(field=>{if(!field)return;field.required=custom;field.setAttribute('aria-required',String(custom));});};search.addEventListener('input',update);select.addEventListener('change',update);template?.addEventListener('change',syncTemplateFields);document.getElementById('selectVisibleRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>{if(!option.hidden)option.selected=true;});update();});document.getElementById('clearRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>option.selected=false);update();});update();syncTemplateFields();})();</script>` : ''}${user.role === 'ADMIN' && sentAnnouncements.length ? `<section class="panel"><h3>已发布通告历史</h3><div class="notification-list">${sentAnnouncements.map((item: any) => `<article class="notification-item"><div><strong>${sanitizePlainText(item.title, 120)}</strong><div class="notification-message">${renderNotificationMarkdown(normalizeDisplayedNotification(item))}</div><small>${formatMelbourneDateTime(item.created_at)}</small></div><form method="post" action="/notifications/announcements/${item.id}/delete" data-site-confirm="删除后这条通告及其历史记录将从所有收件人处撤回，无法恢复。" data-confirm-variant="danger" data-confirm-title="删除这条通告？" data-confirm-label="删除通告"><button class="button button-sm button-danger" type="submit">删除</button></form></article>`).join('')}</div></section>` : ''}${notifications.length ? `<div class="notification-list">${notifications.map((item: any) => `<a class="notification-item ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><div><strong>${sanitizePlainText(item.title, 200)}</strong><div class="notification-message">${renderNotificationMarkdown(notificationListMessage(item))}</div><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div>${item.order_id ? `<span class="button button-sm button-secondary">查看订单</span>` : ''}</a>`).join('')}</div>` : '<p class="empty-state">暂无通知</p>'}</div>`
+  const body = `<div class="panel"><div class="section-title"><h2>通知中心</h2><span class="section-note">订单和归还提醒</span></div>${user.role === 'ADMIN' ? `<form method="post" action="/notifications/announcement" class="panel notification-compose"><h3>发布通告</h3>${renderAnnouncementEditor()}<div class="form-group"><label class="form-label" for="announcementExpiresAt">下架日期和时间（选填）</label><input class="form-control" id="announcementExpiresAt" name="expiresAt" type="datetime-local"></div><button class="button button-primary" type="submit">发布通告</button></form>` : ''}${user.role === 'ADMIN' || user.role === 'STAFF' ? `<form method="post" action="/notifications/send" class="panel notification-compose"><h3>发送通知</h3>${sendResult}${deliveryChoice}<div class="form-group"><label class="form-label" for="notificationRecipient">收件人（可多选）</label><input class="form-control recipient-search" id="notificationRecipientSearch" type="search" placeholder="搜索姓名或邮箱…" autocomplete="off"><div class="recipient-picker-actions"><button type="button" class="button button-sm button-secondary" id="selectVisibleRecipients">全选当前结果</button><button type="button" class="button button-sm button-secondary" id="clearRecipients">清空选择</button><span id="recipientCount" class="section-note">已选 0 人</span></div><select class="form-control recipient-select" id="notificationRecipient" name="recipientId" multiple size="7" required>${recipientOptions}</select><small class="form-text">可搜索后全选当前结果，也可以按住 Command（Mac）或 Ctrl（Windows）逐个选择。</small></div><div class="form-group"><label class="form-label" for="notificationTitle">标题（自定义通知时必填）</label><input class="form-control" id="notificationTitle" name="title" maxlength="120" required></div><div class="form-group"><label class="form-label" for="notificationMessage">内容（支持 HTML，自定义通知时必填）</label><textarea class="form-control html-editor" id="notificationMessage" name="message" maxlength="1000" required></textarea></div><button class="button button-primary" type="submit">发送通知</button></form><script>(()=>{const search=document.getElementById('notificationRecipientSearch'),select=document.getElementById('notificationRecipient'),count=document.getElementById('recipientCount'),template=document.getElementById('notificationTemplate'),title=document.getElementById('notificationTitle'),message=document.getElementById('notificationMessage');if(!search||!select)return;const update=()=>{const query=search.value.trim().toLowerCase();Array.from(select.options).forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});count.textContent='已选 '+Array.from(select.selectedOptions).length+' 人';};const syncTemplateFields=()=>{const custom=!template||template.value==='custom';[title,message].forEach(field=>{if(!field)return;field.required=custom;field.setAttribute('aria-required',String(custom));});};search.addEventListener('input',update);select.addEventListener('change',update);template?.addEventListener('change',syncTemplateFields);document.getElementById('selectVisibleRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>{if(!option.hidden)option.selected=true;});update();});document.getElementById('clearRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>option.selected=false);update();});update();syncTemplateFields();})();</script>` : ''}${user.role === 'ADMIN' && sentAnnouncements.length ? `<section class="panel"><h3>已发布通告历史</h3><div class="notification-list">${sentAnnouncements.map((item: any) => `<article class="notification-item"><div><strong>${sanitizePlainText(item.title, 120)}</strong><div class="notification-message">${renderNotificationMarkdown(normalizeDisplayedNotification(item))}</div><small>${formatMelbourneDateTime(item.created_at)}</small></div><form method="post" action="/notifications/announcements/${item.id}/delete" data-site-confirm="删除后这条通告及其历史记录将从所有收件人处撤回，无法恢复。" data-confirm-variant="danger" data-confirm-title="删除这条通告？" data-confirm-label="删除通告"><button class="button button-sm button-danger" type="submit">删除</button></form></article>`).join('')}</div></section>` : ''}${notifications.length ? `<div class="notification-list">${notifications.map((item: any) => `<a class="notification-item ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><div><strong>${sanitizePlainText(item.title, 200)}</strong><div class="notification-message">${renderNotificationMarkdown(notificationListMessage(item))}</div><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div>${item.order_id ? `<span class="button button-sm button-secondary">查看订单</span>` : ''}</a>`).join('')}</div>` : '<p class="empty-state">暂无通知</p>'}</div>`
   const pagination = pageCount > 1 ? `<nav class="pagination" aria-label="通知分页">${Array.from({ length: pageCount }, (_, index) => `<a class="button button-sm ${index + 1 === page ? 'button-primary' : 'button-secondary'}" href="/notifications?page=${index + 1}">${index + 1}</a>`).join('')}</nav>` : ''
   const bodyWithAnnouncementExpiry = body
   const bodyWithSendAnchor = bodyWithAnnouncementExpiry.replace('<form method="post" action="/notifications/send" class="panel notification-compose">', '<form id="send-notification" method="post" action="/notifications/send" class="panel notification-compose">')
@@ -1817,7 +1856,7 @@ app.get('/admin/notifications', async (c) => {
   if (!user || user.role !== 'ADMIN') return c.redirect('/login')
   await ensureNotificationsTable(c)
   const notifications = (await getNotifications(c, user.id)).filter((item: any) => item.type !== 'announcement')
-  const body = `<div class="page-header"><div><p class="section-code">ADMIN INBOX</p><h2>管理员通知中心</h2><p>这里显示充值、退款、付款审核、推荐风险审核和其他系统业务通知。</p></div><a class="button button-secondary" href="/notifications">发布通知</a></div><section class="panel"><div class="section-title"><h3>业务通知</h3><span class="section-note">共 ${notifications.length} 条</span></div>${notifications.length ? `<div class="admin-notification-cards">${notifications.map((item: any) => { const typeLabel = item.type === 'rental_application' ? '租赁申请' : item.type === 'referral_risk_review' ? '推荐风险审核' : item.type === 'payment_review_submitted' ? '付款凭证待审核' : item.type === 'payment_review_overdue' ? '付款审核逾期' : item.type || '系统通知'; return `<a class="admin-notification-card ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><span class="admin-notification-card__type">${sanitizePlainText(typeLabel, 40)}</span><div class="admin-notification-card__content"><strong>${sanitizePlainText(item.title, 200)}</strong><p>${sanitizePlainText(notificationPlainText(item.message), 180)}</p><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` }).join('')}</div>` : '<p class="empty-state">暂无业务通知</p>'}</section>`
+  const body = `<div class="page-header"><div><p class="section-code">ADMIN INBOX</p><h2>管理员通知中心</h2><p>这里显示充值、退款、付款审核、推荐风险审核和其他系统业务通知。</p></div><a class="button button-secondary" href="/notifications">发布通知</a></div><section class="panel"><div class="section-title"><h3>业务通知</h3><span class="section-note">共 ${notifications.length} 条</span></div>${notifications.length ? `<div class="admin-notification-cards">${notifications.map((item: any) => { const typeLabel = item.type === 'c2c_payout_pending' ? '出租结算待转账' : item.type === 'rental_application' ? '租赁申请' : item.type === 'referral_risk_review' ? '推荐风险审核' : item.type === 'payment_review_submitted' ? '付款凭证待审核' : item.type === 'payment_review_overdue' ? '付款审核逾期' : item.type || '系统通知'; return `<a class="admin-notification-card ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><span class="admin-notification-card__type">${sanitizePlainText(typeLabel, 40)}</span><div class="admin-notification-card__content"><strong>${sanitizePlainText(item.title, 200)}</strong><p>${sanitizePlainText(notificationPlainText(item.message), 180)}</p><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` }).join('')}</div>` : '<p class="empty-state">暂无业务通知</p>'}</section>`
   return c.html(buildLayout('管理员通知中心', body, user))
 })
 
@@ -1959,13 +1998,12 @@ app.post('/admin/email-templates/send', async (c) => {
   vars.company_email = vars.company_email || String(companyDetails.email || '')
   const fill = (value: string) => value.replace(/\{([a-z_]+)\}/g, (_: string, key: string) => vars[key] ?? '')
   if (['site', 'both'].includes(channel)) await createNotification(c, { recipientId, senderId: user.id, type: 'manual', title: notificationPlainText(fill(template.subject)), message: fill(template.body), notifyByEmail: false })
-  if (['site', 'both'].includes(channel)) await createNotification(c, { recipientId, senderId: user.id, type: 'manual', title: notificationPlainText(fill(template.subject)), message: fill(template.body), notifyByEmail: false })
   if (['email', 'both'].includes(channel)) {
-    const { apiKey, from } = await resolveEmailCredentials(c)
-    if (!apiKey || !from) return c.text('尚未配置邮件服务：请在后台「通知渠道」配置 Resend / Brevo / MailerSend 之一，或设置 RESEND_API_KEY / EMAIL_FROM', 503)
+    const { provider, apiKey, from } = await resolveEmailCredentials(c)
+    if ((provider !== 'smtp' && !apiKey) || !from) return c.text('请先在通知渠道配置邮件服务', 503)
     const filledBody = fill(template.body)
     const html = renderEmailNotificationHtml(fill(template.subject), filledBody, vars.company_name, template.theme_color || '#71818d')
-    const sent = await sendLoggedEmail(c, { eventType: 'TEMPLATE', recipient: mailTo, key: `template:${String(form.templateId || 'custom')}:${mailTo}:${JSON.stringify(vars)}`, subject: fill(template.subject), text: filledBody, html, templateId: String(form.templateId || '') || undefined })
+    const sent = await sendLoggedEmail(c, { eventType: 'TEMPLATE', recipient: mailTo, key: `template:${crypto.randomUUID()}`, subject: fill(template.subject), text: filledBody, html, templateId: String(form.templateId || '') || undefined })
     if (!sent.ok) return c.text('邮件发送失败或邮件服务尚未配置', 502)
   }
   return c.redirect('/admin/email-templates')
@@ -2100,7 +2138,7 @@ async function sendMarketingCampaignEmails(c: any, params: { campaignId: string;
     const url = device?.id ? new URL(`/customer/rent/${encodeURIComponent(String(device.id))}`, c.req.url).toString() : ''
     return { name, description, url }
   })
-  const { apiKey, from } = await resolveEmailCredentials(c)
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
   let sent = 0, failed = 0
   for (const row of params.recipients) {
     const recipient = await getUserById(c, row.customerId)
@@ -2135,7 +2173,7 @@ async function sendMarketingCampaignEmails(c: any, params: { campaignId: string;
     const filledBody = fill(params.body)
     let ok = false
     let errorMessage = ''
-    if (!apiKey || !from) {
+    if ((provider !== 'smtp' && !apiKey) || !from) {
       errorMessage = '邮件服务尚未配置'
     } else {
       const html = renderMarketingEmailHtml(filledSubject, filledBody, companyName, params.themeColor, unsubscribeUrl, companyEmail, logoUrl)
@@ -2406,6 +2444,7 @@ app.get('/notifications/:id', async (c) => {
   const item = await c.env.RENT.prepare("SELECT * FROM notifications WHERE id = ? AND recipient_id = ? AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)").bind(c.req.param('id'), user.id).first() as any
   if (!item) return c.html(renderNotFound(), 404)
   await c.env.RENT.prepare('UPDATE notifications SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP) WHERE id = ? AND recipient_id = ?').bind(item.id, user.id).run()
+  if (user.role === 'ADMIN' && item.type === 'c2c_payout_pending') return c.redirect('/admin/rental-settlements')
   if (user.role === 'ADMIN' && item.type === 'rental_application') return c.redirect('/admin/order-review')
   const orderPath = item.order_id ? (user.role === 'ADMIN' ? `/admin/orders/${item.order_id}` : user.role === 'STAFF' ? `/staff/orders/${item.order_id}` : `/customer/orders/${item.order_id}`) : ''
   const body = `<div class="panel notification-detail"><div class="section-title"><div><p class="section-code">NOTIFICATION DETAIL</p><h2>${item.type === 'announcement' ? renderAnnouncementTitle(item) : sanitizePlainText(item.title, 200)}</h2><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div><a class="button button-secondary" href="/notifications">返回通知中心</a></div><div class="notification-message">${item.type === 'announcement' ? renderAnnouncementMessage(item) : renderNotificationMarkdown(normalizeDisplayedNotification(item))}</div>${orderPath ? `<a class="button button-secondary" href="${orderPath}">查看订单</a>` : ''}</div>`
@@ -2453,9 +2492,10 @@ app.post('/notifications/announcement', async (c) => {
 })
 
 app.post('/notifications/send', async (c) => {
+  await loadSystemSettingsFromDB(c)
   const user = c.get('user')
   if (!user || !['ADMIN', 'STAFF'].includes(user.role)) return c.html(renderForbidden(), 403)
-  const form = await c.req.parseBody()
+  const form = await c.req.parseBody({ all: true })
   const rawRecipientIds = form.recipientId ?? form['recipientId[]']
   const recipientIds = (Array.isArray(rawRecipientIds) ? rawRecipientIds : [rawRecipientIds])
     .map((value: unknown) => String(value || '').trim())
@@ -2477,9 +2517,80 @@ app.post('/notifications/send', async (c) => {
     (user.role !== 'STAFF' || (recipient.role === 'CUSTOMER' && recipient.staffId === user.id))
   )
   if (!recipientIds.length || allowedRecipients.length !== new Set(recipientIds).size || !title || !message) return c.text('收件人或通知内容无效', 400)
-  await Promise.all(allowedRecipients.map((recipient: any) => createNotification(c, { recipientId: recipient.id, senderId: user.id, type: 'manual', title, message })))
-  return c.redirect('/notifications')
+  const defaultDelivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
+  const delivery = String(form.delivery || defaultDelivery)
+  if (!['in_app_only', 'in_app_email'].includes(delivery)) return c.text('发送方式无效', 400)
+  const results = []
+  for (const recipient of allowedRecipients) {
+    const company = getSystemSettings().companyDetails || {}
+    const vars = { customer_name: String(recipient.name || ''), customer_email: String(recipient.email || ''), company_name: String(company.name || ''), company_email: String(company.email || '') }
+    const fill = (value: string, html = false) => value.replace(/\{([a-z_]+)\}/g, (placeholder, key) => Object.hasOwn(vars, key) ? (html ? escapeHtml(vars[key]) : vars[key]) : placeholder)
+    results.push(await createNotificationWithDelivery(c, { recipientId: recipient.id, senderId: user.id, type: 'manual', title: fill(title), message: fill(message, true), notifyByEmail: delivery === 'in_app_email' }))
+  }
+  const count = results.filter(result => result.inserted).length
+  const emailSent = results.filter(result => result.email?.ok).length
+  const emailFailed = delivery === 'in_app_email' ? results.filter(result => result.inserted && !result.email?.ok).length : 0
+  await createAuditLog(c, { actor: user, action: 'MANUAL_NOTIFICATIONS_SENT', targetType: 'NOTIFICATION', targetId: user.id, after: { count, delivery, emailSent, emailFailed } })
+  return c.redirect(`/notifications?sent=${count}&emailSent=${emailSent}&emailFailed=${emailFailed}&delivery=${delivery}#send-notification`, 303)
 })
+
+// Existing links keep working while new pages use the rental-program name.
+for (const role of ['customer','admin']) app.get(`/${role}/c2c`,c=>c.redirect(`/${role}/rental-program${new URL(c.req.url).search}`,302))
+app.post('/customer/c2c/join',c=>actions.customerC2CAction(c,'join'))
+app.post('/customer/c2c/photos',c=>actions.customerC2CAction(c,'photo'))
+app.post('/customer/c2c',c=>actions.customerC2CAction(c,'submit'))
+app.post('/customer/c2c/:id/edit',c=>actions.customerC2CAction(c,'edit'))
+app.post('/customer/c2c/:id/pause',c=>actions.customerC2CAction(c,'pause'))
+app.post('/admin/c2c/commission',c=>actions.adminC2CAction(c,'commission'))
+app.post('/admin/c2c/:id/review',c=>actions.adminC2CAction(c,'review'))
+app.post('/admin/c2c/:id/pause',c=>actions.adminC2CAction(c,'pause'))
+app.post('/admin/c2c/orders/:orderId/settle',c=>actions.adminC2CAction(c,'settle'))
+
+app.get('/customer/rental-program/settlements',async c=>{
+  const user=c.get('user')
+  if(!user||user.role!=='CUSTOMER'||(user.accountType ?? user.account_type ?? 'formal')!=='formal'||!await isC2CMember(c,user.id))return c.html(renderForbidden(),403)
+  return c.html(await pages.renderCustomerRentalSettlements(c,user))
+})
+app.post('/customer/rental-program/settlements/preferences',c=>actions.customerRentalSettlementAction(c,'preferences'))
+app.post('/customer/rental-program/settlements/request',c=>actions.customerRentalSettlementAction(c,'request'))
+app.get('/admin/rental-settlements',async c=>{
+  const user=c.get('user')
+  if(!user||user.role!=='ADMIN')return c.html(renderForbidden(),403)
+  return c.html(await pages.renderAdminRentalSettlements(c,user))
+})
+app.post('/admin/rental-settlements/:id/paid',c=>actions.adminRentalSettlementAction(c,'paid'))
+app.post('/admin/rental-settlements/:id/refresh',c=>actions.adminRentalSettlementAction(c,'refresh'))
+app.get('/customer/rental-program/:id/pickup',async c=>{
+  const user=c.get('user')
+  if(!user||user.role!=='CUSTOMER'||(user.accountType ?? user.account_type ?? 'formal')!=='formal')return c.html(renderForbidden(),403)
+  const listing=await c.env.RENT.prepare('SELECT * FROM c2c_listings WHERE id=? AND owner_id=?').bind(c.req.param('id'),user.id).first()
+  if(!listing)return c.html(renderForbidden(),403)
+  return c.html(await pages.renderRentalPickupEditor(c,user,listing))
+})
+app.post('/customer/rental-program/:id/pickup-blocks',c=>actions.customerC2CAction(c,'pickup-add'))
+app.post('/customer/rental-program/:id/pickup-blocks/:blockId/remove',c=>actions.customerC2CAction(c,'pickup-remove'))
+
+app.get('/customer/rental-program', async (c) => {
+  const user=c.get('user')
+  if (!user) return c.redirect('/login')
+  if (user.role!=='CUSTOMER' || (user.accountType ?? user.account_type ?? 'formal')!=='formal') return c.html(renderForbidden(),403)
+  return c.html(await pages.renderCustomerC2C(c,user))
+})
+app.post('/customer/rental-program/join', c => actions.customerC2CAction(c,'join'))
+app.post('/customer/rental-program/photos', c => actions.customerC2CAction(c,'photo'))
+app.post('/customer/rental-program', c => actions.customerC2CAction(c,'submit'))
+app.post('/customer/rental-program/:id/edit', c => actions.customerC2CAction(c,'edit'))
+app.post('/customer/rental-program/:id/pause', c => actions.customerC2CAction(c,'pause'))
+app.get('/admin/rental-program', async (c) => {
+  const user=c.get('user')
+  if (!user) return c.redirect('/login')
+  if (user.role!=='ADMIN') return c.html(renderForbidden(),403)
+  return c.html(await pages.renderAdminC2C(c,user))
+})
+app.post('/admin/rental-program/commission', c => actions.adminC2CAction(c,'commission'))
+app.post('/admin/rental-program/:id/review', c => actions.adminC2CAction(c,'review'))
+app.post('/admin/rental-program/:id/pause', c => actions.adminC2CAction(c,'pause'))
+app.post('/admin/rental-program/orders/:orderId/settle', c => actions.adminC2CAction(c,'settle'))
 
 app.get('/customer/devices', async (c) => {
   const user = c.get('user')
@@ -2489,7 +2600,7 @@ app.get('/customer/devices', async (c) => {
 
 app.get('/customer/rent/:id', async (c) => {
   const user = c.get('user')
-  if (!user || user.role !== 'CUSTOMER') return c.redirect('/login')
+  if (!user || user.role !== 'CUSTOMER') return c.redirect('/login?redirect='+encodeURIComponent(c.req.path))
   const risk = await getCustomerRiskAssessment(c, user.id)
   return c.html(await pages.renderCustomerRent(c, c.req.param('id'), user, risk.blocked ? '您的账户当前存在风控限制，暂时无法自助下单，请联系客服协助处理' : undefined))
 })
@@ -2501,6 +2612,8 @@ app.post('/customer/rent/:id', async (c) => {
   if (risk.blocked) return c.html(await pages.renderCustomerRent(c, c.req.param('id'), user, '您的账户当前存在风控限制，暂时无法自助下单，请联系客服协助处理'), 403)
   const account = await c.env.RENT.prepare('SELECT balance FROM users WHERE id = ?').bind(user.id).first() as any
   if (Number(account?.balance || 0) < 0) return c.html(await pages.renderCustomerRent(c, c.req.param('id'), user, `您的账户余额为负（${Number(account.balance).toFixed(2)} AUD），请先充值至非负后再下单。`), 403)
+  const bookingError = await c2cBookingError(c,c.req.param('id'),user.id)
+  if (bookingError) return c.text(bookingError,403)
   const device = await getDeviceById(c, c.req.param('id'))
   const rentalRules = await getDeviceRentalRules(c, c.req.param('id'))
   const deviceUnavailable = new Set(((await c.env.RENT.prepare('SELECT unavailable_date FROM device_unavailable_dates WHERE device_id = ? AND deleted_at IS NULL').bind(c.req.param('id')).all()).results || []).map((row: any) => row.unavailable_date))
@@ -2509,11 +2622,17 @@ app.post('/customer/rent/:id', async (c) => {
   const endDate = String(form.endDate || '')
   const todayValue = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const deliveryMethod = String(form.deliveryMethod || 'Pickup') === 'Delivery' ? 'Delivery' : 'Pickup'
+  const c2cDelivery=await c.env.RENT.prepare('SELECT listing_mode FROM c2c_listings WHERE device_id=?').bind(c.req.param('id')).first()
+  if (c2cDelivery?.listing_mode==='self' && deliveryMethod!=='Pickup') return c.text('自行交付设备仅支持到址自取',400)
   const pickupTimeSlot = String(form.pickupTimeSlot || '')
   const returnTimeSlot = String(form.returnTimeSlot || '')
   const deliveryAddress = String(form.deliveryAddress || '').trim().slice(0, 1000)
   const rentalNote = String(form.rentalNote || '').trim().slice(0, 500)
   const couponCode = String(form.couponCode || '').trim().toUpperCase().slice(0, 40)
+  if(c2cDelivery && deliveryMethod==='Pickup'){
+    const blocks=await rentalPickupBlocks(c,c.req.param('id'))
+    if(rentalPickupBlocked(blocks,startDate,pickupTimeSlot)||rentalPickupBlocked(blocks,endDate,returnTimeSlot))return c.html(await pages.renderCustomerRent(c,c.req.param('id'),user,'设备主人在所选时段无法交付，请选择其他取还时间'),400)
+  }
   // 校验失败重新渲染时回填用户已填内容（不包含敏感字段）。
   const rentPrefill = { startDate, endDate, startPeriod: String(form.startPeriod || ''), endPeriod: String(form.endPeriod || ''), deliveryMethod, pickupTimeSlot, returnTimeSlot, deliveryAddress, rentalNote, couponCode }
   const start = new Date(`${startDate}T00:00:00Z`)
@@ -2537,6 +2656,7 @@ app.post('/customer/rent/:id', async (c) => {
   }
   const selectedTimeUnavailable = deliveryMethod === 'Pickup' && (
     !PICKUP_TIME_SLOTS.has(pickupTimeSlot) || !PICKUP_TIME_SLOTS.has(returnTimeSlot)
+    || [pickupTimeSlot,returnTimeSlot].some(slot=>HALF_HOUR_TIME_OPTIONS.includes(slot)&&!pickupTimeMode(slot,rentalRules))
     || pickupTimeSlotPassed(startDate, pickupTimeSlot, todayValue, rentalRules) || pickupTimeSlotPassed(endDate, returnTimeSlot, todayValue, rentalRules)
     || (rentalRules.unavailableTimeSlots?.[startDate] || []).includes(pickupTimeSlot)
     || (rentalRules.unavailableTimeSlots?.[endDate] || []).includes(returnTimeSlot)
@@ -2568,7 +2688,7 @@ app.post('/customer/rent/:id', async (c) => {
   }
   const rentAmount = calculateRentalFee(device, Math.ceil(halfDays / 2))
   const serviceFee = deliveryMethod === 'Pickup'
-    ? Number((rentAmount * serviceFeeRate(rentalRules) * [pickupTimeSlot, returnTimeSlot].filter((slot) => SERVICE_FEE_TIME_SLOTS.has(slot)).length).toFixed(2))
+    ? Number((rentAmount * serviceFeeRate(rentalRules) * [pickupTimeSlot, returnTimeSlot].filter((slot) => SERVICE_FEE_TIME_SLOTS.has(slot)||pickupTimeMode(slot,rentalRules)==='non_business').length).toFixed(2))
     : 0
   const depositPricing = riskDepositSnapshot(Number(device.depositAmount || 0), risk)
   const depositAmount = depositPricing.depositAmountBeforeWaiver
@@ -2609,6 +2729,7 @@ app.post('/customer/rent/:id', async (c) => {
     await actions.releaseCouponForOrder(c, orderId)
     return c.redirect(`/customer/orders/${orderId}?error=${encodeURIComponent(RENTAL_APPLICATION_CONFLICT_MESSAGE)}`)
   }
+  if (c2cDelivery) c.executionCtx.waitUntil(deliverC2CEmails(c).catch(error=>console.error('C2C email delivery failed',error?.message)))
   const customer = await getUserById(c, user.id)
   const recipients = customer?.staffId ? [customer.staffId] : (await getUsers(c)).filter((account: any) => account.role === 'ADMIN' && account.status !== 'inactive').map((account: any) => account.id)
   await Promise.all(recipients.map((recipientId: string) => createNotification(c, { recipientId, type: 'rental_application', title: deliveryMethod === 'Delivery' ? '新租赁申请及配送确认' : '新租赁申请待审核', message: `${customer?.name || '客户'} 申请租赁 ${device.name}（${startDate} 至 ${endDate}）${deliveryMethod === 'Delivery' ? `，需要配送至：${deliveryAddress}，运费请确认` : '，客户选择到店自取'}。${rentalNote ? `备注：${rentalNote}` : ''}`, orderId: orderId })))
@@ -3868,6 +3989,10 @@ app.post('/customer/profile/delete-account', async (c) => {
   const user = c.get('user')
   if (!user || user.role !== 'CUSTOMER') return c.redirect('/login')
   const form = await c.req.parseBody()
+  const c2cOutstanding = await c.env.RENT.prepare(`SELECT 1 FROM c2c_listings WHERE owner_id=? AND status IN ('pending','approved')
+    UNION ALL SELECT 1 FROM c2c_settlement_quotes q WHERE q.owner_id=? AND q.order_status<>'cancelled'
+      AND (q.order_status<>'completed' OR q.rental_cents>0) AND NOT EXISTS(SELECT 1 FROM c2c_settlements s WHERE s.order_id=q.order_id) LIMIT 1`).bind(user.id,user.id).first()
+  if (c2cOutstanding) return c.html(await pages.renderCustomerProfile(c,user,'请先下架个人设备并结清出租订单','error'),409)
   if (form.confirmDelete !== 'on') return c.html(await pages.renderCustomerProfile(c, user, '请先确认永久删除账户及余额清零事项。', 'error'), 400)
   for (const column of ['deletion_requested_at', 'deletion_scheduled_at']) {
     try { await c.env.RENT.prepare(`ALTER TABLE users ADD COLUMN ${sqlIdentifier(column)} TEXT`).run() } catch (_) { }
@@ -4172,9 +4297,11 @@ app.get('/manager/staff', async (c) => {
 app.get('/manager/email-events', async (c) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)
   if (!user || !['MANAGER', 'ADMIN'].includes(getAccessLevel(user))) return c.html(renderForbidden(), 403)
-  const { results = [] } = await c.env.RENT.prepare('SELECT id, event_type, recipient, status, retry_count, max_attempts, error_message, sent_at, created_at FROM email_events ORDER BY created_at DESC LIMIT 100').all() as any
-  const rows = results.map((event: any) => `<tr><td>${sanitizePlainText(event.event_type, 40)}</td><td>${sanitizePlainText(event.recipient, 254)}</td><td>${sanitizePlainText(event.status, 20)}</td><td>${event.retry_count}/${event.max_attempts}</td><td>${sanitizePlainText(event.error_message || '—', 200)}</td><td>${sanitizePlainText(event.sent_at || event.created_at, 40)}</td><td>${event.status !== 'SENT' && Number(event.retry_count) < Number(event.max_attempts) ? `<form method="post" action="/manager/email-events/${encodeURIComponent(event.id)}/retry" data-site-confirm="确认重新发送该邮件吗？"><button class="button button-sm button-primary">重新发送</button></form>` : '—'}</td></tr>`).join('') || '<tr><td colspan="7">暂无邮件事件</td></tr>'
-  return c.html(buildLayout('邮件发送记录', `<div class="panel"><div class="section-title"><div><h2>邮件发送记录</h2><p>失败邮件可在最大重试次数内由 Manager 或 Admin 手动重发。</p></div></div><div class="table-wrapper"><table><thead><tr><th>事件</th><th>收件人</th><th>状态</th><th>尝试</th><th>失败原因</th><th>时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>`, user))
+  const { results = [] } = await c.env.RENT.prepare('SELECT id, event_type, recipient, subject, status, retry_count, max_attempts, error_message, sent_at, created_at FROM email_events ORDER BY created_at DESC LIMIT 100').all() as any
+  const statusLabels = { PENDING: '待发送', SENT: '邮件已提交', FAILED: '发送失败', SKIPPED: '已跳过' }
+  const eventLabels = { SITE_NOTIFICATION: '手动通知', TEMPLATE: '模板邮件', MARKETING: '营销邮件', C2C_NEW_RENTAL: '新出租通知' }
+  const rows = results.map((event: any) => `<tr><td>${sanitizePlainText(eventLabels[event.event_type] || event.event_type, 40)}<br><small>${sanitizePlainText(event.subject || '—', 200)}</small></td><td>${sanitizePlainText(event.recipient, 254)}</td><td><span class="badge ${event.status === 'SENT' ? 'badge-success' : event.status === 'FAILED' ? 'badge-danger' : 'badge-neutral'}">${sanitizePlainText(statusLabels[event.status] || event.status, 20)}</span></td><td>${event.retry_count}/${event.max_attempts}</td><td>${sanitizePlainText(event.error_message || '—', 200)}</td><td>${sanitizePlainText(event.sent_at || event.created_at, 40)}</td><td>${['FAILED', 'SKIPPED'].includes(event.status) && Number(event.retry_count) < Number(event.max_attempts) ? `<form method="post" action="/manager/email-events/${encodeURIComponent(event.id)}/retry" data-site-confirm="确认重新发送该邮件吗？"><button class="button button-sm button-primary">重新发送</button></form>` : '—'}</td></tr>`).join('') || '<tr><td colspan="7">暂无邮件事件</td></tr>'
+  return c.html(buildLayout('邮件发送记录', `<div class="panel"><div class="section-title"><h2>邮件发送记录</h2><a class="button button-secondary" href="/notifications#send-notification">发送通知</a></div><div class="table-wrapper"><table><thead><tr><th>事件与主题</th><th>收件人</th><th>状态</th><th>尝试</th><th>失败原因</th><th>时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>`, user))
 })
 
 app.post('/manager/email-events/:id/retry', async (c) => {
@@ -4182,10 +4309,22 @@ app.post('/manager/email-events/:id/retry', async (c) => {
   if (!user || !['MANAGER', 'ADMIN'].includes(getAccessLevel(user))) return c.html(renderForbidden(), 403)
   const event = await c.env.RENT.prepare("SELECT * FROM email_events WHERE id = ? AND status <> 'SENT' AND retry_count < max_attempts").bind(c.req.param('id')).first() as any
   if (!event) return c.text('邮件事件不存在、已发送或已超过最大重试次数', 409)
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) return c.text('邮件服务尚未配置', 503)
+  if (event.event_type==='C2C_NEW_RENTAL') {
+    await deliverC2CEmails(c,event.id)
+    await createAuditLog(c,{actor:user,action:'EMAIL_EVENT_RETRIED',targetType:'EMAIL_EVENT',targetId:event.id})
+    return c.redirect('/manager/email-events',303)
+  }
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) return c.text('邮件服务尚未配置', 503)
+  if (!event.subject || !event.text_body) return c.text('邮件内容不完整，请重新发送通知', 409)
+  if (event.event_type === 'SITE_NOTIFICATION') {
+    const template = await c.env.RENT.prepare('SELECT enabled FROM email_templates WHERE id = ? AND deleted_at IS NULL').bind(event.template_id).first()
+    if (!template?.enabled) return c.text('请先启用站内通知邮件模板', 409)
+  }
+  const claimed = await c.env.RENT.prepare("UPDATE email_events SET status = 'PENDING', retry_count = retry_count + 1, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('FAILED', 'SKIPPED') AND retry_count = ? AND retry_count < max_attempts").bind(event.id, event.retry_count).run()
+  if (Number(claimed.meta?.changes || 0) !== 1) return c.text('邮件已在发送中或已发送', 409)
   const result = await sendTransactionalEmail(c, { to: event.recipient, subject: event.subject, text: event.text_body, html: event.html_body || undefined })
-  await c.env.RENT.prepare("UPDATE email_events SET status = ?, provider_message_id = ?, error_message = ?, retry_count = retry_count + 1, last_attempt_at = CURRENT_TIMESTAMP, sent_at = CASE WHEN ? THEN CURRENT_TIMESTAMP END WHERE id = ?").bind(result.ok ? 'SENT' : 'FAILED', result.id, result.error, result.ok ? 1 : 0, event.id).run()
+  await c.env.RENT.prepare("UPDATE email_events SET status = ?, provider_message_id = ?, error_message = ?, sent_at = CASE WHEN ? THEN CURRENT_TIMESTAMP END WHERE id = ?").bind(result.ok ? 'SENT' : 'FAILED', result.id, result.error, result.ok ? 1 : 0, event.id).run()
   await createAuditLog(c, { actor: user, action: 'EMAIL_EVENT_RETRIED', targetType: 'EMAIL_EVENT', targetId: event.id, after: { status: result.ok ? 'SENT' : 'FAILED' } })
   return c.redirect('/manager/email-events', 303)
 })
@@ -5079,7 +5218,7 @@ app.get('/admin/finance', async (c) => {
   }
   const transferSearch = String(c.req.query('transferCode') || '').trim().toUpperCase()
   const [revenueData, transfers] = await Promise.all([pages.getRevenueData(c), listBankTransferPayments(c, transferSearch)])
-  return c.html(pages.renderAdminFinance(user, revenueData.orders, revenueData.refunds, revenueData.withdrawals, { transfers, search: transferSearch }))
+  return c.html(pages.renderAdminFinance(user, revenueData.orders, revenueData.refunds, revenueData.withdrawals, { transfers, search: transferSearch, ownerSettlements: revenueData.ownerSettlements }))
 })
 
 app.get('/admin/finance/payment-disputes', async (c) => {
@@ -5780,6 +5919,16 @@ app.post('/admin/devices/:id/delete', async (c) => {
   return c.redirect('/admin/devices')
 })
 
+
+app.get('/admin/settings/client-features', async (c) => {
+  const user = c.get('user')
+  if (!user || user.role !== 'ADMIN') return c.html(renderForbidden(),403)
+  let settings
+  try { settings = await readClientAccess(c.env.RENT) }
+  catch(error) { if (!(error instanceof SyntaxError)) throw error; settings=normalizeClientAccess({console:{enabled:false},web:{enabled:false}}) }
+  return c.html(pages.renderAdminClientFeatures(user,settings,c.req.query('saved') === '1'))
+})
+app.post('/admin/settings/client-features',actions.saveClientFeatures)
 
 app.get('/admin/settings', async (c) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)
@@ -6634,6 +6783,8 @@ export default {
 
     const batches = scheduledBatches(event.cron, event.scheduledTime)
     if (batches.reminders) {
+      ctx.waitUntil(runScheduledJob(c,'rental_payout_requests',()=>runRentalPayouts(c)))
+      ctx.waitUntil(runScheduledJob(c,'deliver_c2c_emails',async()=>{await loadSystemSettingsFromDB(c);return deliverC2CEmails(c)}))
       ctx.waitUntil(runScheduledJob(c, 'send_pickup_reminders', async () => {
         await loadSystemSettingsFromDB(c)
         const { sendScheduledPickupReminders } = await import('./site')

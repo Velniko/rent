@@ -120,9 +120,10 @@ export async function sendPickupReminderEmail(c: Context, notification: { recipi
 
 // 给一条已创建的站内信补发邮件：找收件人邮箱、找兜底模板、套用变量、发信。
 // 尽力而为——任何一步失败都不影响站内信本身，调用方只需 catch 掉即可。
-async function sendNotificationEmail(c: Context, notification: { recipientId: string; type: string; title: string; message: string; orderId?: string }): Promise<void> {
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) return
+async function sendNotificationEmail(c: Context, notification: NotificationInput, notificationId: string): Promise<EmailSendResult | void> {
+  if (notification.type === 'manual') return sendManualNotificationEmail(c, notification, notificationId)
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) return
   const recipient = await c.env.RENT.prepare('SELECT name, email, role FROM users WHERE id = ?').bind(notification.recipientId).first() as any
   const email = String(recipient?.email || '').trim()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.endsWith('@invalid.local')) return
@@ -196,28 +197,36 @@ async function sendNotificationEmail(c: Context, notification: { recipientId: st
     return
   }
 
-  // 通用邮件只服务于后台人员手动发送的私信；通告和其它业务站内通知不发兜底邮件。
-  if (notification.type !== 'manual') return
+}
 
+async function sendManualNotificationEmail(c: Context, notification: NotificationInput, notificationId: string): Promise<EmailSendResult> {
   await ensureSiteNotificationEmailTemplate(c)
-  const template = await c.env.RENT.prepare('SELECT subject, body, enabled, theme_color FROM email_templates WHERE id = ?').bind(SITE_NOTIFICATION_TEMPLATE_ID).first() as any
-  if (!template || template.enabled === 0) return
-
+  const [recipient, template] = await Promise.all([
+    c.env.RENT.prepare('SELECT name, email, role FROM users WHERE id = ?').bind(notification.recipientId).first(),
+    c.env.RENT.prepare('SELECT subject, body, enabled, theme_color FROM email_templates WHERE id = ? AND deleted_at IS NULL').bind(SITE_NOTIFICATION_TEMPLATE_ID).first(),
+  ]) as any[]
+  const email = String(recipient?.email || '').trim()
   const companyDetails = getSystemSettings().companyDetails || ({} as any)
-  const orderDetailUrl = buildNotificationOrderDetailUrl(c.req.url, notification.orderId, recipient?.role)
   const vars: Record<string, string> = {
-    title: notification.title,
-    message: notification.message,
-    customer_name: normalizeCustomerName(recipient?.name),
-    customer_email: email,
-    order_detail_url: orderDetailUrl,
-    company_name: String(companyDetails.name || ''),
-    company_email: String(companyDetails.email || ''),
+    title: notification.title, message: notification.message,
+    customer_name: normalizeCustomerName(recipient?.name), customer_email: email,
+    order_detail_url: buildNotificationOrderDetailUrl(c.req.url, notification.orderId, recipient?.role),
+    company_name: String(companyDetails.name || ''), company_email: String(companyDetails.email || ''),
   }
-  const fill = (value: string) => value.replace(/\{([a-z_]+)\}/g, (_: string, key: string) => vars[key] ?? '')
-  const subject = fill(String(template.subject || SITE_NOTIFICATION_TEMPLATE_SUBJECT))
-  const html = renderEmailNotificationHtml(subject, fill(String(template.body || SITE_NOTIFICATION_TEMPLATE_BODY)), vars.company_name, template.theme_color || '#f0a35b')
-  await sendTransactionalEmail(c, { to: email, subject, text: sanitizePlainText(notification.message, 2000), html })
+  const fill = (value: string, html = false) => value.replace(/\{([a-z_]+)\}/g, (_: string, key: string) => html && key !== 'message' ? escapeHtml(vars[key] ?? '') : vars[key] ?? '')
+  const subject = fill(String(template?.subject || SITE_NOTIFICATION_TEMPLATE_SUBJECT))
+  const html = renderEmailNotificationHtml(subject, fill(String(template?.body || SITE_NOTIFICATION_TEMPLATE_BODY), true), vars.company_name, template?.theme_color || '#f0a35b')
+  const text = sanitizePlainText(notification.message, 2000)
+  const eventId = `email-${crypto.randomUUID()}`
+  await c.env.RENT.prepare("INSERT INTO email_events (id, event_type, recipient, order_id, template_id, idempotency_key, status, subject, text_body, html_body) VALUES (?, 'SITE_NOTIFICATION', ?, ?, ?, ?, 'PENDING', ?, ?, ?)")
+    .bind(eventId, email, notification.orderId || null, SITE_NOTIFICATION_TEMPLATE_ID, `notification:${notificationId}`, subject, text, html).run()
+  let result: EmailSendResult
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.endsWith('@invalid.local')) result = { ok: false, id: null, error: '收件人邮箱无效' }
+  else if (!template || template.enabled === 0) result = { ok: false, id: null, error: '请先启用站内通知邮件模板' }
+  else result = await sendTransactionalEmail(c, { to: email, subject, text, html })
+  await c.env.RENT.prepare("UPDATE email_events SET status = ?, provider_message_id = ?, error_message = ?, retry_count = 1, last_attempt_at = CURRENT_TIMESTAMP, sent_at = CASE WHEN ? THEN CURRENT_TIMESTAMP END WHERE id = ?")
+    .bind(result.ok ? 'SENT' : 'FAILED', result.id, result.error, result.ok ? 1 : 0, eventId).run()
+  return result
 }
 
 async function sendGenericNotificationEmail(c: Context, notification: { recipientId: string; title: string; message: string; orderId?: string }, recipient: any, email: string): Promise<void> {
@@ -411,7 +420,13 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
   return queued.length
 }
 
-export async function createNotification(c: Context, notification: { recipientId: string; type: string; title: string; message: string; titleEn?: string; messageEn?: string; orderId?: string; senderId?: string; expiresAt?: string | null; dedupeKey?: string | null; notifyByEmail?: boolean }): Promise<boolean> {
+export type NotificationInput = { recipientId: string; type: string; title: string; message: string; titleEn?: string; messageEn?: string; orderId?: string; senderId?: string; expiresAt?: string | null; dedupeKey?: string | null; notifyByEmail?: boolean }
+
+export async function createNotification(c: Context, notification: NotificationInput): Promise<boolean> {
+  return (await createNotificationWithDelivery(c, notification)).inserted
+}
+
+export async function createNotificationWithDelivery(c: Context, notification: NotificationInput): Promise<{ inserted: boolean; email: EmailSendResult | null }> {
   await ensureNotificationsTable(c)
   const id = `nt-${crypto.randomUUID()}`
   const result = await c.env.RENT.prepare('INSERT OR IGNORE INTO notifications (id, recipient_id, type, title, message, order_id, sender_id, expires_at, dedupe_key, title_en, message_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -431,11 +446,15 @@ export async function createNotification(c: Context, notification: { recipientId
   // 补发邮件：尽力而为，绝不影响站内信；重复通知（dedupe 命中）不重复发信。
   const defaultDelivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
   const notifyByEmail = notification.notifyByEmail ?? defaultDelivery === 'in_app_email'
+  let email: EmailSendResult | null = null
   if (inserted && notifyByEmail && (notification.type === 'manual' || Boolean(BUSINESS_NOTIFICATION_TEMPLATE_IDS[notification.type]) || CUSTOMER_AUTOMATIC_EMAIL_TYPES.has(notification.type))) {
-    try { await sendNotificationEmail(c, notification) }
-    catch (error: any) { console.error('sendNotificationEmail failed:', error?.message || error) }
+    try { email = await sendNotificationEmail(c, notification, id) || null }
+    catch (error: any) {
+      console.error('sendNotificationEmail failed:', error?.message || error)
+      email = { ok: false, id: null, error: '邮件发送失败，请查看发送记录' }
+    }
   }
-  return inserted
+  return { inserted, email }
 }
 
 type PaymentEmailContext = {
@@ -561,8 +580,8 @@ function paymentReceiptAttachment(document: TaxInvoiceDocument): EmailAttachment
 
 // 「付款成功」邮件：套用后台可编辑的 payment_completed 模板，并附加独立的付款收据 PDF。
 export async function sendPaymentCompletedEmail(c: Context, order: any, contract?: { contractNumber?: string } | null): Promise<void> {
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) return
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) return
   const context = await getPaymentEmailContext(c, order, contract)
   if (!context) return
   const template = await c.env.RENT.prepare("SELECT subject, body, enabled, theme_color FROM email_templates WHERE id = 'payment_completed'").first() as any
@@ -581,8 +600,8 @@ export async function sendPaymentCompletedEmail(c: Context, order: any, contract
 
 // 用户或管理员主动点击「邮件发送」时，使用独立的 tax_invoice_issued 模板发送 A4 PDF。
 export async function sendTaxInvoiceEmail(c: Context, order: any, contract?: { contractNumber?: string } | null): Promise<void> {
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) return
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) return
   const context = await getPaymentEmailContext(c, order, contract)
   if (!context) return
   await ensureTaxInvoiceEmailTemplate(c)
@@ -741,8 +760,8 @@ export async function sendScheduledPickupReminders(c: Context, now = new Date())
 // 由 cron 触发，每次只处理一小批，避免一次调用里对外发起过多子请求；
 // 失败的行会在下一次 tick 自动重试，直到 max_attempts。
 export async function deliverPendingAgreementEmails(c: Context): Promise<number> {
-  const { apiKey, from } = await resolveEmailCredentials(c)
-  if (!apiKey || !from) return 0
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
+  if ((provider !== 'smtp' && !apiKey) || !from) return 0
   const rows = (((await c.env.RENT.prepare(
     "SELECT id, recipient, subject, text_body, html_body FROM email_events WHERE event_type = 'AGREEMENT_UPDATE' AND template_id = 'agreement_update_batch' AND ((status IN ('PENDING', 'FAILED') AND retry_count < max_attempts) OR (status = 'SENDING' AND retry_count < max_attempts AND last_attempt_at <= datetime('now', '-15 minutes'))) ORDER BY created_at LIMIT 90"
   ).all()) as any).results || []) as any[]
@@ -794,7 +813,7 @@ export async function notifyOverduePaymentProofs(c: Context): Promise<number> {
   if (!(proofs.results || []).length) return 0
   const admins = (await c.env.RENT.prepare("SELECT id, email, name FROM users WHERE role = 'ADMIN' AND status = 'active'").all() as any).results || []
   if (!admins.length) return 0
-  const { apiKey, from } = await resolveEmailCredentials(c)
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
   let notified = 0
   for (const proof of proofs.results as any[]) {
     const method = proof.payment_method === 'alipay' ? '支付宝' : proof.payment_method === 'wechat' ? '微信' : '银行转账'
@@ -802,7 +821,7 @@ export async function notifyOverduePaymentProofs(c: Context): Promise<number> {
     const title = `${method}付款待审核超过 1 小时`
     const message = `订单 ${orderLabel} 的${method}付款凭证已提交超过 1 小时，客户：${proof.customer_name || '未填写'}，金额：AUD ${Number(proof.totalAmount || 0).toFixed(2)}。请尽快审核。`
     await Promise.all(admins.map((admin: any) => createNotification(c, { recipientId: admin.id, type: 'payment_review_overdue', title, message, orderId: proof.order_id, notifyByEmail: false })))
-    if (apiKey && from) {
+    if ((provider === 'smtp' || apiKey) && from) {
       const html = renderEmailNotificationHtml(title, `<p>${message}</p><p><a href="${new URL(`/admin/orders/${proof.order_id}`, c.req.url).toString()}">打开订单审核</a></p>`, getSystemSettings().companyDetails.name)
       const recipients = admins.map((admin: any) => admin.email).filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
       if (recipients.length) await sendTransactionalEmail(c, { to: recipients, subject: title, text: message, html })
@@ -830,7 +849,7 @@ export async function notifyOverdueBankTransferRefunds(c: Context): Promise<numb
   if (!(refunds.results || []).length) return 0
   const admins = (await c.env.RENT.prepare("SELECT id, email, name FROM users WHERE role = 'ADMIN' AND status = 'active'").all() as any).results || []
   if (!admins.length) return 0
-  const { apiKey, from } = await resolveEmailCredentials(c)
+  const { provider, apiKey, from } = await resolveEmailCredentials(c)
   const typeLabel: Record<string, string> = { deposit: '押金', cancellation: '取消订单', early_return: '提前归还' }
   let notified = 0
   for (const refund of refunds.results as any[]) {
@@ -839,7 +858,7 @@ export async function notifyOverdueBankTransferRefunds(c: Context): Promise<numb
     const title = '银行转账退款超过 1 天未完成'
     const message = `订单 ${orderLabel} 的${typeLabel[refund.type] || refund.type}退款 AUD ${amount.toFixed(2)} 已提交银行转账退款超过 1 天仍未完成，请尽快转账并在后台点击"确认已转账"。`
     await Promise.all(admins.map((admin: any) => createNotification(c, { recipientId: admin.id, type: 'refund_bank_transfer_overdue', title, message, orderId: refund.order_id })))
-    if (apiKey && from) {
+    if ((provider === 'smtp' || apiKey) && from) {
       const html = renderEmailNotificationHtml(title, `<p>${message}</p><p><a href="${new URL(`/admin/orders/${refund.order_id}`, c.req.url).toString()}">打开订单处理</a></p>`, getSystemSettings().companyDetails.name)
       const recipients = admins.map((admin: any) => admin.email).filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
       if (recipients.length) await sendTransactionalEmail(c, { to: recipients, subject: title, text: message, html })

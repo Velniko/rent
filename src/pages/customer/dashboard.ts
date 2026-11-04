@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { clientPathEnabled, normalizeClientAccess } from '../../clientAccess'
 import { buildLayout, formatCurrency, formatDate, sanitizePlainText } from '../../site';
 import { escapeHtml } from '../../lib/html';
 import { renderAnnouncementTitle, renderAnnouncementMessage } from '../../domain/announcement';
@@ -35,7 +36,7 @@ export function renderCustomerDashboard(user: any, allOrders: any[], devices: an
   // 客户首页：摘要（余额与在租）→ 待办 → 快捷操作与通知。
   const todo: Array<{ title: string; meta: string; href: string; tone?: 'alert' | 'warn' }> = []
   if (pendingPayment) todo.push({ title: '有待付款订单', meta: `${pendingPayment} 笔`, href: '/customer/orders?status=pending_payment', tone: 'warn' })
-  if (negativeBalance) todo.push({ title: '余额为负，请充值', meta: formatCurrency(user.balance), href: '/customer/balance/top-up', tone: 'alert' })
+  if (negativeBalance && clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/balance/top-up','console')) todo.push({ title: '余额为负，请充值', meta: formatCurrency(user.balance), href: '/customer/balance/top-up', tone: 'alert' })
   for (const rental of currentRentals) {
     const days = getDaysUntil(rental.endDate)
     if (days === null || days > 3) continue
@@ -51,7 +52,7 @@ export function renderCustomerDashboard(user: any, allOrders: any[], devices: an
     <div class="hero">
       <h2>欢迎回来，${sanitizePlainText(user.name, 80)}</h2>
     </div>
-    ${negativeBalance ? `<div class="page-notification page-notification--error"><strong>账户余额为负：${formatCurrency(user.balance)}</strong><p>请充值至非负余额，否则无法提交新订单。</p><a class="button button-sm button-primary" href="/customer/balance/top-up">立即充值</a></div>` : ''}
+    ${negativeBalance ? `<div class="page-notification page-notification--error"><strong>账户余额为负：${formatCurrency(user.balance)}</strong><p>请充值至非负余额，否则无法提交新订单。</p>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/balance/top-up','console') ? `<a class="button button-sm button-primary" href="/customer/balance/top-up">立即充值</a>` : ''}</div>` : ''}
     <section class="summary" aria-label="账户摘要">
       <div class="summary__lead">
         <span class="summary__eyebrow">账户余额 / BALANCE</span>
@@ -85,10 +86,10 @@ export function renderCustomerDashboard(user: any, allOrders: any[], devices: an
       <div class="card quick-actions">
         <div class="quick-actions__heading"><div><h3>快捷操作</h3></div></div>
         <div class="quick-actions__list">
-          <a class="quick-action" href="/customer/devices"><span class="quick-action__icon">⌘</span><span><strong>浏览可租设备</strong><small>查找下一台设备</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>
-          <a class="quick-action" href="/customer/referral"><span class="quick-action__icon">+</span><span><strong>邀请好友赚佣金</strong><small>分享你的推荐链接</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>
+          ${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/devices','console') ? `<a class="quick-action" href="/customer/devices"><span class="quick-action__icon">⌘</span><span><strong>浏览可租设备</strong><small>查找下一台设备</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` : ''}
+          ${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/referral','console') ? `<a class="quick-action" href="/customer/referral"><span class="quick-action__icon">+</span><span><strong>邀请好友赚佣金</strong><small>分享你的推荐链接</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` : ''}
           <a class="quick-action" href="/customer/profile"><span class="quick-action__icon">◎</span><span><strong>完善账户信息</strong><small>更新资料与联系方式</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>
-          <a class="quick-action" href="/feedback"><span class="quick-action__icon">♥</span><span><strong>填写客户反馈</strong><small>完成问卷领取奖励</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>
+          ${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/feedback','console') ? `<a class="quick-action" href="/feedback"><span class="quick-action__icon">♥</span><span><strong>填写客户反馈</strong><small>完成问卷领取奖励</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` : ''}
         </div>
       </div>
       <div class="card dashboard-announcements">

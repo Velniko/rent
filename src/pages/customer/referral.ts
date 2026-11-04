@@ -6,7 +6,9 @@
 import { buildLayout, getUserById, formatCurrency, formatMelbourneDate } from '../../site';
 import { Context } from 'hono';
 import { getSystemSettings } from '../../settings/systemSettings';
-import { calculateReferralTier } from '../../domain/referral';
+import { renderReferralProgramLanding } from '../partials/programLanding';
+import { escapeHtml } from '../../lib/html';
+import { calculateReferralTier, normalizeReferralSettings } from '../../domain/referral';
 import { getEffectiveReferralCount } from '../../services/referral';
 
 function desensitizeName(name: string): string {
@@ -23,6 +25,13 @@ export async function renderCustomerReferral(c: Context, user: any, message?: st
     return buildLayout('我的推荐 - 电脑租赁管理系统', '<div class="panel"><h2>用户未找到</h2><p>无法加载推荐信息。</p></div>', user);
   }
 
+  const referralSettings=normalizeReferralSettings(getSystemSettings().referralSettings)
+  const tier = calculateReferralTier(await getEffectiveReferralCount(c, user.id), referralSettings)
+  if (!currentUser.referralCode || c.req?.query?.('intro')==='1') {
+    const notice=message?`<div data-flash-notice class="page-notification page-notification--${type || 'info'}">${escapeHtml(message)}</div>`:''
+    return buildLayout('推荐计划 - 电脑租赁管理系统',notice+renderReferralProgramLanding(tier,referralSettings,Boolean(currentUser.referralCode)),user)
+  }
+
   // referral_rewards 是唯一的推荐奖励账本（customer_id = 推荐人）。
   const rewardRows = await c.env.RENT.prepare(`
     SELECT reward_amount AS amount, status, withdrawn_at
@@ -32,7 +41,6 @@ export async function renderCustomerReferral(c: Context, user: any, message?: st
   type RewardRow = { amount: number; status: string; withdrawn_at: string | null }
   const records = (rewardRows.results || []) as RewardRow[]
   const commissionBalance = Number(currentUser.commissionBalance || 0)
-  const tier = calculateReferralTier(await getEffectiveReferralCount(c, user.id), getSystemSettings().referralSettings)
 
   const active = records.filter((r) => !['CANCELLED', 'REVERSED'].includes(r.status))
   const totalReward = active.reduce((sum, r) => sum + (r.amount || 0), 0)
@@ -62,17 +70,9 @@ export async function renderCustomerReferral(c: Context, user: any, message?: st
 
   const body = `
     <div class="panel">
-      <div class="section-title"><h2>推荐计划</h2></div>
+      <div class="section-title"><h2>推荐计划</h2><a class="button button-secondary" href="/customer/referral?intro=1">了解推荐计划</a></div>
       ${message ? `<div data-flash-notice class="page-notification page-notification--${type || 'info'}">${message}</div>` : ''}
 
-      ${!currentUser.referralCode ? `
-        <div style="margin-bottom: 30px; padding: 24px; background: var(--surface-secondary); border-radius: 12px; text-align: center;">
-          <h3>加入推荐计划</h3>
-          <form method="POST" action="/customer/referral/join" style="display: inline-block;">
-            <button type="submit" class="button button-primary">立即加入</button>
-          </form>
-        </div>
-      ` : `
         <div style="margin-bottom: 30px;">
           <div class="form-group">
             <label class="form-label">我的推荐码</label>
@@ -89,10 +89,10 @@ export async function renderCustomerReferral(c: Context, user: any, message?: st
             <button type="submit" class="button button-danger">退出推荐计划</button>
           </form>
         </div>
-      `}
+
+
 
       ${currentUser.referralCode ? `
-
       <div class="grid grid-3">
         <div class="card text-center"><h3>当前推荐等级</h3><p class="text-large">${tier.level}</p></div>
         <div class="card text-center"><h3>当前租金分成比例</h3><p class="text-large">${tier.rate}%</p></div>

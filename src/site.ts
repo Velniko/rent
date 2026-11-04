@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { clientPathEnabled } from './clientAccess'
 import { Context } from 'hono'
 import { stripeRequest } from './stripe'
 import { expireStripeCheckout } from './services/stripeCheckout'
@@ -1687,7 +1688,7 @@ export async function loadDatabaseData(c: Context): Promise<void> {
 }
 
 
-export function buildLayout(title: string, body: string, currentUser?: User | null, options: { compactStaffNav?: boolean; currentPath?: string } = {}): string {
+export function buildLayout(title: string, body: string, currentUser?: (User & { clientAccess?: import('./clientAccess').ClientAccess }) | null, options: { compactStaffNav?: boolean; currentPath?: string } = {}): string {
   const normalizedTitle = title.includes('电脑租赁管理系统') ? title : `${title} - 电脑租赁管理系统`
   // 当前路径：用于手机端底部 tab 的 aria-current 高亮（服务端渲染，无需等脚本）。
   const currentPath = (options.currentPath || '').replace(/\/$/, '') || ''
@@ -1710,10 +1711,11 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
 
   const navIcons: Record<string, string> = {
     '/customer/dashboard': 'rental-console', '/customer/rentals': '▤', '/customer/orders': '▦',
-    '/customer/profile': '◎', '/customer/security': '⚿', '/customer/referral': '✦', '/customer/devices': 'laptop', '/customer/balance': '◌', '/customer/guest': '▰', '/customer/guest/upgrade': '↥',
+    '/customer/profile': '◎', '/customer/security': '⚿', '/customer/referral': '✦', '/customer/devices': 'laptop', '/customer/rental-program': 'c2c-rental', '/admin/rental-program': 'c2c-rental', '/customer/balance': '◌', '/customer/guest': '▰', '/customer/guest/upgrade': '↥',
     '/staff/dashboard': 'rental-console', '/staff/orders': '◓', '/staff/orders/ongoing': '◷', '/staff/customers': '♧', '/staff/contracts': 'rental-contract',
     '/staff/contracts/new': 'file-plus', '/staff/contracts?status=pending_sign': '✍', '/staff/inspections': 'device-inspection', '/staff/mobile/scan': 'scan', '/staff/rentals/tracking': '⌖', '/staff/devices': 'asset-register', '/manager/staff': 'people',
     '/staff/mobile': 'today', '/staff/mobile/pickup': 'pickup', '/staff/mobile/return': 'return',
+    '/admin/rental-settlements': 'bank-transfer', '/admin/settings/client-features': 'client-controls', '/manager/email-events': 'mail-history',
     '/admin/notifications/settings': 'bell-settings', '/admin/rental-links': 'link', '/admin/delivery': 'truck',
     '/admin/marketing-emails/data': 'marketing-chart', '/admin/api-settings': 'code',
     '/notifications': 'N', '/admin/notifications': 'inbox', '/admin/dashboard': 'rental-console', '/admin/users': 'people', '/admin/orders': '▥',
@@ -1725,6 +1727,10 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
 
   const navIconSvg = (kind: string) => {
     const paths: Record<string, string> = {
+      'bank-transfer': '<path d="m3 8 9-5 9 5H3ZM5 11v6M10 11v6M15 11v2M3 20h9M15 16h7m-3-3 3 3-3 3"></path>',
+      'client-controls': '<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 9h18M7 6.5h.01M10 6.5h.01M7 13h10M7 17h10"></path><circle cx="10" cy="13" r="1.5" fill="currentColor"></circle><circle cx="14" cy="17" r="1.5" fill="currentColor"></circle>',
+      'mail-history': '<path d="M21 10V5H3v14h9M3 6l9 6 9-6"></path><circle cx="18" cy="17" r="5"></circle><path d="M18 14v3l2 1"></path>',
+      'c2c-rental': '<rect x="3" y="3" width="14" height="11" rx="1.5"></rect><path d="M2 18h10M7 14v4M10 7h3M19 12l3 3-3 3M22 15h-7M17 22l-3-3 3-3M14 19h7"></path>',
       'rental-console': '<rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M3 9h18M9 9v12M13 13h4M13 17h2M7 6h.01M10 6h.01"></path>',
       'people': '<rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="9" cy="10" r="2"></circle><path d="M5 17c.5-2 1.8-3 4-3s3.5 1 4 3M16 8h2M16 12h2M16 16h2"></path>',
       'rental-contract': '<path d="M14 3H5v18h14V8l-5-5ZM14 3v5h5M8 11h7M8 14h3M8 18l2-2 2 2 3-3M15 18h1"></path>',
@@ -1803,11 +1809,16 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
     return `<svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] || paths['▣']}</svg>`
   }
   const renderNavLink = (href: string, text: string) => {
+    if (currentUser?.role !== 'ADMIN' && currentUser?.clientAccess && !clientPathEnabled(currentUser.clientAccess,href,'console')) return ''
     const icon = navIcons[href] || navIcons[href.split('?')[0]] || '▣'
     return `<a href="${href}"><span class="nav-icon">${navIconSvg(icon)}</span>${text}</a>`
   }
   const chevronSvg = '<span class="nav-group-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>'
-  const renderNavGroup = (label: string, links: Array<[string, string]>) => `<details class="sidebar-nav-group"><summary>${label}${chevronSvg}</summary>${links.map(([href, text]) => renderNavLink(href, text)).join('')}</details>`
+  const navGroupIcons: Record<string, string> = { '合同中心': 'rental-contract', '租赁工作区': 'laptop', '账户与钱包': '◌', '租赁管理': '▥', '合同管理': 'rental-contract', '设备运营': 'asset-register', '人员管理': 'people', '通知中心': 'inbox', '设备管理': 'asset-register', '财务管理': 'rental-finance', '营销增长': 'marketing-chart', '系统设置': 'client-controls' }
+  const renderNavGroup = (label: string, links: Array<[string, string]>) => {
+    const content = links.map(([href, text]) => renderNavLink(href, text)).join('')
+    return content ? `<details class="sidebar-nav-group"><summary>${label}<span class="nav-group-icon" aria-hidden="true">${navIconSvg(navGroupIcons[label] || 'grid')}</span>${chevronSvg}</summary><div class="nav-group-links">${content}</div></details>` : ''
+  }
 
   // 手机端底部 tab：只放最高频的核心动作（完整能力在「更多」抽屉与手机工作台里）。
   // 第三个元素是该 tab 视为「当前页」的路径前缀，用于输出 aria-current 与 active 高亮。
@@ -1821,9 +1832,9 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
       ]
       : currentUser?.accountType === 'guest'
         ? [['/customer/guest', '合同中心', '▤', ['/customer/guest']], ['/customer/guest/upgrade', '升级账户', '✦', ['/customer/guest/upgrade']]]
-        : [['/customer/dashboard', '首页', '◉', ['/customer/dashboard']], ['/notifications', '通知', 'N', ['/notifications']], ['/customer/devices', '可租设备', 'laptop', ['/customer/devices']], ['/customer/rentals', '租赁', '▤', ['/customer/rentals']], ['/customer/orders', '订单', '▦', ['/customer/orders']], ['/customer/balance', '钱包', '$', ['/customer/balance']], ['/customer/profile', '我的', '◎', ['/customer/profile']]]
+        : [['/customer/dashboard', '首页', '◉', ['/customer/dashboard']], ['/notifications', '通知', 'N', ['/notifications']], ['/customer/devices', '可租设备', 'laptop', ['/customer/devices']], ['/customer/rental-program', '我的出租', 'laptop', ['/customer/rental-program']], ['/customer/rentals', '租赁', '▤', ['/customer/rentals']], ['/customer/orders', '订单', '▦', ['/customer/orders']], ['/customer/balance', '钱包', '$', ['/customer/balance']], ['/customer/profile', '我的', '◎', ['/customer/profile']]]
   const mobileNav = currentUser
-    ? mobileLinks.map(([href, text, icon, activePaths]) => {
+    ? mobileLinks.filter(([href]) => currentUser?.role === 'ADMIN' || !currentUser?.clientAccess || clientPathEnabled(currentUser.clientAccess,href,'console')).map(([href, text, icon, activePaths]) => {
         const isCurrent = (href === '/staff/mobile' && currentPath === href) || activePaths.some(path => currentPath === path || currentPath.startsWith(`${path}/`))
         return `<a href="${href}"${isCurrent ? ' class="active" aria-current="page"' : ''}><span class="nav-icon">${navIconSvg(navIcons[href] || icon)}</span><small>${text}</small></a>`
       }).join('')
@@ -1884,7 +1895,7 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
           ${currentUser.role === 'CUSTOMER' ? `
             ${currentUser.accountType === 'guest' ? renderNavGroup('合同中心', [['/customer/guest', '访客合同中心'], ['/customer/guest/upgrade', '升级账户']]) : `
               ${renderNavLink('/customer/dashboard', '控制台')}
-              ${renderNavGroup('租赁工作区', [['/customer/rentals', '我的租赁'], ['/customer/orders', '订单管理']])}
+              ${renderNavGroup('租赁工作区', [['/customer/rentals', '我的租赁'], ['/customer/orders', '订单管理'], ['/customer/devices', '可租设备'], ['/customer/rental-program', '我的出租']])}
               ${renderNavGroup('账户与钱包', [['/customer/balance', '我的钱包'], ['/customer/profile', '个人资料'], ['/customer/security', '安全设置'], ['/customer/referral', '推荐计划']])}
             `}
           ` : ''}
@@ -1899,13 +1910,13 @@ export function buildLayout(title: string, body: string, currentUser?: User | nu
           ${currentUser.role === 'ADMIN' ? `
             ${renderNavLink('/admin/dashboard', '控制台')}
             ${renderNavLink('/admin/users', '用户管理')}
-            ${renderNavGroup('通知中心', [['/admin/notifications', '业务通知'], ['/admin/notifications/settings', '通知设置'], ['/notifications', '发布通知']])}
+            ${renderNavGroup('通知中心', [['/admin/notifications', '业务通知'], ['/notifications', '发布通知'], ['/manager/email-events', '邮件发送记录'], ['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/notifications/settings', '通知设置']])}
             ${renderNavGroup('租赁管理', [['/admin/order-review', '网站订单审核'], ['/admin/orders', '租赁订单'], ['/admin/delivery', '配送管理'], ['/admin/calendar', '租赁日历'], ['/admin/rental-rules', '租赁规则']])}
             ${renderNavGroup('合同管理', [['/admin/contracts', '合同列表'], ['/admin/templates/contract', '合同模板'], ['/admin/templates', '协议模板']])}
-            ${renderNavGroup('设备管理', [['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
-            ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/documents', '单据中心'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}
+            ${renderNavGroup('设备管理', [['/admin/rental-program', '设备出租管理'], ['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
+            ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/rental-settlements', '出租结算转账'], ['/admin/documents', '单据中心'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}
             ${renderNavGroup('营销增长', [['/admin/coupons', '优惠码管理'], ['/admin/marketing-emails', '营销邮件'], ['/admin/marketing-emails/data', '营销数据'], ['/admin/referrals', '推荐奖励管理'], ['/admin/feedback-rewards', '反馈奖励记录'], ['/admin/feedback-gift-cards', '礼品卡库存']])}
-            ${renderNavGroup('系统设置', [['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/tax-invoice-template', 'Tax Invoice PDF 模板'], ['/admin/settings', '系统设置'], ['/admin/api-settings', 'API 设置'], ['/admin/connectivity', '通讯检测'], ['/admin/exceptions', '异常任务中心'], ['/admin/monitoring', '系统健康监控'], ['/admin/data-retention', '数据保留策略']])}
+            ${renderNavGroup('系统设置', [['/admin/tax-invoice-template', 'Tax Invoice PDF 模板'], ['/admin/settings', '系统设置'], ['/admin/settings/client-features', '客户端功能'], ['/admin/api-settings', 'API 设置'], ['/admin/connectivity', '通讯检测'], ['/admin/exceptions', '异常任务中心'], ['/admin/monitoring', '系统健康监控'], ['/admin/data-retention', '数据保留策略']])}
           ` : ''}
         </div>
         <div class="sidebar-footer">

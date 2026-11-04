@@ -322,6 +322,9 @@ test('ready notice is immediate, with one additional email and site notification
   }
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduled_job_runs WHERE job_name = 'cancel_expired_pending_payments'").get()!.n, 1)
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduled_job_runs WHERE job_name = 'cleanup_expired_contracts'").get()!.n, 0)
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduled_job_runs WHERE job_name = 'deliver_c2c_emails' AND status = 'SUCCESS'").get()!.n, 2)
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduled_job_runs WHERE job_name = 'rental_payout_requests' AND status = 'SUCCESS'").get()!.n, 2)
+  assert.ok(Number(f.sqlite.prepare('SELECT COUNT(*) AS n FROM scheduled_job_runs').get()!.n) >= 6)
 })
 
 test('concurrent ticks send once and retry failed email without duplicating the site notification', async t => {

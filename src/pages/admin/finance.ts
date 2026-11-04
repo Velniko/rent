@@ -7,14 +7,17 @@ import { buildLayout, formatCurrency } from '../../site';
 import { escapeHtml } from '../../lib/html'
 import type { BankTransferPayment } from '../../services/bankTransferReferences'
 
-export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[] = [], withdrawals: any[] = [], bankTransfers: { transfers: BankTransferPayment[]; search: string } = { transfers: [], search: '' }) {
+export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[] = [], withdrawals: any[] = [], financeDetails: { transfers: BankTransferPayment[]; search: string; ownerSettlements?: any[] } | any[] = { transfers: [], search: '' }) {
+  const bankTransfers = Array.isArray(financeDetails) ? { transfers: [], search: '' } : financeDetails
+  const ownerSettlements = Array.isArray(financeDetails) ? financeDetails : financeDetails.ownerSettlements || []
   const totalRevenue = orders
     .reduce((sum, order) => sum + Number(order.collectedRevenue || 0), 0)
 
   const totalExpense = refunds.reduce((sum, item) => sum + Number(item.refund_amount || 0), 0) + withdrawals.reduce((sum, item) => sum + Number(item.amount || 0), 0)
-  const netProfit = Math.round((totalRevenue - totalExpense) * 100) / 100
   const statusLabels: Record<string, string> = { pending: '待支付', awaiting_transfer: '待转账凭证', submitted: '待审核', paid: '已入账', refunded: '已退款', partially_refunded: '部分退款', rejected: '已驳回', failed: '失败', cancelled: '已取消' }
   const transferRows = bankTransfers.transfers.map(item => `<tr><td class="mono">${escapeHtml(item.code || '—')}</td><td><a href="${item.scope === 'order' ? `/admin/orders/${encodeURIComponent(item.source_id)}` : `/admin/orders/balance-topups?search=${encodeURIComponent(item.code || item.source_id)}`}">${escapeHtml(item.order_no || item.source_id)}</a></td><td>${escapeHtml(item.customer_name || '—')}</td><td>${formatCurrency(item.amount)}</td><td>${escapeHtml(statusLabels[item.status] || item.status)}</td></tr>`).join('')
+  const ownerExpense = ownerSettlements.reduce((sum,item)=>sum+Number(item.amount || 0),0)
+  const netProfit = Math.round((totalRevenue - totalExpense - ownerExpense) * 100) / 100
 
   const body = `
     <style>
@@ -76,7 +79,7 @@ export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[]
         </div>
         <div class="finance-card">
           <h3>总支出</h3>
-          <p class="amount">${formatCurrency(totalExpense)}</p>
+          <p class="amount">${formatCurrency(totalExpense + ownerExpense)}</p>
         </div>
         <div class="finance-card">
           <h3>净收入</h3>
@@ -95,6 +98,7 @@ export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[]
       </section>
 
       <div class="finance-sections">
+        <div class="finance-section"><h4>主人结算</h4><p>${formatCurrency(ownerExpense)}</p><a href="/admin/rental-program" class="button button-sm">个人设备管理</a></div>
         <div class="finance-section">
           <h4>单据中心</h4>
           <a href="/admin/documents" class="button button-sm">查询单据</a>
