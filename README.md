@@ -98,6 +98,16 @@ npm run deploy
 
 部署 Worker 不会自动执行数据库 migrations。更新版本时应先备份 D1、检查待执行 migrations，再分别迁移数据库和部署代码。
 
+Cloudflare Workers Builds 的部署命令可设为：
+
+```bash
+npm run db:migrate:remote && npm run deploy
+```
+
+迁移和部署必须使用同一分支、同一版本。例如 C2C 版本依赖该分支的 `0179_add_c2c_marketplace.sql` 等迁移；在不含 C2C 的分支运行迁移，即使显示没有待执行迁移，也不能验证 C2C 数据库结构完整。已有数据库不要重新执行初始化 SQL。
+
+定时任务共用一个每分钟 Cron，根据事件的 `scheduledTime`（UTC）分派每分钟、每 15 分钟、每小时和每日任务；每日维护在 UTC 00:00 执行。Workers Free 的 5 个 Cron 配额按整个账号计算。如仍遇到错误 `10072`，检查账号内其他 Worker 的定时任务占用。
+
 ### 配置加密主密钥
 
 Stripe、Cloudinary 以及其他后台密钥会使用 AES-GCM 加密后存入 D1。生产环境必须设置独立的加密主密钥：

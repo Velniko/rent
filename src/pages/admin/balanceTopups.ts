@@ -5,6 +5,7 @@
 
 import { buildLayout, getDB, formatCurrency, formatMelbourneDate } from '../../site';
 import { Context } from 'hono';
+import { escapeHtml } from '../../lib/html'
 
 const TOPUP_STATUS_MAP: Record<string, { text: string; class: string }> = {
   all: { text: '全部', class: 'badge-info' },
@@ -57,10 +58,11 @@ function buildTopupWhere(filters?: TopupFilters) {
     clauses.push(`(
       LOWER(bt.id) LIKE ? ESCAPE '\\'
       OR LOWER(bt.reference) LIKE ? ESCAPE '\\'
+      OR LOWER(r.code) LIKE ? ESCAPE '\\'
       OR LOWER(u.name) LIKE ? ESCAPE '\\'
       OR LOWER(u.email) LIKE ? ESCAPE '\\'
     )`);
-    params.push(like, like, like, like);
+    params.push(like, like, like, like, like);
   }
 
   if (dateFrom) {
@@ -79,6 +81,7 @@ function buildTopupWhere(filters?: TopupFilters) {
 const TOPUP_JOIN_SQL = `
   FROM balance_topups bt
   LEFT JOIN users u ON u.id = bt.user_id
+  LEFT JOIN bank_transfer_references r ON r.scope = 'topup' AND r.source_id = bt.id
 `;
 
 export async function renderAdminBalanceTopups(c: Context, user: any) {
@@ -97,7 +100,7 @@ export async function renderAdminBalanceTopups(c: Context, user: any) {
   const [customerOptionsResult, rowsResult, statsRow] = await Promise.all([
     db.prepare("SELECT id, name FROM users WHERE role = 'CUSTOMER' ORDER BY name").all(),
     db.prepare(`
-      SELECT bt.*, u.name AS customer_name, u.email AS customer_email
+      SELECT bt.*, r.code AS transfer_code, u.name AS customer_name, u.email AS customer_email
       ${TOPUP_JOIN_SQL}
       WHERE ${whereSql}
       ORDER BY bt.created_at DESC
@@ -218,6 +221,7 @@ export async function renderAdminBalanceTopups(c: Context, user: any) {
             <th>金额</th>
             <th>支付方式</th>
             <th>状态</th>
+            <th>转账备注码</th>
             <th>Reference</th>
             <th>提交时间</th>
             <th>管理</th>
@@ -237,6 +241,7 @@ export async function renderAdminBalanceTopups(c: Context, user: any) {
               <td><strong>${formatCurrency(topup.amount)}</strong>${topup.cny_amount ? `<div style="color: var(--text-secondary); font-size: 0.8rem;">CNY ${Number(topup.cny_amount).toFixed(2)}</div>` : ''}</td>
               <td>${method}</td>
               <td><span class="badge ${status.class}">${status.text}</span></td>
+              <td class="mono">${escapeHtml(topup.transfer_code || '—')}</td>
               <td>${topup.reference ? `<span class="mono">${topup.reference}</span>${topup.proof_image_url ? `<div><a href="${topup.proof_image_url}" target="_blank" rel="noopener noreferrer">查看凭证</a></div>` : ''}` : '-'}</td>
               <td>${topup.created_at ? formatMelbourneDate(topup.created_at) : '-'}</td>
               <td>

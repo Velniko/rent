@@ -56,11 +56,9 @@
 		},
 	],
 	"triggers": {
-		// "0 0 * * *" runs the full daily maintenance batch; "0 * * * *" only
-		// cancels expired pending payments. The 15-minute sweep releases store
-		// pickups that remain uncollected for two hours. The minute trigger sends
-		// the two-hour and 30-minute pickup reminders.
-		"crons": ["0 0 * * *", "0 * * * *", "*/15 * * * *", "* * * * *"]
+		// One trigger dispatches minute, 15-minute, hourly and daily batches
+		// using the event's scheduled UTC time (daily maintenance at 00:00).
+		"crons": ["* * * * *"]
 	},
 	// "ai": {
 	//   "binding": "AI"

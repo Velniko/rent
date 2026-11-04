@@ -154,6 +154,16 @@ const common: Readonly<Record<string, string>> = {
   '电话': 'Phone',
   '地址': 'Address',
   '备注': 'Notes',
+  '转账备注码': 'Transfer reference code',
+  '转账备注码：': 'Transfer reference code:',
+  '请在银行转账备注中填写此码。': 'Enter this code in your bank transfer reference.',
+  '到以上账户。': 'to the account above.',
+  '银行转账查账': 'Bank transfer reconciliation',
+  '查询': 'Search',
+  '输入 5 位转账备注码': 'Enter the 5-character transfer code',
+  '订单 / 充值单': 'Order / Top-up',
+  '暂无匹配的银行转账记录': 'No matching bank transfers',
+  '暂时无法生成转账备注码，请稍后重试': 'Unable to generate a transfer code. Please try again later.',
   '内容': 'Content',
   '原因': 'Reason',
   '状态': 'Status',
@@ -4087,6 +4097,8 @@ const staff: Readonly<Record<string, string>> = {
 
 // @domain customer —— 客户 / 访客端页面文案
 const customer: Readonly<Record<string, string>> = {
+  '付款金额': 'Payment amount',
+  '礼品卡手续费以付款金额为准': 'Gift-card fees are shown in the payment amount',
   '礼品卡手续费以付款金额为准。': 'Gift-card fees are shown in the payment amount.',
   '启用或停用支付渠道。': 'Enable or disable payment channels.',
   '一次性付清（含押金）': 'Pay in full (including deposit)',

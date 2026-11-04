@@ -13,6 +13,8 @@ import { renderSquareGiftCardPaymentBox } from '../partials/squareGiftCardPaymen
 import { depositPaymentModeForOrder, isCardDepositSettled, normalizeSecurityDepositMethod, securityDepositMethodLabel } from '../../domain/paymentPlan';
 import { buildMonthlyRentalInstallments, isMonthlyRental } from '../../domain/monthlyRental';
 import { getOrderPriceAdjustmentSummary, getStripeProcessingFeeRate } from '../../actions/stripePayments';
+import { ensureBankTransferReference } from '../../services/bankTransferReferences'
+import { renderBankTransferReference } from '../partials/bankTransferReference'
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl, type DeliveryBookingView } from '../../services/deliveryViews';
 import { decryptSecret } from '../../lib/secretBox';
 import { canPreparePickup } from '../../domain/pickupPreparation';
@@ -63,6 +65,8 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
   const squareAdjustmentFee = Math.round(Number(priceAdjustmentSummary.amountDue) * 100 * squareFeeRate) / 100
   const squareAdjustmentTotal = Number((Number(priceAdjustmentSummary.amountDue) + squareAdjustmentFee).toFixed(2))
   const transferPayment = ['bank_transfer', 'alipay', 'wechat'].includes(String(order.paymentMethod))
+  const bankTransferReference = (order.paymentMethod === 'bank_transfer' && order.status === 'pending_payment') || (priceAdjustmentSummary.amountDue > 0 && ['bank_transfer', 'balance'].includes(String(order.paymentMethod)) && !['pending_payment', 'completed', 'cancelled'].includes(String(order.status)) && systemSettings.paymentMethods.bankTransfer)
+    ? await ensureBankTransferReference(c, 'order', order.id) : ''
   const squareDepositStatus = String((order as any).deposit_status || '').toUpperCase()
   const squareDepositPending = false
   const currentBalance = Number(account?.balance ?? user.balance ?? 0)
@@ -92,7 +96,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
       ? `<p><strong>银行名称:</strong> ${systemSettings.bankDetails.bankName || '—'}</p><p><strong>BSB:</strong> ${systemSettings.bankDetails.bsb}</p><p><strong>账号:</strong> ${systemSettings.bankDetails.account}</p>`
       : `<img src="${method === 'alipay' ? systemSettings.rmbPayment.alipayQrUrl : systemSettings.rmbPayment.wechatQrUrl}" alt="${label}收款码" loading="lazy" style="max-width:240px;display:block;margin:12px 0">`
     const summaryId = `rmb-adjustment-summary-${method}`
-    return `<div class="payment-card"><h4>${label}补差价</h4>${paymentDetails}<p id="${summaryId}">请支付 ${formatCurrency(priceAdjustmentSummary.amountDue)}${method === 'bank_transfer' ? '' : '；提交付款凭证前获取实时汇率。'}</p><form method="POST" enctype="multipart/form-data" action="/customer/orders/${order.id}/bank-transfer-proof"><input type="hidden" name="priceAdjustment" value="1"><input type="hidden" name="paymentMethod" value="${method}"><label class="form-label">付款 Reference</label><input class="form-control" name="referenceNumber" maxlength="100" required><label class="form-label">付款凭证图片</label><input class="form-control" type="file" name="imageFile" accept="image/jpeg,image/png,image/webp" required><label class="form-label">备注（选填）</label><textarea class="form-control" name="note" maxlength="500"></textarea><button class="button button-primary" type="submit" style="margin-top:12px">提交${label}差价凭证</button></form>${method !== 'bank_transfer' ? `<script>(()=>{const s=document.getElementById('${summaryId}');fetch('/api/payment/aud-cny?amount=${encodeURIComponent(String(priceAdjustmentSummary.amountDue))}').then(r=>r.ok?r.json():Promise.reject()).then(d=>{s.innerHTML='请支付 <strong>CNY '+Number(d.cnyAmount).toFixed(2)+'</strong>，1 AUD = '+Number(d.rate).toFixed(6)+' CNY。'}).catch(()=>{s.textContent='暂时无法获取实时人民币汇率，请稍后重试。'})})()</script>` : ''}</div>`
+    return `<div class="payment-card"><h4>${label}补差价</h4>${paymentDetails}${method === 'bank_transfer' ? renderBankTransferReference(bankTransferReference) : ''}<p id="${summaryId}">请支付 ${formatCurrency(priceAdjustmentSummary.amountDue)}${method === 'bank_transfer' ? '' : '；提交付款凭证前获取实时汇率。'}</p><form method="POST" enctype="multipart/form-data" action="/customer/orders/${order.id}/bank-transfer-proof"><input type="hidden" name="priceAdjustment" value="1"><input type="hidden" name="paymentMethod" value="${method}"><label class="form-label">付款 Reference</label><input class="form-control" name="referenceNumber" maxlength="100" required><label class="form-label">付款凭证图片</label><input class="form-control" type="file" name="imageFile" accept="image/jpeg,image/png,image/webp" required><label class="form-label">备注（选填）</label><textarea class="form-control" name="note" maxlength="500"></textarea><button class="button button-primary" type="submit" style="margin-top:12px">提交${label}差价凭证</button></form>${method !== 'bank_transfer' ? `<script>(()=>{const s=document.getElementById('${summaryId}');fetch('/api/payment/aud-cny?amount=${encodeURIComponent(String(priceAdjustmentSummary.amountDue))}').then(r=>r.ok?r.json():Promise.reject()).then(d=>{s.innerHTML='请支付 <strong>CNY '+Number(d.cnyAmount).toFixed(2)+'</strong>，1 AUD = '+Number(d.rate).toFixed(6)+' CNY。'}).catch(()=>{s.textContent='暂时无法获取实时人民币汇率，请稍后重试。'})})()</script>` : ''}</div>`
   }
     const renderSquareAdjustmentCard = () => `<div class="payment-card"><h4>礼品卡补差价</h4><p>差价 ${formatCurrency(priceAdjustmentSummary.amountDue)}；礼品卡手续费（${(squareFeeRate * 100).toFixed(2)}%）${formatCurrency(squareAdjustmentFee)}；实际扣款 ${formatCurrency(squareAdjustmentTotal)}。退款时仅退回账户余额。</p>${renderSquareGiftCardPaymentBox({ configUrl: `/customer/orders/${order.id}/price-adjustment/square/config`, paymentUrl: `/customer/orders/${order.id}/price-adjustment/square/payment`, returnUrl: `/payment/result?orderId=${encodeURIComponent(order.id)}`, buttonLabel: `使用礼品卡支付 ${formatCurrency(squareAdjustmentTotal)}`, domId: 'order-price-adjustment-square-pay', stored: Boolean((order as any).square_gift_card_id || (order as any).squareGiftCardId) })}</div>`
   const balanceAlternativePayments = priceAdjustmentProof?.status === 'submitted'
@@ -200,7 +204,8 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
             <p><strong>银行名称:</strong> ${systemSettings.bankDetails.bankName || '—'}</p>
             <p><strong>BSB:</strong> ${systemSettings.bankDetails.bsb}</p>
             <p><strong>账号:</strong> ${systemSettings.bankDetails.account}</p>
-            <p>请转账 ${formatCurrency(orderPaymentDue)} 到以上账户，并在备注中填写合同编号 ${contract?.contractNumber || order.contractId}。</p>
+            <p>请转账 ${formatCurrency(orderPaymentDue)} 到以上账户。</p>
+            ${renderBankTransferReference(bankTransferReference)}
             ${transferProof?.status === 'submitted' ? '<div class="payment-waiting-note"><span>转账信息已提交，正在等待管理员审核</span></div>' : `<form method="post" enctype="multipart/form-data" action="/customer/orders/${order.id}/bank-transfer-proof">
               <label class="form-label" for="referenceNumber">银行 Reference</label>
               <input class="form-control" id="referenceNumber" name="referenceNumber" maxlength="100" required>

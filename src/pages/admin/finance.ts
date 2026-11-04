@@ -4,13 +4,17 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { buildLayout, formatCurrency } from '../../site';
+import { escapeHtml } from '../../lib/html'
+import type { BankTransferPayment } from '../../services/bankTransferReferences'
 
-export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[] = [], withdrawals: any[] = []) {
+export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[] = [], withdrawals: any[] = [], bankTransfers: { transfers: BankTransferPayment[]; search: string } = { transfers: [], search: '' }) {
   const totalRevenue = orders
     .reduce((sum, order) => sum + Number(order.collectedRevenue || 0), 0)
 
   const totalExpense = refunds.reduce((sum, item) => sum + Number(item.refund_amount || 0), 0) + withdrawals.reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const netProfit = Math.round((totalRevenue - totalExpense) * 100) / 100
+  const statusLabels: Record<string, string> = { pending: '待支付', awaiting_transfer: '待转账凭证', submitted: '待审核', paid: '已入账', refunded: '已退款', partially_refunded: '部分退款', rejected: '已驳回', failed: '失败', cancelled: '已取消' }
+  const transferRows = bankTransfers.transfers.map(item => `<tr><td class="mono">${escapeHtml(item.code || '—')}</td><td><a href="${item.scope === 'order' ? `/admin/orders/${encodeURIComponent(item.source_id)}` : `/admin/orders/balance-topups?search=${encodeURIComponent(item.code || item.source_id)}`}">${escapeHtml(item.order_no || item.source_id)}</a></td><td>${escapeHtml(item.customer_name || '—')}</td><td>${formatCurrency(item.amount)}</td><td>${escapeHtml(statusLabels[item.status] || item.status)}</td></tr>`).join('')
 
   const body = `
     <style>
@@ -79,6 +83,16 @@ export function renderAdminFinance(user: any, orders: any[] = [], refunds: any[]
           <p class="amount">${formatCurrency(netProfit)}</p>
         </div>
       </div>
+
+      <section class="panel">
+        <h3>银行转账查账</h3>
+        <form method="get" action="/admin/finance" class="record-form">
+          <label class="form-label" for="transferCode">转账备注码</label>
+          <input class="form-control mono" id="transferCode" name="transferCode" value="${escapeHtml(bankTransfers.search)}" maxlength="5" placeholder="输入 5 位转账备注码">
+          <button class="button button-secondary" type="submit">查询</button>
+        </form>
+        ${transferRows ? `<div class="table-wrapper"><table><thead><tr><th>转账备注码</th><th>订单 / 充值单</th><th>客户</th><th>金额</th><th>状态</th></tr></thead><tbody>${transferRows}</tbody></table></div>` : '<p class="empty-state">暂无匹配的银行转账记录</p>'}
+      </section>
 
       <div class="finance-sections">
         <div class="finance-section">

@@ -7,6 +7,7 @@
 import { riskDepositSnapshot, riskAdjustedDeposit, calculateCustomerRiskAssessment } from './domain/riskFlags'
 import { getTranslationConfigSummary } from './translationConfig'
 import { handleTranslation } from './services/translation'
+import { ensureBankTransferReference, listBankTransferPayments } from './services/bankTransferReferences'
 import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
 import { websiteSessionStatus } from './auth/websiteSession'
@@ -18,6 +19,7 @@ import { resolveRentalApplicationConflicts, RENTAL_APPLICATION_CONFLICT_MESSAGE 
 import { serviceFeeRate, isUnavailablePickupTime } from './domain/pickupTimeSlots'
 import { searchBusinessDocuments, documentPath, documentStatus, DOCUMENT_TYPES } from './services/documents'
 import { isCardDepositSettled } from './domain/paymentPlan'
+import { scheduledBatches } from './domain/scheduledBatches'
 import { readAnnouncementForm, renderAnnouncementContent, renderAnnouncementTitle, renderAnnouncementMessage } from './domain/announcement'
 import { renderAnnouncementEditor } from './pages/partials/announcementEditor'
 import { escapeHtml } from './lib/html'
@@ -1381,6 +1383,7 @@ app.get('/customer/balance/top-up', async (c) => {
   if (!user || user.role !== 'CUSTOMER' || user.accountType === 'guest') return c.redirect('/login')
   await loadSystemSettingsFromDB(c)
   const pending = await c.env.RENT.prepare("SELECT * FROM balance_topups WHERE user_id = ? AND status = 'awaiting_transfer' ORDER BY created_at DESC LIMIT 1").bind(user.id).first()
+  if (pending?.payment_method === 'bank_transfer') pending.transfer_code = await ensureBankTransferReference(c, 'topup', pending.id)
   const payId = String(c.req.query('pay') || '').trim()
   const payTopup = payId ? await c.env.RENT.prepare("SELECT * FROM balance_topups WHERE id = ? AND user_id = ? AND payment_method IN ('card', 'square') AND status = 'pending'").bind(payId, user.id).first() : null
   return c.html(pages.renderCustomerBalanceTopUp(c, user, '', pending, payTopup, c.req.query('success') === '1'))
@@ -1410,6 +1413,7 @@ app.post('/customer/balance/top-up', async (c) => {
   const id = `topup-${nanoid(12)}`
   await c.env.RENT.prepare("INSERT INTO balance_topups (id, user_id, amount, payment_method, cny_amount, status) VALUES (?, ?, ?, ?, ?, 'pending')").bind(id, user.id, Number(amount.toFixed(2)), method, rmbRate ? roundCnyUp(amount, rmbRate) : null).run()
   if (['bank_transfer', 'alipay', 'wechat'].includes(method)) {
+    if (method === 'bank_transfer') await ensureBankTransferReference(c, 'topup', id)
     await c.env.RENT.prepare("UPDATE balance_topups SET status = 'awaiting_transfer' WHERE id = ?").bind(id).run()
     return c.redirect('/customer/balance/top-up')
   }
@@ -3771,6 +3775,7 @@ app.post('/customer/orders/:id/bank-transfer-proof', async (c) => {
     payment = { id: paymentId, status: 'pending' }
   }
   if (!payment) return c.text('未找到待审核的转账付款记录', 409)
+  if (isDepositProof || (isAdjustment ? requestedPaymentMethod : order.paymentMethod) === 'bank_transfer') await ensureBankTransferReference(c, 'order', order.id)
   await c.env.RENT.prepare("UPDATE payment_proofs SET status = 'superseded' WHERE payment_id = ? AND status = 'submitted'").bind(payment.id).run()
   await c.env.RENT.prepare("INSERT INTO payment_proofs (id, payment_id, reference_number, note, image_url, status) VALUES (?, ?, ?, ?, ?, 'submitted')").bind(`proof-${nanoid(12)}`, payment.id, reference, note || null, proofImageUrl).run()
   const admins = (await c.env.RENT.prepare("SELECT id FROM users WHERE role = 'ADMIN' AND status = 'active'").all()).results || []
@@ -4070,8 +4075,8 @@ app.get('/admin/exceptions', async (c) => {
   const admin = await findUserBySession(c, c.req.header('cookie') ?? null)
   if (!admin || admin.role !== 'ADMIN') return c.redirect('/login')
   const [topups, proofs, overdueOrders, offlineDevices, heldDeposits, damageCases, disputes, anomalousOrders, consistencyIssues, failingJobs, referralRewards] = await Promise.all([
-    c.env.RENT.prepare("SELECT bt.id, bt.user_id, bt.amount, bt.payment_method, bt.reference, bt.note, u.name AS user_name FROM balance_topups bt LEFT JOIN users u ON u.id = bt.user_id WHERE bt.status = 'submitted' ORDER BY bt.updated_at ASC LIMIT 50").all(),
-    c.env.RENT.prepare("SELECT pp.id, pp.payment_id, pp.image_url, p.rental_id, p.payment_method, pp.reference_number, pp.uploaded_at, o.orderNo FROM payment_proofs pp JOIN payments p ON p.id = pp.payment_id LEFT JOIN orders o ON o.id = p.rental_id WHERE pp.status = 'submitted' ORDER BY pp.uploaded_at ASC LIMIT 50").all(),
+    c.env.RENT.prepare("SELECT bt.id, bt.user_id, bt.amount, bt.payment_method, bt.reference, bt.note, r.code AS transfer_code, u.name AS user_name FROM balance_topups bt LEFT JOIN users u ON u.id = bt.user_id LEFT JOIN bank_transfer_references r ON r.scope = 'topup' AND r.source_id = bt.id WHERE bt.status = 'submitted' ORDER BY bt.updated_at ASC LIMIT 50").all(),
+    c.env.RENT.prepare("SELECT pp.id, pp.payment_id, pp.image_url, p.rental_id, p.payment_method, pp.reference_number, pp.uploaded_at, r.code AS transfer_code, o.orderNo FROM payment_proofs pp JOIN payments p ON p.id = pp.payment_id LEFT JOIN orders o ON o.id = p.rental_id LEFT JOIN bank_transfer_references r ON r.scope = 'order' AND r.source_id = p.rental_id WHERE pp.status = 'submitted' ORDER BY pp.uploaded_at ASC LIMIT 50").all(),
     c.env.RENT.prepare("SELECT id, orderNo, endDate FROM orders WHERE status IN ('active', 'extended', 'overdue', 'pending_return') AND endDate < ? ORDER BY endDate ASC LIMIT 50").bind(new Date().toISOString().slice(0, 10)).all(),
     c.env.RENT.prepare("SELECT id, name, agent_status, agent_last_seen_at FROM devices WHERE agent_token_hash IS NOT NULL AND (agent_last_seen_at IS NULL OR agent_last_seen_at <= datetime('now', '-5 minutes')) ORDER BY agent_last_seen_at ASC LIMIT 50").all(),
     c.env.RENT.prepare("SELECT id, orderNo, depositAmount FROM orders WHERE deposit_status = 'HELD' AND status IN ('returned', 'completed') ORDER BY updatedAt ASC LIMIT 50").all(),
@@ -4101,8 +4106,8 @@ app.get('/admin/exceptions', async (c) => {
     `).all(),
   ]) as any[]
   const sections = [
-    ['待审核充值', topups.results, '/admin/exceptions', (item: any) => `<strong>${sanitizePlainText(item.user_name || item.user_id, 100)}</strong> · ${sanitizePlainText(item.payment_method, 30)} · AUD$${Number(item.amount).toFixed(2)}<div class="record-actions"><form method="post" action="/admin/balance-topups/${encodeURIComponent(item.id)}/approve" data-site-confirm="通过后这笔充值会立即记入客户余额。请先核对付款 Reference 与到账金额。" data-confirm-variant="danger" data-confirm-title="确认充值入账？" data-confirm-label="通过并入账"><button class="button button-sm button-primary">通过并入账</button></form><form method="post" action="/admin/balance-topups/${encodeURIComponent(item.id)}/reject" data-site-confirm="确认驳回这笔充值吗？驳回后客户需要重新提交付款凭证。" data-confirm-variant="danger" data-confirm-title="驳回充值？" data-confirm-label="驳回充值"><button class="button button-sm button-danger">驳回</button></form></div>`],
-    ['待审核付款凭证', proofs.results, '/admin/exceptions', (item: any) => { let image = ''; try { image = item.image_url ? validateHostedImageUrls(item.image_url, 1)[0] : '' } catch { } return `<strong>订单 ${sanitizePlainText(item.orderNo || item.rental_id, 50)}</strong> · ${sanitizePlainText(item.payment_method || '转账', 30)} · ${sanitizePlainText(item.reference_number || '无 Reference', 100)}${image ? `<div style="margin-top:10px"><a href="${escapeHtml(image)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(image)}" alt="付款凭证预览" loading="lazy" referrerpolicy="no-referrer" style="display:block;max-width:220px;max-height:140px;object-fit:contain;border-radius:8px;border:1px solid #dbe3ee"></a></div>` : ''}<div class="record-actions"><form method="post" action="/admin/orders/${encodeURIComponent(item.rental_id)}/transfer-proof/approve" data-site-confirm="通过后系统会将订单标记为已付款。请先核对凭证图片、Reference 与到账金额。" data-confirm-variant="danger" data-confirm-title="确认付款凭证？" data-confirm-label="审核通过"><button class="button button-sm button-primary">审核通过</button></form><form method="post" action="/admin/orders/${encodeURIComponent(item.rental_id)}/transfer-proof/reject" data-site-confirm="确认驳回这笔付款凭证吗？驳回后客户需要重新提交。" data-confirm-title="驳回付款凭证？" data-confirm-label="驳回凭证"><input class="form-control" name="reason" maxlength="300" required placeholder="驳回原因"><button class="button button-sm button-danger">驳回</button></form></div>` }],
+    ['待审核充值', topups.results, '/admin/exceptions', (item: any) => `<strong>${sanitizePlainText(item.user_name || item.user_id, 100)}</strong> · ${sanitizePlainText(item.payment_method, 30)} · AUD$${Number(item.amount).toFixed(2)}${item.transfer_code ? `<p>转账备注码：<strong class="mono">${escapeHtml(item.transfer_code)}</strong></p>` : ''}<div class="record-actions"><form method="post" action="/admin/balance-topups/${encodeURIComponent(item.id)}/approve" data-site-confirm="通过后这笔充值会立即记入客户余额。请先核对付款 Reference 与到账金额。" data-confirm-variant="danger" data-confirm-title="确认充值入账？" data-confirm-label="通过并入账"><button class="button button-sm button-primary">通过并入账</button></form><form method="post" action="/admin/balance-topups/${encodeURIComponent(item.id)}/reject" data-site-confirm="确认驳回这笔充值吗？驳回后客户需要重新提交付款凭证。" data-confirm-variant="danger" data-confirm-title="驳回充值？" data-confirm-label="驳回充值"><button class="button button-sm button-danger">驳回</button></form></div>`],
+    ['待审核付款凭证', proofs.results, '/admin/exceptions', (item: any) => { let image = ''; try { image = item.image_url ? validateHostedImageUrls(item.image_url, 1)[0] : '' } catch { } return `<strong>订单 ${sanitizePlainText(item.orderNo || item.rental_id, 50)}</strong> · ${sanitizePlainText(item.payment_method || '转账', 30)} · ${sanitizePlainText(item.reference_number || '无 Reference', 100)}${item.transfer_code ? `<p>转账备注码：<strong class="mono">${escapeHtml(item.transfer_code)}</strong></p>` : ''}${image ? `<div style="margin-top:10px"><a href="${escapeHtml(image)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(image)}" alt="付款凭证预览" loading="lazy" referrerpolicy="no-referrer" style="display:block;max-width:220px;max-height:140px;object-fit:contain;border-radius:8px;border:1px solid #dbe3ee"></a></div>` : ''}<div class="record-actions"><form method="post" action="/admin/orders/${encodeURIComponent(item.rental_id)}/transfer-proof/approve" data-site-confirm="通过后系统会将订单标记为已付款。请先核对凭证图片、Reference 与到账金额。" data-confirm-variant="danger" data-confirm-title="确认付款凭证？" data-confirm-label="审核通过"><button class="button button-sm button-primary">审核通过</button></form><form method="post" action="/admin/orders/${encodeURIComponent(item.rental_id)}/transfer-proof/reject" data-site-confirm="确认驳回这笔付款凭证吗？驳回后客户需要重新提交。" data-confirm-title="驳回付款凭证？" data-confirm-label="驳回凭证"><input class="form-control" name="reason" maxlength="300" required placeholder="驳回原因"><button class="button button-sm button-danger">驳回</button></form></div>` }],
     ['逾期或待归还订单', overdueOrders.results, '/admin/orders', (item: any) => `${item.orderNo || item.id} · 应归还 ${item.endDate}`],
     ['离线设备', offlineDevices.results, '/admin/devices', (item: any) => `${item.name} · 设备端离线`],
     ['待结算押金', heldDeposits.results, '/admin/refunds', (item: any) => `${item.orderNo || item.id} · AUD$${Number(item.depositAmount).toFixed(2)}`],
@@ -5072,8 +5077,9 @@ app.get('/admin/finance', async (c) => {
   if (!user || user.role !== 'ADMIN') {
     return c.redirect('/login')
   }
-  const revenueData = await pages.getRevenueData(c)
-  return c.html(pages.renderAdminFinance(user, revenueData.orders, revenueData.refunds, revenueData.withdrawals))
+  const transferSearch = String(c.req.query('transferCode') || '').trim().toUpperCase()
+  const [revenueData, transfers] = await Promise.all([pages.getRevenueData(c), listBankTransferPayments(c, transferSearch)])
+  return c.html(pages.renderAdminFinance(user, revenueData.orders, revenueData.refunds, revenueData.withdrawals, { transfers, search: transferSearch }))
 })
 
 app.get('/admin/finance/payment-disputes', async (c) => {
@@ -6626,32 +6632,29 @@ export default {
     // Import and run the cleanup function
     const { cleanupExpiredAndCancelledContracts, cleanupExpiredGuestAccounts, cancelExpiredPendingPaymentOrders, notifyOverduePaymentProofs, runDataConsistencyChecks, releaseQualifiedReferralRewards, runMonitoringSweep, runScheduledJob, deliverPendingAgreementUpdates } = await import('./site')
 
-    if (event.cron === '* * * * *') {
+    const batches = scheduledBatches(event.cron, event.scheduledTime)
+    if (batches.reminders) {
       ctx.waitUntil(runScheduledJob(c, 'send_pickup_reminders', async () => {
         await loadSystemSettingsFromDB(c)
         const { sendScheduledPickupReminders } = await import('./site')
         return sendScheduledPickupReminders(c)
       }))
-      return
     }
 
-    if (event.cron === '*/15 * * * *') {
+    if (batches.quarterHourly) {
       ctx.waitUntil((async () => {
         await runScheduledJob(c, 'expire_missed_pickups', () => expireMissedPickupOrders(c))
         await runScheduledJob(c, 'expire_rental_link_drafts', () => expireRentalLinkDrafts(c))
         await runScheduledJob(c, 'charge_overdue_returns', () => chargeOverdueReturns(c))
         await runScheduledJob(c, 'charge_monthly_rentals', () => chargeDueRentalInstallments(c))
       })())
-      return
     }
 
-    // The hourly cron ("0 * * * *") only enforces the 24h unpaid-order
-    // cancellation SLA — running the rest of the daily batch (notifications,
-    // purges, etc.) every hour instead of once a day is not the intent.
-    if (event.cron === '0 * * * *') {
+    if (batches.hourly) {
       ctx.waitUntil(runScheduledJob(c, 'cancel_expired_pending_payments', () => cancelExpiredPendingPaymentOrders(c)))
-      return
     }
+
+    if (!batches.daily) return
 
     ctx.waitUntil(
       (async () => {
@@ -6744,7 +6747,6 @@ export default {
 
         await runScheduledJob(c, 'cleanup_expired_contracts', () => cleanupExpiredAndCancelledContracts(c))
         await runScheduledJob(c, 'cleanup_expired_guest_accounts', () => cleanupExpiredGuestAccounts(c))
-        await runScheduledJob(c, 'cancel_expired_pending_payments', () => cancelExpiredPendingPaymentOrders(c))
         await runScheduledJob(c, 'create_due_date_notifications', () => createDueDateNotifications(c))
         await runScheduledJob(c, 'notify_overdue_payment_proofs', () => notifyOverduePaymentProofs(c))
         await runScheduledJob(c, 'deliver_pending_agreement_updates', () => deliverPendingAgreementUpdates(c))
