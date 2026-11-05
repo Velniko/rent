@@ -16,6 +16,7 @@ import { pickupAppointmentAt } from '../domain/pickupPreparation'
 import { formatMelbourneDate } from '../lib/format'
 import { buildPickupQrPayload } from '../lib/pickupQr'
 import { buildReceiptPdf, bytesToBase64, DEFAULT_RECEIPT_PDF_TEMPLATE } from './receiptPdf'
+import { AGREEMENT_UPDATE_SUBJECT, AGREEMENT_UPDATE_EMAIL_BODY, AGREEMENT_UPDATE_SITE_BODY } from './agreementUpdateTemplate'
 
 const STAFF_ROLES = new Set(['ADMIN', 'MANAGER', 'STAFF'])
 
@@ -365,25 +366,26 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
   await ensureAgreementEmailEventsTable(c)
   const template = await c.env.RENT.prepare("SELECT subject, body, enabled FROM email_templates WHERE id = 'agreement_update'").first() as any
   const disabled = template?.enabled === 0
-  const fallbackMessage = '我们已更新《{changed_agreements}》，最新版本已在我们的网站相关页面公布。继续使用我们的服务，即表示您接受更新后的条款。'
-  const subjectTpl = disabled ? '{changed_agreements}更新通知' : String(template?.subject || '{changed_agreements}更新通知')
-  const bodyTpl = disabled ? fallbackMessage : normalizeAgreementUpdateTemplate(String(template?.body || fallbackMessage))
-  const fillStatic = (value: string) => value
-    .replace(/\{changed_agreements\}/g, names)
-    .replace(/\{company_name\}/g, companyName)
-    .replace(/\{company_email\}/g, companyEmail)
-  const subjectStatic = fillStatic(subjectTpl)
-  const bodyStatic = fillStatic(bodyTpl)
-  const fillCustomer = (value: string, customer: any) => value
-    .replace(/\{customer_name\}/g, normalizeCustomerName(customer?.name))
-    .replace(/\{customer_email\}/g, String(customer?.email || ''))
+  const subjectTpl = disabled ? AGREEMENT_UPDATE_SUBJECT : String(template?.subject || AGREEMENT_UPDATE_SUBJECT)
+  const bodyTpl = disabled ? AGREEMENT_UPDATE_EMAIL_BODY : normalizeAgreementUpdateTemplate(String(template?.body || AGREEMENT_UPDATE_EMAIL_BODY))
+  const updateDate = formatMelbourneDate(rows[rows.length - 1].queued_at).replace(/^(\d{4})-(\d{2})-(\d{2})$/, (_, year, month, day) => `${year}年${month}月${day}日`)
+  const agreementList = rows.map(row => `<li>${escapeHtml(row.agreement_label)}</li>`).join('')
+  const fill = (value: string, customer: any, html = false) => {
+    const vars: Record<string, string> = {
+      changed_agreements: names, company_name: companyName, company_email: companyEmail,
+      customer_name: normalizeCustomerName(customer?.name), customer_email: String(customer?.email || ''),
+      update_date: updateDate,
+    }
+    return value.replace(/\{(\w+)\}/g, (token, key) => {
+      if (html && key === 'changed_agreements_list') return agreementList
+      return Object.hasOwn(vars, key) ? (html ? escapeHtml(vars[key]) : vars[key]) : token
+    })
+  }
 
   // Site notification detail carries the full notice text (the list/drawer show a
   // short computed summary instead, see notificationListMessage in src/index.ts).
   // Kept independent of the configurable email template so an old saved template
   // can't leave a signed-in customer with confusing wording in the site notification.
-  const siteMessageStatic = `<p>尊敬的 {customer_name}：</p><p>您好！</p><p>我们已更新《${names}》，最新版本已在我们的网站相关页面公布。</p><p>继续使用我们的服务，即表示您接受更新后的条款。如您不同意相关更新，请停止使用相关服务，并联系我们处理后续事宜。</p><p>感谢您的理解与支持！</p><p><strong>${companyName}</strong><br>${companyEmail}</p>`
-
   await ensureNotificationsTable(c)
   const recipients = ((await c.env.RENT.prepare("SELECT id, name, email FROM users WHERE role = 'CUSTOMER' AND status = 'active'").all()) as any).results || []
   for (let i = 0; i < recipients.length; i += 50) {
@@ -394,8 +396,8 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
       `nt-${crypto.randomUUID()}`,
       customer.id,
       'agreement_update',
-      fillCustomer(subjectStatic, customer),
-      fillCustomer(siteMessageStatic, customer),
+      fill(subjectTpl, customer),
+      fill(AGREEMENT_UPDATE_SITE_BODY, customer, true),
       dedupeKey,
     )))
   }
@@ -407,8 +409,8 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
   for (let i = 0; i < queued.length; i += 50) {
     const chunk = queued.slice(i, i + 50)
     await c.env.RENT.batch(chunk.map((customer: any) => {
-      const subject = fillCustomer(subjectStatic, customer)
-      const message = fillCustomer(bodyStatic, customer)
+      const subject = fill(subjectTpl, customer)
+      const message = fill(bodyTpl, customer, true)
       const html = renderEmailNotificationHtml(subject, message, companyName)
       return c.env.RENT.prepare("INSERT OR IGNORE INTO email_events (id, event_type, recipient, template_id, idempotency_key, status, subject, text_body, html_body) VALUES (?, 'AGREEMENT_UPDATE', ?, 'agreement_update_batch', ?, 'PENDING', ?, ?, ?)")
         .bind(`email-${crypto.randomUUID()}`, customer.email, `${dedupeKey}:${customer.email}`, subject, sanitizePlainText(message, 20000), html)

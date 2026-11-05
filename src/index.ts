@@ -135,6 +135,7 @@ import {
   , recordExternalRentalFlow
   , lockReferralRelationship
   , createAuditLog
+  , formatMelbourneDate
   , formatMelbourneDateTime
   , logError
 } from './site'
@@ -2523,7 +2524,7 @@ app.post('/notifications/send', async (c) => {
   const results = []
   for (const recipient of allowedRecipients) {
     const company = getSystemSettings().companyDetails || {}
-    const vars = { customer_name: String(recipient.name || ''), customer_email: String(recipient.email || ''), company_name: String(company.name || ''), company_email: String(company.email || '') }
+    const vars = { customer_name: String(recipient.name || ''), customer_email: String(recipient.email || ''), company_name: String(company.name || ''), company_email: String(company.email || ''), update_date: formatMelbourneDate(new Date()).replace(/^(\d{4})-(\d{2})-(\d{2})$/, (_, year, month, day) => `${year}年${month}月${day}日`) }
     const fill = (value: string, html = false) => value.replace(/\{([a-z_]+)\}/g, (placeholder, key) => Object.hasOwn(vars, key) ? (html ? escapeHtml(vars[key]) : vars[key]) : placeholder)
     results.push(await createNotificationWithDelivery(c, { recipientId: recipient.id, senderId: user.id, type: 'manual', title: fill(title), message: fill(message, true), notifyByEmail: delivery === 'in_app_email' }))
   }

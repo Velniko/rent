@@ -19,7 +19,7 @@ export function sanitizeRichHtml(value: unknown): string {
         'font-weight': [/^(normal|bold|[1-9]00)$/],
         width: [/^\d+(\.\d+)?(%|px)$/],
         margin: [/^[\d\s.%px-]+$/], padding: [/^[\d\s.%px-]+$/],
-        border: [/^[\d\s.#a-z()-]+$/i], 'border-collapse': [/^(collapse|separate)$/],
+        border: [/^[\d\s.#a-z()-]+$/i], 'border-left': [/^[\d\s.#a-z()-]+$/i], 'border-collapse': [/^(collapse|separate)$/],
         'page-break-after': [/^(always|avoid|auto|left|right)$/],
         'break-after': [/^(auto|avoid|always|page|column|region)$/],
       },
