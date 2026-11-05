@@ -353,7 +353,7 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
   const rows = (((await c.env.RENT.prepare('SELECT agreement_key, agreement_label, revision, queued_at FROM agreement_update_queue ORDER BY queued_at, agreement_key').all()) as any).results || []) as any[]
   if (!rows.length) return 0
 
-  const names = rows.map((row) => String(row.agreement_label)).join('、')
+  const names = rows.map((row) => String(row.agreement_label)).join('\n')
   const batchKey = rows.map((row) => `${row.agreement_key}:${row.revision}`).join('|')
   const dedupeKey = `agreement_update:${batchKey}`
   const companyRow = await c.env.RENT.prepare("SELECT value FROM systemSettings WHERE key = 'companyDetails' AND deleted_at IS NULL").first() as any
@@ -378,6 +378,7 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
     }
     return value.replace(/\{(\w+)\}/g, (token, key) => {
       if (html && key === 'changed_agreements_list') return agreementList
+      if (html && key === 'changed_agreements') return rows.map(row => escapeHtml(String(row.agreement_label))).join('<br>')
       return Object.hasOwn(vars, key) ? (html ? escapeHtml(vars[key]) : vars[key]) : token
     })
   }

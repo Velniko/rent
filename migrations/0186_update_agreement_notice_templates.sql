@@ -15,7 +15,7 @@ SET subject = '协议及服务条款更新通知',
     <tbody>
         <tr>
             <td style="padding:10px 0; color:#666; width:35%;">更新文件</td>
-            <td style="padding:10px 0;"><strong>《{changed_agreements}》</strong></td>
+            <td style="padding:10px 0;"><strong>{changed_agreements}</strong></td>
         </tr>
     </tbody>
 </table>

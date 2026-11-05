@@ -85,7 +85,7 @@ test('scheduled delivery combines queued agreements into one customer notificati
   for (const { args } of emails[0]) {
     assert.equal(args[3], AGREEMENT_UPDATE_SUBJECT)
     assert.match(String(args[5]), /我们已于<strong>2026年09月12日<\/strong>对以下协议或服务条款进行了更新/)
-    assert.match(String(args[5]), /<strong>《用户协议、租赁协议》<\/strong>/)
+    assert.match(String(args[5]), /<strong>用户协议<br ?\/?>租赁协议<\/strong>/)
     assert.match(String(args[5]), /background-color:#f5f7fa;border-left:4px solid #64748b/)
     assert.match(String(args[5]), /本次通知本身不代表现有合同条款自动发生变更/)
     assert.match(String(args[5]), /href="mailto:support@example.com"/)
