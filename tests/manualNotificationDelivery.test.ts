@@ -168,7 +168,7 @@ test('sending and email history enforce roles, recipient ownership, and same-ori
 
 test('selected template account variables are filled for each recipient without injecting HTML', async t => {
   const f = await fixture(t); await f.configureSmtp(); smtpServer()
-  f.sqlite.exec("UPDATE users SET name='<img src=x onerror=alert(1)>甲' WHERE id='customer'; UPDATE in_app_notification_templates SET title='您好 {customer_name}', message='<p>收件人：{customer_name} · {customer_email}</p>' WHERE id='chosen'")
+  f.sqlite.exec("UPDATE users SET name='<img src=x onerror=alert(1)>甲' WHERE id='customer'; UPDATE in_app_notification_templates SET title='您好 {customer_name}', message='<p>收件人：{customer_name} · {customer_email}</p><p><strong>{update_date}</strong></p>' WHERE id='chosen'")
   const response = await f.request('/notifications/send', 'admin', send)
   assert.equal(response.status, 303)
   const event = f.row('SELECT * FROM email_events')
@@ -176,4 +176,6 @@ test('selected template account variables are filled for each recipient without 
   assert.match(event.html_body, /&lt;img/)
   assert.doesNotMatch(event.html_body, /<img src=x/)
   assert.match(event.html_body, /first@example.test/)
+  assert.match(event.html_body, /<strong>\d{4}年\d{2}月\d{2}日<\/strong>/)
+  assert.doesNotMatch(event.html_body, /\{update_date\}/)
 })
