@@ -47,6 +47,7 @@ export const ROOT: string
 export const THRESHOLDS: I18nCoverageThresholds
 
 export function hasChinese(value: string): boolean
+export function unescapeTs(value: string): string
 export function loadDictionary(): { entries: Map<string, string>; duplicates: string[]; bytes: number }
 export function listSourceFiles(): string[]
 export function segmentText(raw: string): string[]

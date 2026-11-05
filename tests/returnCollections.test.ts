@@ -62,7 +62,9 @@ async function setup(t: any) {
     headers: { Cookie: `session=${sessions.get(actor) || ''}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), env, { waitUntil() {} } as any)
   t.mock.method(globalThis, 'fetch', async (url: any) => {
-    assert.match(String(url), /^https:\/\/api.stripe.com\/v1\/customers/)
+    const target = new URL(String(url))
+    assert.equal(target.origin, 'https://api.stripe.com')
+    assert.ok(target.pathname === '/v1/customers' || target.pathname.startsWith('/v1/customers/'))
     return Response.json({ id: 'cus_return' })
   })
   const order = () => getOrderById(c, 'order')
@@ -153,7 +155,7 @@ test('Stripe App remains pending until a signed matching receipt, and webhook re
   assert.equal(f.collection(id).processing_fee,0)
   const page=await (await f.request(`/staff/return-collections/${id}`)).text()
   for(const script of extractInlineScripts(page)) new Function(script)
-  assert.match(page,/https:\/\/dashboard.stripe.com\/test\/customers\/cus_return/)
+  assert.ok(page.includes('href="https://dashboard.stripe.com/test/customers/cus_return"'))
   assert.match(page,/value="45.00"/)
   assert.match(page,/客户&lt;img src=x&gt;/)
   assert.equal((await f.request(`/staff/return-collections/${id}/verify-stripe`,'staff',{receiptId:'pi_return'})).status,409)

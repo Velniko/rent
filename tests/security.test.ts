@@ -150,7 +150,8 @@ test('CSP stays strict: no unsafe-eval, no wildcards for scripts, tight object/b
   const scriptSrc = csp.split('; ').find((directive) => directive.startsWith('script-src'))
   assert.ok(scriptSrc)
   assert.doesNotMatch(scriptSrc!, /\*/)
-  for (const host of ['https://js.stripe.com', 'https://challenges.cloudflare.com', 'https://tally.so']) assert.match(scriptSrc!, new RegExp(host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  const scriptSources = scriptSrc!.split(/\s+/).slice(1)
+  for (const host of ['https://js.stripe.com', 'https://challenges.cloudflare.com', 'https://tally.so']) assert.ok(scriptSources.includes(host))
 })
 
 test('CSP can drop unsafe-inline once a nonce is available', () => {
