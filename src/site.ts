@@ -1915,7 +1915,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
             ${renderNavGroup('合同管理', [['/admin/contracts', '合同列表'], ['/admin/templates/contract', '合同模板'], ['/admin/templates', '协议模板']])}
             ${renderNavGroup('设备管理', [['/admin/rental-program', '设备出租管理'], ['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
             ${renderNavGroup('财务管理', [['/admin/finance', '财务总览'], ['/admin/rental-settlements', '出租结算转账'], ['/admin/documents', '单据中心'], ['/admin/reports', '运营分析报表'], ['/admin/refunds', '退款管理'], ['/admin/withdrawals', '佣金提现']])}
-            ${renderNavGroup('营销增长', [['/admin/coupons', '优惠码管理'], ['/admin/marketing-emails', '营销邮件'], ['/admin/marketing-emails/data', '营销数据'], ['/admin/referrals', '推荐奖励管理'], ['/admin/feedback-rewards', '反馈奖励记录'], ['/admin/feedback-gift-cards', '礼品卡库存']])}
+            ${renderNavGroup('营销增长', [['/admin/coupons', '优惠码管理'], ['/admin/marketing-emails', '营销邮件'], ['/admin/marketing-emails/data', '营销数据'], ['/admin/referrals', '推荐奖励管理'], ['/admin/feedback-rewards', '反馈奖励记录'], ['/admin/feedback-gift-cards', '礼品卡库存'], ['/admin/website-advertisements', '官网广告']])}
             ${renderNavGroup('系统设置', [['/admin/tax-invoice-template', 'Tax Invoice PDF 模板'], ['/admin/settings', '系统设置'], ['/admin/settings/client-features', '客户端功能'], ['/admin/api-settings', 'API 设置'], ['/admin/connectivity', '通讯检测'], ['/admin/exceptions', '异常任务中心'], ['/admin/monitoring', '系统健康监控'], ['/admin/data-retention', '数据保留策略']])}
           ` : ''}
         </div>
