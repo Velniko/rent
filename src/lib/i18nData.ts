@@ -2506,6 +2506,7 @@ const status: Readonly<Record<string, string>> = {}
 
 // @domain admin —— 管理员端页面文案
 const admin: Readonly<Record<string, string>> = {
+  '仅邮件': 'Email only',
   '发送方式': 'Delivery method',
   '站内通知已发送：': 'In-app notifications sent:',
   '邮件已提交：': 'Emails submitted:',

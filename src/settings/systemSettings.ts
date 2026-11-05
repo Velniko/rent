@@ -60,7 +60,7 @@ PC Rental电脑租赁团队
 export const systemSettings = {
   tallyFormUrl: '',
   notificationSettings: {
-    defaultDelivery: 'in_app_email' as 'in_app_email' | 'in_app_only',
+    defaultDelivery: 'in_app_email' as 'in_app_email' | 'in_app_only' | 'email_only',
   },
   feedbackRewards: {
     enabled: false,

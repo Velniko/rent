@@ -947,7 +947,7 @@ export async function loadSystemSettingsFromDB(c: Context): Promise<typeof syste
   if (parsedRegistrationSettings) systemSettings.registrationSettings = { ...systemSettings.registrationSettings, ...parsedRegistrationSettings }
   if (parsedNotificationSettings) systemSettings.notificationSettings = {
     ...systemSettings.notificationSettings,
-    defaultDelivery: parsedNotificationSettings.defaultDelivery === 'in_app_only' ? 'in_app_only' : 'in_app_email',
+    defaultDelivery: ['in_app_only', 'email_only'].includes(parsedNotificationSettings.defaultDelivery) ? parsedNotificationSettings.defaultDelivery : 'in_app_email',
   }
   if (tallyFormUrlValue !== undefined) systemSettings.tallyFormUrl = normalizeTallyEmbedUrl(tallyFormUrlValue)
   if (parsedFeedbackRewards) {
