@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { extractInlineScripts } from './helpers'
 import { DatabaseSync } from 'node:sqlite'
 import { URL } from 'node:url'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -107,7 +108,7 @@ test('C2C publishing, booking ownership, rental accounting and manual settlement
       const response=await request('/customer/rental-program/photos','owner',photoBody(slot.key))
       assert.equal(response.status,200)
       const photo=await response.json() as {id:string;url:string}
-      assert.match(photo.id,/^c2cp-/);assert.match(photo.url,/^https:\/\/res.cloudinary.com/)
+      assert.match(photo.id,/^c2cp-/);assert.equal(new URL(photo.url).origin,'https://res.cloudinary.com')
       form[`photo_${slot.key}`]=photo.id
     }
     assert.equal(row('SELECT COUNT(*) AS n FROM c2c_photos').n,6)
@@ -369,7 +370,9 @@ test('C2C commission accepts zero and 100 percent and rejects malformed input',(
 })
 
 test('photo rendering is safe and uploads use a bounded dedicated endpoint',()=>{
-  assert.doesNotThrow(()=>new Function(c2cPhotoUploadScript.replace(/^<script>|<\/script>$/g,'')))
+  const scripts=extractInlineScripts(c2cPhotoUploadScript)
+  assert.equal(scripts.length,1)
+  for(const script of scripts)assert.doesNotThrow(()=>new Function(script))
   assert.equal(maxRequestBodyBytes('/customer/rental-program/photos','POST'),UPLOAD_BODY_LIMIT_BYTES)
   assert.equal(maxRequestBodyBytes('/customer/rental-program','POST'),DEFAULT_BODY_LIMIT_BYTES)
   assert.equal(maxRequestBodyBytes('/customer/rental-program/photos','GET'),DEFAULT_BODY_LIMIT_BYTES)

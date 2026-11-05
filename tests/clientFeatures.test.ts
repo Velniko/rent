@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { extractInlineScripts } from './helpers'
 import { DatabaseSync } from 'node:sqlite'
 import { URL } from 'node:url'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -81,7 +82,9 @@ test('client control route mappings and maintenance scripts remain valid',()=>{
   for (const [path,key] of [['/products/a','newRentals'],['/api/rental-request','newRentals'],['/api/rental-setup-intent','newRentals'],['/gift-cards','giftCards'],['/referral','referralProgram'],['/api/public-notices','publicNotices'],['/register','registration']] as const) assert.equal(clientFeatureForPath(path,'web'),key,path)
   const html = clientMaintenanceHtml('Custom <&>')
   assert.match(html,/Custom &lt;&amp;&gt;/)
-  for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(()=>new Function(script[1]))
+  const scripts=extractInlineScripts(html)
+  assert.equal(scripts.length,1)
+  for (const script of scripts) assert.doesNotThrow(()=>new Function(script))
   assert.equal(normalizeClientAccess({features:{newRentals:false}}).features.newRentals,false)
   assert.equal(normalizeClientAccess({features:{newRentals:false}}).features.feedback,true)
 })

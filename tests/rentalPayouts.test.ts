@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { extractInlineScripts } from './helpers'
 import { DatabaseSync } from 'node:sqlite'
 import { URL } from 'node:url'
 import { readFileSync,readdirSync } from 'node:fs'
@@ -126,13 +127,28 @@ test('automatic payout schedules use Melbourne dates, enqueue only eligible inco
   assert.equal(f.row('SELECT next_run_date FROM c2c_payout_preferences').next_run_date,'2030-01-18')
 })
 
+test('booking data cannot break out of the rental page inline script',async t=>{
+  const f=await setup(t)
+  f.order('script-data')
+  const attack='</script><script>throw new Error("injected")</script>'
+  f.sqlite.prepare("UPDATE orders SET status='pending_approval',startDate=? WHERE id='script-data'").run(attack)
+  const checkout=await (await f.request('/customer/rent/d-owned','other')).text()
+  assert.equal(checkout.includes(attack),false)
+  assert.ok(checkout.includes('\\u003c/script>'))
+  const scripts=extractInlineScripts(checkout)
+  assert.ok(scripts.length>0)
+  for(const script of scripts)assert.doesNotThrow(()=>new Function(script))
+})
+
 test('preview exposes only city; owner pickup blocks protect appointment boundaries and ownership',async t=>{
   const f=await setup(t)
   const preview=await (await f.request('/customer/devices','other')).text()
   assert.match(preview,/墨尔本/);assert.doesNotMatch(preview,/123 Secret Street|Carlton VIC 3053/)
   const checkout=await (await f.request('/customer/rent/d-owned','other')).text()
   assert.match(checkout,/123 Secret Street/)
-  for(const script of checkout.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new Function(script[1]))
+  const scripts=extractInlineScripts(checkout)
+  assert.ok(scripts.length>0)
+  for(const script of scripts)assert.doesNotThrow(()=>new Function(script))
   await assert.rejects(()=>addRentalPickupBlock(f.other,'other','listing',{blockedDate:'2030-01-10',allDay:'1'}),/无权修改/)
   await assert.rejects(()=>addRentalPickupBlock(f.owner,'owner','listing',{blockedDate:'2030-02-30',allDay:'1'}),/有效/)
   await addRentalPickupBlock(f.owner,'owner','listing',{blockedDate:'2030-01-11',allDay:'1'})

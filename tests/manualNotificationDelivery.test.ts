@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { extractInlineScripts } from './helpers'
 import { DatabaseSync } from 'node:sqlite'
 import { URL } from 'node:url'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -127,7 +128,9 @@ test('missing transport and disabled templates produce a visible failure rather 
   const page = await f.request(response.headers.get('location') || '')
   const html = await page.text()
   assert.match(html, /邮件失败：/); assert.match(html, /查看邮件发送记录/)
-  for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) assert.doesNotThrow(() => new Function(match[1]))
+  const scripts = extractInlineScripts(html)
+  assert.ok(scripts.length > 0)
+  for (const script of scripts) assert.doesNotThrow(() => new Function(script))
 })
 
 test('explicit in-app-only delivery does not attempt email, even when SMTP is configured', async t => {
