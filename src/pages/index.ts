@@ -115,3 +115,5 @@ export * from './admin/clientFeatures'
 
 export * from './customer/rentalSettlements'
 export * from './customer/rentalPickup'
+
+export * from './admin/websiteAdvertisements'
