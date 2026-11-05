@@ -197,7 +197,7 @@ async function sendNotificationEmail(c: Context, notification: NotificationInput
     await sendGenericNotificationEmail(c, notification, recipient, email)
     return
   }
-
+  if (notification.delivery === 'email_only') await sendGenericNotificationEmail(c, notification, recipient, email)
 }
 
 async function sendManualNotificationEmail(c: Context, notification: NotificationInput, notificationId: string): Promise<EmailSendResult> {
@@ -279,6 +279,7 @@ export async function ensureNotificationsTable(c: Context): Promise<void> {
     try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN dedupe_key TEXT').run() } catch (_) { /* column already exists */ }
     try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN title_en TEXT').run() } catch (_) { /* column already exists */ }
     try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN message_en TEXT').run() } catch (_) { /* column already exists */ }
+    try { await c.env.RENT.prepare('ALTER TABLE notifications ADD COLUMN in_app INTEGER NOT NULL DEFAULT 1').run() } catch (_) { /* column already exists */ }
     await c.env.RENT.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_recipient_created ON notifications(recipient_id, read_at, created_at DESC)').run()
     await c.env.RENT.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_sender_created ON notifications(sender_id, deleted_at, created_at DESC)').run()
     await c.env.RENT.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications(recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL').run()
@@ -387,9 +388,10 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
   // short computed summary instead, see notificationListMessage in src/index.ts).
   // Kept independent of the configurable email template so an old saved template
   // can't leave a signed-in customer with confusing wording in the site notification.
+  const delivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
   await ensureNotificationsTable(c)
   const recipients = ((await c.env.RENT.prepare("SELECT id, name, email FROM users WHERE role = 'CUSTOMER' AND status = 'active'").all()) as any).results || []
-  for (let i = 0; i < recipients.length; i += 50) {
+  for (let i = 0; delivery !== 'email_only' && i < recipients.length; i += 50) {
     const chunk = recipients.slice(i, i + 50)
     await c.env.RENT.batch(chunk.map((customer: any) => c.env.RENT.prepare(
       'INSERT OR IGNORE INTO notifications (id, recipient_id, type, title, message, dedupe_key) VALUES (?, ?, ?, ?, ?, ?)'
@@ -404,6 +406,7 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
   }
 
   const queued = recipients.filter((customer: any) => {
+    if (delivery === 'in_app_only') return false
     const email = String(customer?.email || '')
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !email.endsWith('@invalid.local')
   })
@@ -420,25 +423,27 @@ export async function deliverPendingAgreementNotifications(c: Context): Promise<
 
   // 先完成站内信与邮件事件，再删除本批队列；保存期间新 revision 的行会被保留到下一批。
   await c.env.RENT.batch(rows.map((row) => c.env.RENT.prepare('DELETE FROM agreement_update_queue WHERE agreement_key = ? AND revision = ?').bind(row.agreement_key, row.revision)))
-  return queued.length
+  return delivery === 'in_app_only' ? recipients.length : queued.length
 }
 
-export type NotificationInput = { recipientId: string; type: string; title: string; message: string; titleEn?: string; messageEn?: string; orderId?: string; senderId?: string; expiresAt?: string | null; dedupeKey?: string | null; notifyByEmail?: boolean }
+export type NotificationInput = { recipientId: string; type: string; title: string; message: string; titleEn?: string; messageEn?: string; orderId?: string; senderId?: string; expiresAt?: string | null; dedupeKey?: string | null; notifyByEmail?: boolean; delivery?: 'in_app_email' | 'in_app_only' | 'email_only' }
 
 export async function createNotification(c: Context, notification: NotificationInput): Promise<boolean> {
   return (await createNotificationWithDelivery(c, notification)).inserted
 }
 
 export async function createNotificationWithDelivery(c: Context, notification: NotificationInput): Promise<{ inserted: boolean; email: EmailSendResult | null }> {
+  const delivery = notification.type === 'announcement' ? 'in_app_only' : notification.delivery || getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
   await ensureNotificationsTable(c)
   const id = `nt-${crypto.randomUUID()}`
-  const result = await c.env.RENT.prepare('INSERT OR IGNORE INTO notifications (id, recipient_id, type, title, message, order_id, sender_id, expires_at, dedupe_key, title_en, message_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, notification.recipientId, notification.type, notification.title, notification.message, notification.orderId || null, notification.senderId || null, notification.expiresAt || null, notification.dedupeKey || null, notification.titleEn || null, notification.messageEn || null).run() as any
+  // 保留投递记录用于去重；仅邮件的记录不进入站内列表、详情或未读计数。
+  const result = await c.env.RENT.prepare('INSERT OR IGNORE INTO notifications (id, recipient_id, type, title, message, order_id, sender_id, expires_at, dedupe_key, title_en, message_en, in_app) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, notification.recipientId, notification.type, notification.title, notification.message, notification.orderId || null, notification.senderId || null, notification.expiresAt || null, notification.dedupeKey || null, notification.titleEn || null, notification.messageEn || null, delivery === 'email_only' ? 0 : 1).run() as any
   const inserted = Number(result.meta?.changes ?? result.changes ?? 0) > 0
 
   // 员工/管理员收到的通知同步广播到已启用的推送渠道；尽力而为，绝不影响站内信。
   try {
-    if (await isStaffRecipient(c, notification.recipientId)) {
+    if (delivery !== 'email_only' && await isStaffRecipient(c, notification.recipientId)) {
       const url = notification.orderId ? new URL(`/admin/orders/${notification.orderId}`, c.req.url).toString() : undefined
       await dispatchChannelAlert(c, { title: notification.title, message: notification.message, url })
     }
@@ -447,11 +452,10 @@ export async function createNotificationWithDelivery(c: Context, notification: N
   }
 
   // 补发邮件：尽力而为，绝不影响站内信；重复通知（dedupe 命中）不重复发信。
-  const defaultDelivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
-  const notifyByEmail = notification.notifyByEmail ?? defaultDelivery === 'in_app_email'
+  const notifyByEmail = notification.notifyByEmail ?? delivery !== 'in_app_only'
   let email: EmailSendResult | null = null
-  if (inserted && notifyByEmail && (notification.type === 'manual' || Boolean(BUSINESS_NOTIFICATION_TEMPLATE_IDS[notification.type]) || CUSTOMER_AUTOMATIC_EMAIL_TYPES.has(notification.type))) {
-    try { email = await sendNotificationEmail(c, notification, id) || null }
+  if (inserted && notifyByEmail && (delivery === 'email_only' || notification.type === 'manual' || Boolean(BUSINESS_NOTIFICATION_TEMPLATE_IDS[notification.type]) || CUSTOMER_AUTOMATIC_EMAIL_TYPES.has(notification.type))) {
+    try { email = await sendNotificationEmail(c, { ...notification, delivery }, id) || null }
     catch (error: any) {
       console.error('sendNotificationEmail failed:', error?.message || error)
       email = { ok: false, id: null, error: '邮件发送失败，请查看发送记录' }
@@ -662,7 +666,7 @@ export async function getNotifications(c: Context, recipientId: string): Promise
   await ensureNotificationsTable(c)
   await cleanupCompletedRentalApplicationNotifications(c, recipientId)
   await cleanupCompletedPaymentReviewNotifications(c, recipientId)
-  const result = await c.env.RENT.prepare("SELECT * FROM notifications WHERE recipient_id = ? AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AND NOT (type = 'agreement_update' AND EXISTS (SELECT 1 FROM notifications newer WHERE newer.recipient_id = notifications.recipient_id AND newer.type = notifications.type AND newer.title = notifications.title AND newer.message = notifications.message AND (newer.created_at > notifications.created_at OR (newer.created_at = notifications.created_at AND newer.rowid > notifications.rowid)))) ORDER BY created_at DESC LIMIT 100").bind(recipientId).all()
+  const result = await c.env.RENT.prepare("SELECT * FROM notifications WHERE recipient_id = ? AND in_app = 1 AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AND NOT (type = 'agreement_update' AND EXISTS (SELECT 1 FROM notifications newer WHERE newer.recipient_id = notifications.recipient_id AND newer.in_app = 1 AND newer.type = notifications.type AND newer.title = notifications.title AND newer.message = notifications.message AND (newer.created_at > notifications.created_at OR (newer.created_at = notifications.created_at AND newer.rowid > notifications.rowid)))) ORDER BY created_at DESC LIMIT 100").bind(recipientId).all()
   return result.results || []
 }
 
@@ -691,7 +695,6 @@ export async function createDueDateNotifications(c: Context): Promise<number> {
         title: notice.title,
         message: `${notice.text} 订单：${order.orderNo || order.id}。`,
         orderId: order.id,
-        notifyByEmail: true,
       })
       if (inserted) created++
     }
@@ -823,7 +826,7 @@ export async function notifyOverduePaymentProofs(c: Context): Promise<number> {
     const orderLabel = proof.orderNo || proof.order_id
     const title = `${method}付款待审核超过 1 小时`
     const message = `订单 ${orderLabel} 的${method}付款凭证已提交超过 1 小时，客户：${proof.customer_name || '未填写'}，金额：AUD ${Number(proof.totalAmount || 0).toFixed(2)}。请尽快审核。`
-    await Promise.all(admins.map((admin: any) => createNotification(c, { recipientId: admin.id, type: 'payment_review_overdue', title, message, orderId: proof.order_id, notifyByEmail: false })))
+    await Promise.all(admins.map((admin: any) => createNotification(c, { recipientId: admin.id, type: 'payment_review_overdue', title, message, orderId: proof.order_id })))
     if ((provider === 'smtp' || apiKey) && from) {
       const html = renderEmailNotificationHtml(title, `<p>${message}</p><p><a href="${new URL(`/admin/orders/${proof.order_id}`, c.req.url).toString()}">打开订单审核</a></p>`, getSystemSettings().companyDetails.name)
       const recipients = admins.map((admin: any) => admin.email).filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))

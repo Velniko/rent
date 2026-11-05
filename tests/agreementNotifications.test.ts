@@ -11,6 +11,7 @@ import { URL } from 'node:url'
 import { notifyAgreementUpdate } from '../src/actions/admin/saveSettings'
 import { deliverPendingAgreementNotifications } from '../src/services/notifications'
 import { AGREEMENT_UPDATE_SUBJECT, AGREEMENT_UPDATE_EMAIL_BODY } from '../src/services/agreementUpdateTemplate'
+import { getSystemSettings } from '../src/settings/systemSettings'
 
 function makeDb(options: { queueRows?: any[]; customers?: any[]; template?: any } = {}) {
   const statements: Array<{ sql: string; args: unknown[] }> = []
@@ -109,6 +110,23 @@ test('agreement notices use the Melbourne update date and safely fill fallback t
     assert.match(String(html), /租赁 &lt;b&gt;协议&lt;\/b&gt; \{customer_name\}/)
     assert.doesNotMatch(String(html), /<img src=x|<b>协议<\/b>/)
   }
+})
+
+test('scheduled agreement notices respect email-only and in-app-only defaults', async () => {
+  const settings = getSystemSettings().notificationSettings
+  const original = settings.defaultDelivery
+  try {
+    for (const delivery of ['email_only', 'in_app_only'] as const) {
+      settings.defaultDelivery = delivery
+      const { db, batches } = makeDb({
+        queueRows: [{ agreement_key: 'rentalTerms', agreement_label: '租赁协议', revision: 'rev-mode', queued_at: '2026-11-05 00:00:00' }],
+        customers: [{ id: 'customer', name: '客户', email: 'customer@example.com' }],
+      })
+      assert.equal(await deliverPendingAgreementNotifications({ env: { RENT: db } } as any), 1)
+      assert.equal(batches.flat().filter(({ sql }) => /INSERT OR IGNORE INTO notifications/.test(sql)).length, delivery === 'email_only' ? 0 : 1)
+      assert.equal(batches.flat().filter(({ sql }) => /INSERT OR IGNORE INTO email_events/.test(sql)).length, delivery === 'in_app_only' ? 0 : 1)
+    }
+  } finally { settings.defaultDelivery = original }
 })
 
 test('agreement template migration updates both saved templates without changing delivery state', t => {

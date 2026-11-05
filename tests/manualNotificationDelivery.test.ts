@@ -141,6 +141,62 @@ test('explicit in-app-only delivery does not attempt email, even when SMTP is co
   assert.equal(f.row("SELECT COUNT(*) n FROM notifications WHERE type='manual'").n, 1)
 })
 
+test('email-only manual templates and custom messages stay out of inboxes and unread counts', async t => {
+  const f = await fixture(t); await f.configureSmtp(); const smtp = smtpServer()
+  const contents: Record<string, string>[] = [{ templateId: 'chosen' }, { templateId: 'custom', title: '仅邮件标题', message: '<p>仅邮件正文</p>' }]
+  for (const content of contents) {
+    const response = await f.request('/notifications/send', 'admin', { recipientId: 'customer', delivery: 'email_only', ...content })
+    assert.equal(response.status, 303)
+    assert.match(response.headers.get('location') || '', /sent=1&emailSent=1&emailFailed=0&delivery=email_only/)
+    const resultPage = await (await f.request(response.headers.get('location') || '')).text()
+    assert.match(resultPage, /邮件已提交：/)
+    assert.doesNotMatch(resultPage, /站内通知已发送：/)
+  }
+  assert.equal(smtp.connections(), 2)
+  assert.equal(f.row("SELECT COUNT(*) n FROM email_events WHERE status='SENT'").n, 2)
+  assert.equal(f.row("SELECT COUNT(*) n FROM notifications WHERE recipient_id='customer' AND in_app=1").n, 0)
+  assert.deepEqual((await (await f.request('/notifications/unread', 'customer')).json() as any).notifications, [])
+  assert.deepEqual(await (await f.request('/notifications/recent', 'customer')).json(), { notifications: [], unreadCount: 0 })
+  const record = f.row("SELECT id FROM notifications WHERE recipient_id='customer' LIMIT 1")
+  assert.equal((await f.request('/notifications/' + record.id, 'customer')).status, 404)
+})
+
+test('email-only defaults persist, apply to automatic and manual delivery, and allow manual overrides', async t => {
+  const f = await fixture(t); await f.configureSmtp(); const smtp = smtpServer()
+  assert.equal((await f.request('/admin/notifications/settings', 'admin', { defaultDelivery: 'email_only' })).status, 302)
+  assert.equal(JSON.parse(f.row("SELECT value FROM systemSettings WHERE key='notificationSettings'").value).defaultDelivery, 'email_only')
+  const settings = await (await f.request('/admin/notifications/settings')).text()
+  assert.match(settings, /value="email_only" checked/)
+  const compose = await (await f.request('/notifications')).text()
+  assert.match(compose, /value="email_only" selected/)
+  const manual = await f.request('/notifications/send', 'staff', { recipientId: 'customer', templateId: 'chosen' })
+  assert.match(manual.headers.get('location') || '', /emailSent=1&emailFailed=0&delivery=email_only/)
+  const automatic = { recipientId: 'customer', type: 'feedback_reward', title: '自动邮件', message: '自动邮件正文', dedupeKey: 'auto-email-only' }
+  assert.equal((await createNotificationWithDelivery(f.context, automatic)).inserted, true)
+  assert.equal((await createNotificationWithDelivery(f.context, automatic)).inserted, false)
+  assert.equal(f.row("SELECT COUNT(*) n FROM notifications WHERE recipient_id='customer' AND in_app=1").n, 0)
+  assert.equal(smtp.connections(), 2)
+  await f.request('/notifications/send', 'admin', { ...send, delivery: 'in_app_only' })
+  assert.equal(smtp.connections(), 2)
+  assert.equal(f.row("SELECT COUNT(*) n FROM notifications WHERE recipient_id='customer' AND in_app=1").n, 1)
+  await f.request('/notifications/send', 'admin', send)
+  assert.equal(smtp.connections(), 3)
+  assert.equal(f.row("SELECT COUNT(*) n FROM notifications WHERE recipient_id='customer' AND in_app=1").n, 2)
+})
+
+test('failed email-only messages can be retried without creating an inbox message', async t => {
+  const f = await fixture(t); await f.configureSmtp(); smtpServer({ rejectData: true })
+  const response = await f.request('/notifications/send', 'admin', { ...send, delivery: 'email_only' })
+  assert.match(response.headers.get('location') || '', /emailSent=0&emailFailed=1/)
+  const event = f.row('SELECT * FROM email_events')
+  assert.equal(event.status, 'FAILED')
+  const smtp = smtpServer()
+  assert.equal((await f.request(`/manager/email-events/${event.id}/retry`, 'admin', {})).status, 303)
+  assert.equal(smtp.connections(), 1)
+  assert.equal(f.row('SELECT * FROM email_events').status, 'SENT')
+  assert.equal(f.row('SELECT COUNT(*) n FROM notifications WHERE in_app=1').n, 0)
+})
+
 test('manual email results respect default delivery and notification deduplication', async t => {
   const f = await fixture(t); await f.configureSmtp(); const smtp = smtpServer()
   const input = { recipientId: 'customer', type: 'manual', title: '通知', message: '正文', notifyByEmail: true, dedupeKey: 'one-notification' }
