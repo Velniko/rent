@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { extractInlineScripts } from './helpers'
 import { DatabaseSync } from 'node:sqlite'
 import { handleSaveAdminSettings } from '../src/actions/admin/saveSettings'
 import { getSystemSettings, invalidateSystemSettingsCache } from '../src/site'
@@ -37,7 +38,9 @@ test('company social profiles save, survive partial updates, clear and reject un
     for (const [key,value] of Object.entries(companyDetails)) assert.equal(saved()[key], value)
     const html = renderAdminSettings({ id: 'admin', role: 'ADMIN' })
     for (const key of Object.keys(companyDetails)) assert.ok(html.includes(`name="company${key[0].toUpperCase()}${key.slice(1)}"`))
-    for (const [,script] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script))
+    const scripts = extractInlineScripts(html)
+    assert.ok(scripts.length > 0)
+    for (const script of scripts) assert.doesNotThrow(() => new Function(script))
     companyDetails = { name: 'Updated company' }
     assert.equal((await handleSaveAdminSettings(context)).status, 200)
     assert.equal(saved().wechatUrl, 'https://weixin.qq.com/example')

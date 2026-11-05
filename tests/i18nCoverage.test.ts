@@ -8,10 +8,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 // 扫描器是 node 直跑的 .mjs，类型由 scripts/i18n-coverage.d.mts 声明。
-import { scan, THRESHOLDS } from '../scripts/i18n-coverage.mjs'
+import { scan, THRESHOLDS, unescapeTs } from '../scripts/i18n-coverage.mjs'
 import type { I18nCoverageReport } from '../scripts/i18n-coverage.mjs'
 
 const report: I18nCoverageReport = scan({ silent: true })
+
+test('dictionary escapes are decoded once without changing literal backslash sequences', () => {
+  assert.equal(unescapeTs(String.raw`第一行\n第二行`), '第一行\n第二行')
+  assert.equal(unescapeTs(String.raw`用户\'s`), "用户's")
+  assert.equal(unescapeTs(String.raw`路径\\new`), String.raw`路径\new`)
+  assert.equal(unescapeTs(String.raw`\\\'`), String.raw`\'`)
+  assert.equal(unescapeTs(String.raw`保留\t`), String.raw`保留\t`)
+})
 
 test('i18n coverage: 纯中文短文本覆盖率 ≥ 98%', () => {
   assert.ok(

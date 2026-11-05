@@ -6,6 +6,7 @@
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { extractInlineScripts } from './helpers'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import { URL } from 'node:url'
@@ -170,7 +171,9 @@ test('API settings expose both providers and valid scripts without exposing cred
   assert.match(html, /deeplApiKey/)
   assert.match(html, /googleTranslationApiKey/)
   assert.doesNotMatch(html, /test-deepl-secret|test-google-secret/)
-  for (const [, script] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script))
+  const scripts = extractInlineScripts(html)
+  assert.ok(scripts.length > 0)
+  for (const script of scripts) assert.doesNotThrow(() => new Function(script))
   assert.doesNotThrow(() => new Function(TRANSLATION_CLIENT_SCRIPT))
 })
 

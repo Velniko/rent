@@ -67,11 +67,8 @@ export function loadDictionary() {
   return { entries, duplicates, bytes: Buffer.byteLength(source) }
 }
 
-function unescapeTs(value) {
-  return String(value)
-    .replace(/\\'/g, "'")
-    .replace(/\\\\/g, '\\')
-    .replace(/\\n/g, '\n')
+export function unescapeTs(value) {
+  return String(value).replace(/\\(['\\n])/g, (_, character) => character === 'n' ? '\n' : character)
 }
 
 // ---------------------------------------------------------------------------
