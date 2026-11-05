@@ -4,6 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { buildLayout, getDeviceById } from '../../site'
+import { escapeHtml } from '../../lib/html';
 import type { Context } from 'hono'
 
 export async function renderStaffDeviceEdit(c: Context, user: any, deviceId: string, errorMessage?: string) {
@@ -14,17 +15,17 @@ export async function renderStaffDeviceEdit(c: Context, user: any, deviceId: str
 
   const body = `
     <div class="panel">
-      <div class="section-title"><h2>编辑设备 - ${device.name}</h2></div>
+      <div class="section-title"><h2>编辑设备 - ${escapeHtml(device.name)}</h2></div>
       ${errorMessage ? `<div data-flash-notice class="page-notification page-notification--error">${errorMessage}</div>` : ''}
       <form method="POST" action="/staff/devices/${device.id}/edit">
         <label class="form-label">设备名称</label>
-        <input class="form-control" name="name" value="${device.name}" />
+        <input class="form-control" name="name" value="${escapeHtml(device.name)}" />
         <label class="form-label">型号</label>
-        <input class="form-control" name="model" value="${device.model}" />
+        <input class="form-control" name="model" value="${escapeHtml(device.model)}" />
         <label class="form-label">设备分类</label>
         <select class="form-control" name="category">${['游戏笔记本','轻薄商务本','台式工作站','普通笔记本','其他'].map(category => `<option value="${category}" ${device.category === category ? 'selected' : ''}>${category}</option>`).join('')}</select>
         <label class="form-label">序列号</label>
-        <input class="form-control" name="serialNumber" value="${device.serialNumber}" />
+        <input class="form-control" name="serialNumber" value="${escapeHtml(device.serialNumber)}" />
         <label class="form-label">日租金</label>
         <input class="form-control" type="number" step="0.01" name="dailyRate" value="${device.dailyRate}" />
         <label class="form-label">周租折扣（%）</label>

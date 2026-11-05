@@ -7,6 +7,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { jsonForScript } from '../src/lib/scriptJson'
 import {
   DEFAULT_BODY_LIMIT_BYTES,
   MAX_FORM_FIELD_COUNT,
@@ -24,6 +25,14 @@ import {
   serializeAuthCookie,
   serializeAuthCookieClear,
 } from '../src/lib/security'
+
+test('inline JSON cannot close a script element or enter HTML comment parsing', () => {
+  const value = { date: '</ScRiPt ><script>throw new Error("injected")</script>', note: '<!--<script>\u2028\u2029&"' }
+  const encoded = jsonForScript(value)
+  assert.equal(encoded.includes('<'), false)
+  assert.deepEqual(JSON.parse(encoded), value)
+  assert.deepEqual(new Function(`return (${encoded})`)(), value)
+})
 
 test('open redirect: protocol-relative, backslash and absolute URLs are rejected', () => {
   const attacks = [

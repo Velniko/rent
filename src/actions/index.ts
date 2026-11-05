@@ -18,3 +18,10 @@ export * from './coupons';
 export * from './squarePayments';
 export * from './public/tallyFeedback';
 export * from './staff/preparePickup';
+
+export * from './customer/c2c'
+export * from './admin/c2c'
+
+export * from './admin/clientFeatures'
+
+export * from './customer/rentalSettlements'

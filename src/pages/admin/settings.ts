@@ -10,7 +10,7 @@ export function renderAdminSettings(user: any) {
   const feedbackRewards = settings.feedbackRewards || { enabled: false, rewardType: 'BALANCE', balanceAmount: 5, balanceAmountMin: 5, balanceAmountMax: 5, couponDiscountType: 'fixed', couponDiscountValue: 5, couponDiscountValueMin: 5, couponDiscountValueMax: 5, couponMinimumOrderAmount: 0, couponExpiresDays: 30 };
   const escAttr = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   const body = `
-    <div class="panel">
+    <div class="panel"><div class="section-title"><h3>客户端功能</h3><a class="button button-secondary" href="/admin/settings/client-features">管理客户端功能</a></div></div><div class="panel">
       <div class="section-title"><h2>系统设置</h2><span class="section-note">配置邮件、公司资料、支付方式和推荐分成。</span></div>
 
       <form id="systemSettingsForm" class="asset-editor" novalidate>
