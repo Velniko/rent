@@ -25,3 +25,5 @@ export * from './admin/c2c'
 export * from './admin/clientFeatures'
 
 export * from './customer/rentalSettlements'
+
+export * from './admin/websiteAdvertisements'
