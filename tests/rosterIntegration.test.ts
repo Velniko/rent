@@ -94,6 +94,24 @@ test('roster clock uses Melbourne date at UTC midnight and DST transitions',()=>
  assert.equal(rosterClock(new Date('2026-10-03T16:30Z')).now,'2026-10-04T03:30')
 })
 
+test('active administrators can be scheduled manually, automatically and receive assigned tasks', async t => {
+ const {c,actors,sql}=await setup(t)
+ sql.exec("INSERT INTO users(id,name,email,role,status) VALUES ('inactive-admin','停用管理员','inactive@roster.test','ADMIN','inactive'),('deleted-admin','已删除管理员','deleted@roster.test','ADMIN','active'); UPDATE users SET deleted_at=CURRENT_TIMESTAMP WHERE id='deleted-admin'")
+ let data=await loadRoster(c,actors.admin)
+ assert.equal(data.employees.find(employee=>employee.id==='admin')?.role,'ADMIN')
+ assert.ok(data.employees.find(employee=>employee.id==='admin')?.enabled)
+ assert.ok(!data.employees.some(employee=>['c','inactive-admin','deleted-admin'].includes(employee.id)))
+ data=await mutateRoster(c,actors.admin,{operation:'shift',revision:data.revision,employeeId:'admin',day:data.today,start:'09:00',end:'17:00',locked:true})
+ assert.ok(data.drafts[data.today].shifts.some(shift=>shift.employeeId==='admin'))
+ data=await mutateRoster(c,actors.admin,{operation:'auto',revision:data.revision,start:data.today,dailyHours:11,minStaff:1,maxDays:7,maxConsecutive:7,employees:data.employees.map(employee=>({...employee,enabled:employee.id==='admin'}))})
+ assert.ok(data.drafts[data.today].shifts.length>0)
+ assert.ok(data.drafts[data.today].shifts.every(shift=>shift.employeeId==='admin'))
+ data=await mutateRoster(c,actors.admin,{operation:'publish',revision:data.revision})
+ assert.equal(data.tasks.find(task=>task.orderId==='o')?.employeeId,'admin')
+ assert.ok(data.published.some(shift=>shift.employeeId==='admin'))
+ assert.ok((await rosterPermission(c,actors.admin,'o','return')).allowed)
+})
+
 test('a complete return inspection stores five encrypted R2 photos and separate order activity',async t=>{
  const {request,sql,env,objects}=await setup(t)
  Object.assign(env,{CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret'})
