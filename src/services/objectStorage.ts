@@ -23,7 +23,8 @@ export function fileCategory(folder: string): string {
 }
 export async function storeObject(c: Context, input: { bytes: ArrayBuffer; category: string; contentType: string; ownerId?: string; visibility: StoredObject['visibility']; tier?: StorageTier; sourceUrl?: string }): Promise<StoredObject> {
   const env = c.env as ObjectStorageEnv
-  if (!env.STORAGE_BACKUP) throw new Error('R2 对象存储尚未配置')
+  const r2 = env.STORAGE_BACKUP
+  if (!r2) throw new Error('R2 对象存储尚未配置')
   if (input.tier === 'ARCHIVE' && !hasOciStorage(env)) throw new Error('甲骨文归档存储尚未配置')
   if (!/^[a-z0-9-]+$/.test(input.category)) throw new Error('文件分类无效')
   const id = crypto.randomUUID(), tier = input.tier || 'STANDARD'
@@ -31,17 +32,22 @@ export async function storeObject(c: Context, input: { bytes: ArrayBuffer; categ
   const bytes = encrypted ? await encryptObject(env, id, input.bytes) : input.bytes
   const key = `${tier.toLowerCase()}/${input.category}/${new Date().toISOString().slice(0, 10).replace(/-/g, '/')}/${id}`
   const hash = await sha256(bytes)
-  let ociReady = 0, r2Ready = 0
-  try {
-    if (!hasOciStorage(env) || (tier === 'STANDARD' && !(encrypted ? env.OCI_PRIVATE_BUCKET : env.OCI_MEDIA_BUCKET))) throw new Error('OCI_REPLICA_DISABLED')
-    const result = await ociRequest(env, storageBucket(env, tier, encrypted), key, 'PUT', bytes)
-    ociReady = result.ok ? 1 : 0
-    await result.body?.cancel()
-  } catch { /* R2 retains the durable copy until replication succeeds. */ }
-  try {
-    await env.STORAGE_BACKUP.put(key, bytes, { httpMetadata: { contentType: 'application/octet-stream' }, customMetadata: { sha256: hash } })
-    r2Ready = 1
-  } catch { /* A successful OCI write can be repaired into R2 by the scheduled job. */ }
+  const [ociReady, r2Ready] = await Promise.all([
+    (async () => {
+      try {
+        if (!hasOciStorage(env) || (tier === 'STANDARD' && !(encrypted ? env.OCI_PRIVATE_BUCKET : env.OCI_MEDIA_BUCKET))) throw new Error('OCI_REPLICA_DISABLED')
+        const result = await ociRequest(env, storageBucket(env, tier, encrypted), key, 'PUT', bytes)
+        await result.body?.cancel()
+        return result.ok ? 1 : 0
+      } catch { return 0 /* R2 retains the durable copy until replication succeeds. */ }
+    })(),
+    (async () => {
+      try {
+        await r2.put(key, bytes, { httpMetadata: { contentType: 'application/octet-stream' }, customMetadata: { sha256: hash } })
+        return 1
+      } catch { return 0 /* A successful OCI write can be repaired into R2 by the scheduled job. */ }
+    })(),
+  ])
   if (!ociReady && !r2Ready) throw new Error('文件保存失败，请稍后重试')
   const row: StoredObject = { id, object_key: key, category: input.category, owner_id: input.ownerId || null, visibility: input.visibility, storage_tier: tier, content_type: input.contentType, byte_size: input.bytes.byteLength, sha256: hash, encrypted: encrypted ? 1 : 0, oci_ready: ociReady, r2_ready: r2Ready, source_url: input.sourceUrl || null }
   await c.env.RENT.prepare(`INSERT INTO stored_objects (id,object_key,category,owner_id,visibility,storage_tier,content_type,byte_size,sha256,encrypted,oci_ready,r2_ready,source_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
