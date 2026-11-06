@@ -14,16 +14,16 @@ export async function saveWebsiteAdvertisement(c: Context) {
   let fields
   try { fields = readWebsiteAdvertisementForm(form) }
   catch (error) { return c.text(error instanceof Error ? error.message : '广告内容无效', 400) }
-  const { title, message, titleEn, messageEn, expiresAt } = fields
+  const { title, message, titleEn, messageEn, expiresAt, linkUrl, linkText, linkTextEn } = fields
   const existingId = c.req.param('id')
   const id = existingId || `ad-${crypto.randomUUID()}`
   if (existingId) {
-    const result = await c.env.RENT.prepare('UPDATE website_advertisements SET title = ?, message = ?, title_en = ?, message_en = ?, expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .bind(title, message, titleEn, messageEn, expiresAt, id).run()
+    const result = await c.env.RENT.prepare('UPDATE website_advertisements SET title = ?, message = ?, title_en = ?, message_en = ?, expires_at = ?, link_url = ?, link_text = ?, link_text_en = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .bind(title, message, titleEn, messageEn, expiresAt, linkUrl, linkText, linkTextEn, id).run()
     if (!result.meta?.changes) return c.text('广告不存在', 404)
   } else {
-    await c.env.RENT.prepare('INSERT INTO website_advertisements (id, title, message, title_en, message_en, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(id, title, message, titleEn, messageEn, expiresAt, user.id).run()
+    await c.env.RENT.prepare('INSERT INTO website_advertisements (id, title, message, title_en, message_en, expires_at, link_url, link_text, link_text_en, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, title, message, titleEn, messageEn, expiresAt, linkUrl, linkText, linkTextEn, user.id).run()
   }
   await createAuditLog(c, { actor: user, action: existingId ? 'WEBSITE_AD_UPDATED' : 'WEBSITE_AD_PUBLISHED', targetType: 'WEBSITE_AD', targetId: id, after: { title, expiresAt } })
   return c.redirect('/admin/website-advertisements', 303)

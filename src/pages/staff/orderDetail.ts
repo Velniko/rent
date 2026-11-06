@@ -4,6 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { buildLayout, getOrderById, getUserById, getDeviceById, formatCurrency, formatMelbourneDateTime, getContractByOrderId, ensureContractForOrder, getCustomerRiskAssessment, systemSettings, isContractExpired, diffOrderSnapshots, ORDER_CHANGE_TYPE_LABELS, formatOrderChangeActor, reconcileOrderPayments } from '../../site'
+import { renderOrderPickupAction, renderOrderReturnAction } from '../partials/orderFulfillmentActions'
 import { isPreInspectionComplete } from '../../lib/inspection'
 import { renderReconciliationPanel } from '../partials/reconciliationPanel'
 import type { Context } from 'hono'
@@ -96,11 +97,11 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
             <p class="alert">银行转账需管理员审核后确认付款。</p>
           ` : ''}
           ${preInspectionAction}
-          ${(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && contract?.status === 'signed')) ? `<a class="button button-primary" href="/staff/mobile?stage=pickup&order=${encodeURIComponent(order.id)}#scan">扫码取货</a>` : ''}
+          ${(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && contract?.status === 'signed')) ? renderOrderPickupAction(order) : ''}
           ${user.role === 'ADMIN' && order.status === 'active' && order.early_return_requested_at ? `<div class="alert">客户已申请提前归还，等待审批。<form method="post" action="/staff/orders/${order.id}/early-return/approve" style="display:inline;margin-left:12px" data-site-confirm="确认批准客户提前归还吗？"><button class="button button-sm button-warning" type="submit">批准提前归还</button></form></div>` : ''}
           ${['active', 'extended', 'overdue'].includes(String(order.status)) ? `<form method="POST" action="/staff/orders/${order.id}/suspend" data-site-confirm="暂停后客户将无法继续使用设备，原因会随通知发送给客户。" data-confirm-title="暂停租赁？" data-confirm-label="暂停租赁"><label class="form-label" for="suspend-reason">暂停原因（必填，将随通知发送给客户）</label><input class="form-control" id="suspend-reason" name="reason" maxlength="300" required placeholder="例如：设备无货 / 客户申请"><button class="button button-warning" type="submit" style="margin-top:8px">暂停租赁</button><small class="form-text">仅绑定该客户的员工或管理员可操作。</small></form>` : ''}
           ${['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) ? `
-            ${order.return_received_at?`<a class="button button-primary" data-workspace-modal href="/staff/orders/${order.id}/inspection?fragment=1">验机</a>`:`<a class="button button-secondary" href="/staff/mobile?stage=return&order=${encodeURIComponent(order.id)}#scan">扫码归还</a>`}
+            ${renderOrderReturnAction(order)}
           ` : ''}
           ${returnInspectionAction}
           ${['paid', 'active', 'completed', 'pending_return'].includes(String(order.status)) ? `<a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>` : ''}

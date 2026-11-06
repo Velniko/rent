@@ -13,15 +13,38 @@ export interface WebsiteAdvertisement {
   title_en: string
   message_en: string
   active: number
+  link_url: string | null
+  link_text: string | null
+  link_text_en: string | null
   expires_at: string | null
   created_at: string
   updated_at: string
+}
+
+/** 「查看详情」按钮的链接：只允许 http(s) 外链或站内绝对路径，拒绝 javascript: 等危险协议。 */
+function readAdvertisementLinkUrl(raw: string): string | null {
+  const value = raw.trim()
+  if (!value) return null
+  if (value.length > 2048) throw new Error('广告链接过长')
+  if (value.startsWith('/')) {
+    if (value.startsWith('//') || value.startsWith('/\\')) throw new Error('广告链接无效')
+    return value
+  }
+  let parsed: URL
+  try { parsed = new URL(value) }
+  catch { throw new Error('广告链接无效，请填写完整网址（https://...）或以 / 开头的站内路径') }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('广告链接只能是 http(s) 网址或站内路径')
+  return parsed.toString()
 }
 
 export function readWebsiteAdvertisementForm(form: Record<string, unknown>) {
   let fields
   try { fields = readAnnouncementForm(form) }
   catch (error) { throw new Error((error instanceof Error ? error.message : '广告内容无效').replaceAll('通告', '广告')) }
+  const linkUrl = readAdvertisementLinkUrl(String(form.linkUrl || ''))
+  const linkText = String(form.linkText || '').trim().slice(0, 40) || null
+  const linkTextEn = String(form.linkTextEn || '').trim().slice(0, 40) || null
+  fields = { ...fields, linkUrl, linkText: linkUrl ? linkText : null, linkTextEn: linkUrl ? linkTextEn : null }
   const local = String(form.expiresAt || '').trim()
   let expiresAt: string | null = null
   if (local) {

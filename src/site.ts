@@ -668,7 +668,8 @@ export async function updateOrderStatus(c: Context, orderId: string, status: str
     cancelled: { order: 'CANCELLED', payment: 'PAYMENT_FAILED', rental: 'CANCELLED' },
   }
   const next = mapping[status] || { order: status.toUpperCase(), payment: 'UNPAID', rental: status.toUpperCase() }
-  const previous = await db.prepare('SELECT deviceId, rental_status, deposit_status, depositAmount, deposit_payment_mode FROM orders WHERE id = ?').bind(orderId).first() as any
+  const previous = await db.prepare('SELECT deviceId, rental_status, deposit_status, depositAmount, deposit_payment_mode, is_manual, payment_status FROM orders WHERE id = ?').bind(orderId).first() as any
+  if (previous?.is_manual === 1 && previous.payment_status === 'UNPAID' && next.payment === 'PAID' && !['paid', 'pending_pickup'].includes(status)) next.payment = 'UNPAID'
   const result = await db.prepare(`UPDATE orders SET status = ?, order_status = ?, payment_status = ?, rental_status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?${options?.expectedStatus ? ' AND status = ?' : ''}`)
     .bind(status, next.order, next.payment, next.rental, orderId, ...(options?.expectedStatus ? [options.expectedStatus] : [])).run();
   if (options?.expectedStatus && !Number(result.meta?.changes ?? result.changes ?? 0)) return false

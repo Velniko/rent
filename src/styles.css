@@ -6082,35 +6082,6 @@ tr:hover td {
   white-space: pre-wrap;
 }
 
-.announcement-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(15, 23, 42, .58);
-  backdrop-filter: blur(6px);
-  animation: feedback-dialog-in 180ms cubic-bezier(.22, 1, .36, 1) both;
-}
-
-.announcement-card {
-  width: min(520px, 100%);
-  padding: 32px;
-  color: var(--text-primary);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  text-align: center;
-}
-
-.announcement-card__label {
-  color: var(--primary);
-  font: 600 .7rem var(--font-mono);
-  letter-spacing: .12em;
-}
-
 .notification-toast__mark {
   display: inline-grid;
   flex: 0 0 auto;
@@ -6122,16 +6093,6 @@ tr:hover td {
   background: var(--primary);
   border-radius: 7px;
   font: 700 .72rem var(--font-mono);
-}
-
-.announcement-card h2 {
-  margin: 12px 0 10px;
-}
-
-.announcement-card p {
-  margin: 0 0 24px;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
 }
 
 .notification-toast {
@@ -6327,7 +6288,6 @@ tr:hover td {
 
 @media (prefers-reduced-motion: reduce) {
 
-  .announcement-overlay,
   .site-confirm-overlay[open],
   .notification-toast,
   .site-toast {

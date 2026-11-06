@@ -92,7 +92,8 @@ test('return quote observes grace period, Melbourne calendar days, deposit deduc
   assert.equal(returnChargeQuote(order, 20, new Date('2029-12-31T23:59:00Z')).total, 0)
   assert.deepEqual(returnChargeQuote(order, 20, new Date('2030-01-01T00:00:00Z')), { overdueDays: 0, total: 25, depositApplied: 20, collected: 0, amountDue: 5 })
   assert.equal(returnChargeQuote({ ...order, return_received_at: '2030-01-03 01:00:00', overdue_charge_total: 65, overdue_deposit_applied: 20, overdue_collected_amount: 10 }, 20, new Date('2030-02-01')).amountDue, 35)
-  assert.equal(returnChargeQuote({ ...order, is_manual: 1 }, 20, new Date('2030-02-01')).total, 0)
+  assert.deepEqual(returnChargeQuote({ ...order, is_manual: 1 }, 20, new Date('2030-02-01')), returnChargeQuote(order, 20, new Date('2030-02-01')))
+  assert.equal(returnChargeQuote({ is_manual: 1 }, 20).total, 0)
 })
 
 test('cash collection uses server quote, records the channel once, and cron does not reopen paid fees', async t => {

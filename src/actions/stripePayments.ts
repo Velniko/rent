@@ -1730,9 +1730,9 @@ export async function cancelAndRefund(c: Context, admin: any, orderId: string, r
   if (existingRefund) return c.text('该订单已经全额退款', 409)
   const payment = await c.env.RENT.prepare("SELECT * FROM payments WHERE rental_id = ? AND (status = 'paid' OR (status = 'pending' AND payment_method = 'card' AND stripe_payment_intent_id = (SELECT stripe_deposit_payment_intent_id FROM orders WHERE id = ?))) ORDER BY CASE WHEN status = 'paid' THEN 0 ELSE 1 END, paid_at DESC LIMIT 1").bind(order.id, order.id).first() as any
   if (!payment) {
-    if (!['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment'].includes(order.status) && !verifiedStripePayment) return c.text('未找到已结算付款，不能自动退款', 409)
+    if (!(order.is_manual === 1 && order.payment_status === 'UNPAID') && !['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment'].includes(order.status) && !verifiedStripePayment) return c.text('未找到已结算付款，不能自动退款', 409)
     await finishOrderCancellation(c, admin, order, reason)
-    await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
+    if (order.userId) await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
     return c.redirect(`/admin/orders/${order.id}`, 303)
   }
   if (await hasOpenPaymentDispute(c, payment.id)) return c.text('该笔付款存在未解决的拒付争议，暂不能退款', 409)
@@ -1752,7 +1752,7 @@ export async function cancelAndRefund(c: Context, admin: any, orderId: string, r
     ])
     await releaseCouponForOrder(c, order.id)
     await revokeReferralRewardForOrder(c, order.id, '订单取消并释放预授权')
-    await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
+    if (order.userId) await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
     return c.redirect(`/admin/orders/${order.id}`, 303)
   }
   if (channel === 'bank_transfer' && (!order.refundBsb || !order.refundAccountNumber || !order.refundAccountName)) return c.text('订单缺少银行退款账户信息', 409)
@@ -1774,7 +1774,7 @@ export async function cancelAndRefund(c: Context, admin: any, orderId: string, r
     ])
     await releaseCouponForOrder(c, order.id)
     await revokeReferralRewardForOrder(c, order.id, '订单取消并退款')
-    await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消，退款将通过银行转账处理${deductionAmount ? `，已扣除 AUD ${deductionAmount.toFixed(2)} 操作手续费` : ''}${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
+    if (order.userId) await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消，退款将通过银行转账处理${deductionAmount ? `，已扣除 AUD ${deductionAmount.toFixed(2)} 操作手续费` : ''}${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
     return c.redirect(`/admin/orders/${order.id}`, 303)
   }
 
@@ -1841,7 +1841,6 @@ export async function chargeOverdueReturns(c: Context, now = new Date(), orderId
   let overdue = 0
   let charged = 0
   for (const order of candidates) {
-    if (order.is_manual === 1) continue
     const overdueDays = returnOverdueDays(order, now)
     if (overdueDays === null) continue
     overdue++
@@ -1867,7 +1866,7 @@ export async function chargeOverdueReturns(c: Context, now = new Date(), orderId
     const addedRows = Math.max(0, Number(after?.count || 0) - Number(before?.count || 0))
     if (addedRows > 0) {
       charged += addedRows
-      await createNotification(c, {
+      if (order.userId) await createNotification(c, {
         recipientId: order.userId, senderId: administrator.id, type: 'rental_overdue',
         title: '设备归还已逾期',
         message: `订单 ${order.orderNo || order.id} 已超过预约归还时间 2 小时。已计入一次 AUD 25.00 逾期处理手续费${overdueDays ? `及 ${overdueDays} 天逾期租金` : ''}；将优先从押金扣除，押金不足部分为待补款。`,

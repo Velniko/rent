@@ -90,6 +90,11 @@ export async function sendPickupReminderEmail(c: Context, notification: { recipi
   }
   if (notification.reminderAttempt && order.pickup_reminder_attempt_at !== notification.reminderAttempt) return skipped
   if (notification.reminderMinutes && await c.env.RENT.prepare("SELECT id FROM customer_refund_requests WHERE order_id = ? AND status IN ('pending', 'processing', 'approved')").bind(order.id).first()) return skipped
+  if (order.is_manual === 1) {
+    const subject = `取件提醒 - ${order.orderNo || order.id}`
+    const message = `取货日期：${order.startDate || ''}，时间：${orderTimeSlot(order, 'pickup')}，地点：${order.pickupLocation || '到店自取'}。`
+    return sendTransactionalEmail(c, { to: email, subject, text: message, html: renderEmailNotificationHtml(subject, escapeHtml(message), String(getSystemSettings().companyDetails?.name || '')) })
+  }
   const templateId = notification.reminderMinutes === 120 ? 'pickup_reminder_2h' : notification.reminderMinutes === 30 ? 'pickup_reminder_30m' : 'pickup_reminder'
   const template = await c.env.RENT.prepare('SELECT subject, body, enabled, theme_color FROM email_templates WHERE id = ?').bind(templateId).first() as any
   if (!template || template.enabled === 0) return { ...skipped, error: '请先启用取件提醒邮件模板' }

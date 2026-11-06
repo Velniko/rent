@@ -8,7 +8,7 @@ import { returnOverdueDays } from './pickupHold'
 const money = (value: number) => Math.round(value * 100) / 100
 export function returnChargeQuote(order: any, dailyRate: number, now = new Date(), charges?: Array<{ charge_date: string; rental_amount: number; handling_fee: number }>) {
   const received = order.return_received_at ? new Date(`${String(order.return_received_at).replace(' ', 'T').replace(/Z$/, '')}Z`) : now
-  const days = order.is_manual === 1 ? null : returnOverdueDays(order, received)
+  const days = returnOverdueDays(order, received)
   let calculated = days === null ? 0 : 25 + days * Math.max(0, dailyRate)
   if (charges && days !== null) {
     const dates = new Set(charges.map(charge => charge.charge_date))

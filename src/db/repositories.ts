@@ -709,9 +709,8 @@ export async function insertManualOrder(c: Context, id: string, data: ManualOrde
 
 export async function updateManualOrder(c: Context, id: string, data: ManualOrderData, previousStatus: string): Promise<boolean> {
   const fields = Object.keys(data) as (keyof ManualOrderData)[]
-  const state = { active: 'ACTIVE', suspended: 'SUSPENDED', pending_return: 'RETURN_PENDING', completed: 'COMPLETED', cancelled: 'CANCELLED' }[data.status]
-  const result = await getDB(c).prepare(`UPDATE orders SET ${fields.map(field => `${field} = ?`).join(', ')}, order_status = ?, rental_status = ?, return_received_at = CASE WHEN ? = 'completed' THEN COALESCE(return_received_at, CURRENT_TIMESTAMP) ELSE return_received_at END, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND is_manual = 1 AND status = ? AND status NOT IN ('completed', 'cancelled')`)
-    .bind(...fields.map(field => data[field]), state, state, data.status, id, previousStatus).run()
+  const result = await getDB(c).prepare(`UPDATE orders SET ${fields.map(field => `${field} = ?`).join(', ')}, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND is_manual = 1 AND status = ? AND status NOT IN ('completed', 'cancelled')`)
+    .bind(...fields.map(field => data[field]), id, previousStatus).run()
   return Number(result.meta?.changes || 0) > 0
 }
 

@@ -4621,6 +4621,13 @@ app.get('/admin/orders/new', async (c) => {
 
 app.post('/admin/orders/new', (c) => actions.saveAdminManualOrder(c))
 app.post('/admin/orders/:id/edit', (c) => actions.saveAdminManualOrder(c, c.req.param('id')))
+app.get('/admin/orders/:id/edit', async c => {
+  const user = c.get('user')
+  if (!user || user.role !== 'ADMIN') return c.html(renderForbidden(), 403)
+  const order = await getOrderById(c, c.req.param('id'))
+  if (!order || order.is_manual !== 1) return c.notFound()
+  return c.html(await pages.renderAdminManualOrder(c, user, order))
+})
 
 app.get('/admin/orders/:id', async (c) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)
@@ -4636,7 +4643,6 @@ app.post('/admin/orders/:id/changes', async (c) => {
   const order = await getOrderById(c, c.req.param('id')) as any
   const form = await c.req.parseBody()
   const type = String(form.changeType || '')
-  if (order?.is_manual === 1) return c.text('请在手动订单详情页修改，已完成或已取消的订单不可编辑', 409)
   if (!order || order.status === 'cancelled' || (order.status === 'completed' && type !== 'REFUND_METHOD')) return c.text('订单不存在或已结束，不能修改', 409)
   const reason = String(form.reason || '').trim().slice(0, 500)
   if (!reason) return c.text('订单修改必须填写原因', 400)
@@ -4737,7 +4743,6 @@ app.post('/admin/orders/:id/update', async (c) => {
   // 'completed' 必须在这里放行，否则下面第 3996 行「跳过归还验机并强制完成」
   // 的校验逻辑永远走不到——订单详情页的强制完成按钮此前一直被这里挡在 409。
   const editableStatuses = ['suspended', 'active', 'cancelled', 'completed']
-  if (order?.is_manual === 1) return wantsJson ? c.json({ ok: false, error: '请在手动订单详情页修改' }, 409) : c.text('请在手动订单详情页修改', 409)
   const isResume = status === 'active' && order?.status === 'suspended'
   if (!order || !editableStatuses.includes(status) || (status === 'active' && !isResume) || !canTransitionOrder(order.status, status)) return wantsJson ? c.json({ ok: false, error: '不允许的订单状态转换，请刷新页面查看最新状态' }, 409) : c.text('不允许的订单状态转换', 409)
   if ((status === 'suspended' || status === 'cancelled') && !reason) return wantsJson ? c.json({ ok: false, error: '请填写暂停/取消原因' }, 400) : c.text('请填写暂停/取消原因', 400)
@@ -4750,12 +4755,13 @@ app.post('/admin/orders/:id/update', async (c) => {
   }
   if (status==='completed' && force && (!reason || String(form.deviceConfirmed||'')!=='1'))return wantsJson?c.json({ok:false,error:'请填写原因并确认设备已收回'},400):c.text('请填写原因并确认设备已收回',400)
   if (status === 'completed') {
-    if (!order.return_received_at || !await hasReturnScan(c, order)) return wantsJson ? c.json({ok:false,error:'请先扫码并确认归还'},403) : c.text('请先扫码并确认归还',403)
+    if (!order.return_received_at || (order.is_manual !== 1 && !await hasReturnScan(c, order))) return wantsJson ? c.json({ok:false,error:'请先扫码并确认归还'},403) : c.text('请先扫码并确认归还',403)
     const contract = await c.env.RENT.prepare('SELECT contract_data FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
-    if (!JSON.parse(contract?.contract_data || '{}').inspection_date && !force) return wantsJson ? c.json({ ok: false, error: '完成订单前必须提交归还验机' }, 409) : c.text('完成订单前必须提交归还验机', 409)
+    const returnInspection = await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE rental_id = ? AND inspection_type = 'after_return' AND deleted_at IS NULL LIMIT 1").bind(order.id).first()
+    if (!returnInspection && !JSON.parse(contract?.contract_data || '{}').inspection_date && !force) return wantsJson ? c.json({ ok: false, error: '完成订单前必须提交归还验机' }, 409) : c.text('完成订单前必须提交归还验机', 409)
   }
   await updateOrderStatus(c, order.id, status, { reason, triggeredBy: user.id })
-  if (status === 'suspended') await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_suspended', title: '租赁已暂停', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}暂停，原因：${reason}。`, orderId: order.id })
+  if (status === 'suspended' && order.userId) await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_suspended', title: '租赁已暂停', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}暂停，原因：${reason}。`, orderId: order.id })
   if (status === 'completed') {
     if(force){await c.env.RENT.prepare('UPDATE orders SET return_received_at=COALESCE(return_received_at,CURRENT_TIMESTAMP),return_received_by=COALESCE(return_received_by,?) WHERE id=?').bind(user.id,order.id).run();await releaseDeviceIfUnbooked(c,order.deviceId,{orderId:order.id,changedBy:user.id,reason});await createAuditLog(c,{actor:user,action:'ORDER_FORCE_COMPLETED_RELISTED',targetType:'ORDER',targetId:order.id,before:{status:order.status},after:{status:'completed'},reason})}
     await enqueueRentalUserDeletion(c, order)
@@ -4886,11 +4892,9 @@ app.post('/admin/orders/bulk-update', async (c) => {
 
   const selectedOrders = await Promise.all(selectedIds.map(orderId => getOrderById(c, orderId)))
   const foundOrders = selectedOrders.filter((order): order is NonNullable<typeof order> => Boolean(order))
-  // 手动订单有自己的编辑页，不进批量流程；只有它们被选中时要给出可执行的下一步。
-  const manualOnly = foundOrders.length > 0 && foundOrders.every(order => order.is_manual === 1)
-  const validOrders = foundOrders.filter(order => order.is_manual !== 1 && canTransitionOrder(order.status, targetStatus))
+  const validOrders = foundOrders.filter(order => canTransitionOrder(order.status, targetStatus))
   if (!validOrders.length) {
-    const message = manualOnly ? '手动订单请在订单详情页修改' : '所选订单当前状态都不允许该操作'
+    const message = '所选订单当前状态都不允许该操作'
     return c.redirect(`/admin/orders?error=${encodeURIComponent(message)}`)
   }
   let processed = 0
@@ -4905,7 +4909,7 @@ app.post('/admin/orders/bulk-update', async (c) => {
       }
     } else {
       await updateOrderStatus(c, order.id, targetStatus, { reason, triggeredBy: user.id })
-      if (targetStatus === 'suspended') await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_suspended', title: '租赁已暂停', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}暂停，原因：${reason}。`, orderId: order.id })
+      if (targetStatus === 'suspended' && order.userId) await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_suspended', title: '租赁已暂停', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}暂停，原因：${reason}。`, orderId: order.id })
     }
     processed++
   }

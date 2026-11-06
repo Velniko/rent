@@ -24,6 +24,25 @@ test('website advertisements validate complete bilingual content and Melbourne e
   assert.throws(() => readWebsiteAdvertisementForm({ ...fields, message: 'x'.repeat(50001) }), /50000/)
 })
 
+test('website advertisement detail link is optional, validated, and ignored without a URL', () => {
+  const noLink = readWebsiteAdvertisementForm(fields)
+  assert.equal(noLink.linkUrl, null)
+  assert.equal(noLink.linkText, null)
+  assert.equal(noLink.linkTextEn, null)
+  const withLink = readWebsiteAdvertisementForm({ ...fields, linkUrl: 'https://example.test/promo', linkText: '去看看', linkTextEn: 'Learn more' })
+  assert.equal(withLink.linkUrl, 'https://example.test/promo')
+  assert.equal(withLink.linkText, '去看看')
+  assert.equal(withLink.linkTextEn, 'Learn more')
+  assert.equal(readWebsiteAdvertisementForm({ ...fields, linkUrl: '/products' }).linkUrl, '/products')
+  // 填了按钮文字但没填链接：按钮依旧隐藏，文字一并丢弃。
+  const textOnly = readWebsiteAdvertisementForm({ ...fields, linkText: '去看看' })
+  assert.equal(textOnly.linkUrl, null)
+  assert.equal(textOnly.linkText, null)
+  for (const linkUrl of ['javascript:alert(1)', '//evil.example', 'not a url']) {
+    assert.throws(() => readWebsiteAdvertisementForm({ ...fields, linkUrl }), /广告链接/)
+  }
+})
+
 test('administrators publish, edit and unpublish website ads without sending customer notifications', async t => {
   const sqlite = new DatabaseSync(':memory:')
   t.after(() => sqlite.close())
@@ -49,13 +68,16 @@ test('administrators publish, edit and unpublish website ads without sending cus
   assert.equal((await request(path, fields, admin.token, 'https://evil.example')).status, 403)
   assert.equal((await request(path, { ...fields, titleEn: '' })).status, 400)
   const countBefore = sqlite.prepare('SELECT COUNT(*) AS count FROM notifications').get() as any
-  const response = await request(path, { ...fields, expiresAt: '2026-11-20T17:00' })
+  const response = await request(path, { ...fields, expiresAt: '2026-11-20T17:00', linkUrl: 'https://example.test/promo', linkText: '去看看', linkTextEn: 'Learn more' })
   assert.equal(response.status, 303, await response.text())
   let row = sqlite.prepare('SELECT * FROM website_advertisements').get() as any
   assert.equal(row.message, fields.message)
   assert.equal(row.message_en, fields.messageEn)
   assert.equal(row.expires_at, '2026-11-20 06:00:00')
   assert.equal(row.active, 1)
+  assert.equal(row.link_url, 'https://example.test/promo')
+  assert.equal(row.link_text, '去看看')
+  assert.equal(row.link_text_en, 'Learn more')
   assert.deepEqual(sqlite.prepare('SELECT COUNT(*) AS count FROM notifications').get(), countBefore)
   const archive = await (await request(path)).text()
   assert.match(archive, /官网广告|Website advertisements/)
@@ -66,6 +88,7 @@ test('administrators publish, edit and unpublish website ads without sending cus
   assert.equal((await request(path + '/' + row.id, { ...fields, message: '<p>更新后的广告</p>' })).status, 303)
   row = sqlite.prepare('SELECT * FROM website_advertisements').get() as any
   assert.equal(row.message, '<p>更新后的广告</p>')
+  assert.equal(row.link_url, null)
   for (const token of [customer.token, staff.token]) {
     assert.equal((await request(path + '/' + row.id, fields, token)).status, 403)
     assert.equal((await request(path + '/' + row.id + '/toggle', { active: '0' }, token)).status, 403)

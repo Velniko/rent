@@ -64,7 +64,7 @@ app.post('/staff/orders/:orderId/inspection', async (c) => {
   const now = new Date().toISOString()
   const receivedDate = formatMelbourneDate(order.return_received_at)
   const contract = await c.env.RENT.prepare('SELECT id FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
-  if (!contract) return c.text('订单缺少合同', 409)
+  if (!contract && order.is_manual !== 1) return c.text('订单缺少合同', 409)
   const beforeInspection = await c.env.RENT.prepare("SELECT snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND device_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.deviceId).first() as any
   let inspectionSnapshot: Record<string, any> = {}
   try { inspectionSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
@@ -98,7 +98,7 @@ app.post('/staff/orders/:orderId/inspection', async (c) => {
     ...(damageDescription ? [c.env.RENT.prepare("INSERT INTO damage_cases (id, order_id, device_id, description, photo_urls, estimated_cost_cents, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(`damage-${nanoid(12)}`, order.id, order.deviceId, damageDescription, damagePhotos, Math.round(replacementCost * 100), user.id)] : []),
   ])
   await c.env.RENT.prepare("UPDATE order_fulfillment_records SET condition_snapshot_json=? WHERE order_id=? AND record_type='RETURN'").bind(JSON.stringify(inspectionSnapshot),order.id).run()
-  await c.env.RENT.prepare("UPDATE contracts SET contract_data=json_set(COALESCE(contract_data,'{}'),'$.inspection_date',?,'$.inspection_by',?) WHERE id=?").bind(receivedDate,user.name||user.id,contract.id).run()
+  if (contract) await c.env.RENT.prepare("UPDATE contracts SET contract_data=json_set(COALESCE(contract_data,'{}'),'$.inspection_date',?,'$.inspection_by',?) WHERE id=?").bind(receivedDate,user.name||user.id,contract.id).run()
   if (damageDescription) await recordDeviceLifecycle(c, order.deviceId, 'DAMAGED', { orderId: order.id, reason: damageDescription, changedBy: user.id })
   else await releaseDeviceIfUnbooked(c, order.deviceId, { orderId: order.id, reason: '归还验机完成', changedBy: user.id })
   await createAuditLog(c, { actor: user, action: damageDescription ? 'RETURN_INSPECTION_COMPLETED_WITH_DAMAGE' : 'RETURN_INSPECTION_COMPLETED', targetType: 'ORDER', targetId: order.id, before: { status: order.status, rentalStatus: order.rental_status }, after: { status: 'completed', rentalStatus: 'COMPLETED', inspectionId, damageReported: Boolean(damageDescription) }, reason: damageDescription || '归还验机完成' })

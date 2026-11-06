@@ -8,7 +8,7 @@ import { getOrderById, enforceRateLimit } from '../site'
 import { createAuditLog } from '../services/audit'
 import { parsePickupQrPayload } from '../lib/pickupQr'
 import { RosterError } from '../services/roster'
-import { issueOrderScan, confirmOrderScan, readOrderScan, hasReturnScan, orderScanLink } from '../services/orderScanning'
+import { issueOrderScan, confirmOrderScan, readOrderScan, hasReturnScan, orderScanLink, scanOrderAccess } from '../services/orderScanning'
 
 export function registerOrderScanningRoutes(app:WorkspaceApp) {
   for(const operation of ['verify','confirm'])app.post('/staff/mobile/scan/'+operation,async c=>{
@@ -34,6 +34,12 @@ export function registerOrderScanningRoutes(app:WorkspaceApp) {
     const match=c.req.path.match(/^\/staff\/orders\/([^/]+)\/(handover|pickup|receive-return|inspection)$/)
     if(!match)return next()
     const [,orderId,action]=match,writing=c.req.method==='POST'
+    const targetOrder=await getOrderById(c,orderId)
+    if(targetOrder?.is_manual===1){
+      try { await scanOrderAccess(c,user,targetOrder,action==='inspection'||action==='receive-return'?'return':'pickup') }
+      catch(error){if(error instanceof RosterError)return c.text(error.message,error.status);throw error}
+      return next()
+    }
     if(action==='inspection'){
       if(writing){const order=await getOrderById(c,orderId);if(order&&!await hasReturnScan(c,order)){await createAuditLog(c,{actor:user,action:'ORDER_SCAN_OPERATION_BLOCKED',targetType:'ORDER',targetId:orderId,reason:'请先扫码并确认归还'});return c.text('请先扫码并确认归还',403)}}
       return next()

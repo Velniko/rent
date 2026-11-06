@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 .workspace { --f-display:'Avenir Next','PingFang SC',system-ui,sans-serif; }
+.mobile-header{overflow:visible}
 .mobile-account-menu{position:relative}
 .mobile-header .mobile-account-menu>summary{display:grid;place-items:center;list-style:none;width:44px;height:44px;padding:0;cursor:pointer;border-radius:50%}
 .mobile-account-menu>summary::-webkit-details-marker{display:none}

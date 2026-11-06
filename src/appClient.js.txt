@@ -386,24 +386,14 @@
         document.title = count > 0 ? pageTitle + ' (' + count + ')' : pageTitle;
       };
       const showNotification = function (notification, unreadCount) {
-        const isAnnouncement = notification.type === 'announcement';
         const overlay = document.createElement('div');
-        overlay.className = isAnnouncement ? 'announcement-overlay' : 'notification-toast notification-toast--stacked';
-        overlay.innerHTML = isAnnouncement
-          ? '<div class="announcement-card" role="dialog" aria-modal="true" aria-labelledby="announcement-title"><span class="announcement-card__label">网站通告</span><h2 id="announcement-title" data-i18n-ignore></h2><div class="announcement-html" data-announcement-body data-i18n-ignore></div><button class="button button-primary" type="button">以后不再展示此通告</button></div>'
-          : '<article class="notification-toast__card" role="status"><div class="notification-toast__header"><span class="notification-toast__mark">N</span><strong></strong><button type="button" aria-label="关闭通知">×</button></div><p></p><a class="button button-sm button-secondary" href="/notifications">查看通知</a></article>';
-        overlay.querySelector('strong, h2').textContent = notification.title || (isAnnouncement ? '网站通告' : '新通知');
-        const renderAnnouncement = function () {
-          if (!isAnnouncement) return;
-          const english = document.documentElement.getAttribute('data-language') === 'en';
-          overlay.querySelector('h2').textContent = english && notification.title_en ? notification.title_en : notification.title;
-          overlay.querySelector('[data-announcement-body]').innerHTML = english ? (notification.message_html_en || notification.message_html || '') : (notification.message_html || '');
-        };
-        if (isAnnouncement) { renderAnnouncement(); window.addEventListener('site-language-change', renderAnnouncement); }
-        else overlay.querySelector('p').textContent = '你收到了 ' + unreadCount + ' 条新消息';
-        const dismiss = function () { fetch('/notifications/' + encodeURIComponent(notification.id) + '/dismiss', { method: 'POST' }).finally(function () { window.removeEventListener('site-language-change', renderAnnouncement); overlay.remove(); }); };
-        overlay.querySelector('.announcement-card button, .notification-toast__header button').addEventListener('click', dismiss);
-        (isAnnouncement ? document.body : getNoticeLayer()).appendChild(overlay);
+        overlay.className = 'notification-toast notification-toast--stacked';
+        overlay.innerHTML = '<article class="notification-toast__card" role="status"><div class="notification-toast__header"><span class="notification-toast__mark">N</span><strong></strong><button type="button" aria-label="关闭通知">×</button></div><p></p><a class="button button-sm button-secondary" href="/notifications">查看通知</a></article>';
+        overlay.querySelector('strong').textContent = notification.title || '新通知';
+        overlay.querySelector('p').textContent = '你收到了 ' + unreadCount + ' 条新消息';
+        const dismiss = function () { fetch('/notifications/' + encodeURIComponent(notification.id) + '/dismiss', { method: 'POST' }).finally(function () { overlay.remove(); }); };
+        overlay.querySelector('.notification-toast__header button').addEventListener('click', dismiss);
+        getNoticeLayer().appendChild(overlay);
       };
       const pollNotifications = function () {
         fetch('/notifications/unread', { headers: { Accept: 'application/json' }, credentials: 'same-origin' }).then(function (response) { return response.ok ? response.json() : null; }).then(function (payload) {
@@ -414,7 +404,7 @@
           let storedIds = [];
           try { storedIds = JSON.parse(localStorage.getItem(notifiedStorageKey) || '[]'); } catch (e) { storedIds = []; }
           if (!Array.isArray(storedIds)) storedIds = [];
-          const newNotifications = notifications.filter(function (item) { return storedIds.indexOf(String(item.id)) === -1; });
+          const newNotifications = notifications.filter(function (item) { return item.type !== 'announcement' && storedIds.indexOf(String(item.id)) === -1; });
           if (newNotifications.length) {
             const notification = newNotifications[0];
             if ('Notification' in window && Notification.permission === 'granted') {
@@ -665,16 +655,16 @@
     // （其 click 处理器会 stopImmediatePropagation）之前就能收到事件。
     document.addEventListener('DOMContentLoaded', function () {
       document.querySelectorAll('details.legal-footer__more, details.mobile-account-menu').forEach(function (more) {
-      document.addEventListener('pointerdown', function (event) {
-        if (more.open && !more.contains(event.target)) more.open = false;
-      }, true);
-      document.addEventListener('keydown', function (event) {
-        if (event.key === 'Escape' && more.open) {
-          more.open = false;
-          const summary = more.querySelector('summary');
-          if (summary) summary.focus();
-        }
-      });
+        document.addEventListener('pointerdown', function (event) {
+          if (more.open && !more.contains(event.target)) more.open = false;
+        }, true);
+        document.addEventListener('keydown', function (event) {
+          if (event.key === 'Escape' && more.open) {
+            more.open = false;
+            const summary = more.querySelector('summary');
+            if (summary) summary.focus();
+          }
+        });
       });
     });
 
