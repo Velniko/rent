@@ -14,7 +14,7 @@ import worker from '../src/index'
 import { createAuthSession, MAINTENANCE_CHECK_TYPES, releaseDeviceIfUnbooked, updateOrderStatus } from '../src/site'
 import { renderAdminDevices } from '../src/pages/admin/devices'
 import { renderAdminDeviceCalendar } from '../src/pages/admin/deviceCalendar'
-import { testOrderScanCookie, extractInlineScripts, testInspectionFiles } from './helpers'
+import { testOrderScanCookie, extractInlineScripts } from './helpers'
 
 async function setup(t: any, depositStatus = 'HELD', mode = 'PAID') {
   const sqlite = new DatabaseSync(':memory:')
@@ -104,11 +104,9 @@ test('normal return inspection releases the device while the deposit is still he
   sqlite.exec("INSERT INTO contracts (id, orderId, contractNumber, content) VALUES ('release-contract', 'release-order', 'RELEASE-CONTRACT', '<p>合同</p>')")
   assert.equal((await request('/staff/orders/release-order/inspection?fragment=1', {}, 'GET')).status, 200)
   assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'RETURNED')
-  assert.equal((await request('/staff/orders/release-order/inspection', { screenCondition: 'invalid' })).status, 400)
+  assert.equal((await request('/staff/orders/release-order/inspection', { damageFound: 'yes', screenCondition: 'invalid' })).status, 400)
   assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'RETURNED')
-  const response = await request('/staff/orders/release-order/inspection', {...testInspectionFiles(),
-    screenCondition: '正常', keyboardCondition: '正常', trackpadCondition: '正常', bodyCondition: '正常', cameraCondition: '正常', wifiCondition: '正常', powerTest: '正常', replacementCost: '0',
-  })
+  const response = await request('/staff/orders/release-order/inspection', { replacementCost: '0' })
   assert.equal(response.status, 302)
   assert.equal(sqlite.prepare("SELECT deposit_status FROM orders WHERE id = 'release-order'").get()?.deposit_status, 'HELD')
   assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'READY')

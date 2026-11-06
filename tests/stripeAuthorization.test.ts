@@ -126,6 +126,7 @@ async function requestAsAdmin(context: any, path: string, form: Record<string, s
 }
 
 const inspectionForm = (damage = 0) => ({
+  damageFound: damage ? 'yes' : 'no',
   ...testInspectionFiles(),screenCondition: '正常', keyboardCondition: '正常', trackpadCondition: '正常', bodyCondition: '正常',
   cameraCondition: '正常', wifiCondition: '正常', powerTest: '正常', replacementCost: String(damage),
   ...(damage ? { damageDescription: '设备损坏', damagePhotoFiles: new File(['image'], 'damage.png', { type: 'image/png' }) } : {}),

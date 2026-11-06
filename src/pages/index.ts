@@ -7,6 +7,7 @@ export * from './public/login';
 export * from './public/register';
 export * from './public/forgotPassword';
 export * from './public/notFound';
+export * from './public/inspectionView';
 export * from './public/contractSign';
 export * from './public/contractView';
 export * from './public/contractVerify';
@@ -52,6 +53,7 @@ export * from './staff/contracts';
 export * from './staff/contractView';
 export * from './staff/contractProgress';
 export * from './staff/inspection';
+export * from './staff/preInspection';
 export * from './staff/inspectionRecords';
 
 export * from './admin/dashboard';

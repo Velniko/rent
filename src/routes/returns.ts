@@ -44,18 +44,23 @@ app.post('/staff/orders/:orderId/inspection', async (c) => {
   if (!order.return_received_at) return c.text('请先登记归还',409)
   if(!canTransitionOrder(order.status,'completed'))return c.text('当前订单不能验机',409)
   const form = await c.req.parseBody({all:true})
-  let inspectionPhotos; try { inspectionPhotos=await readInspectionPhotos(c,user,form) } catch(error){ return c.text(error instanceof Error?error.message:'操作失败，请重试',400) }
+  const damageFound = String(form.damageFound || '') === 'yes'
+  let inspectionPhotos: Record<string,string> = {}
+  if (damageFound) { try { inspectionPhotos=await readInspectionPhotos(c,user,form) } catch(error){ return c.text(error instanceof Error?error.message:'操作失败，请重试',400) } }
   const allowedCheck = new Set(['正常', '异常', '未测试'])
   const checks: Record<string, string> = {}
   for (const [input, field] of [['screenCondition', 'screen_condition'], ['keyboardCondition', 'keyboard_condition'], ['trackpadCondition', 'trackpad_condition'], ['bodyCondition', 'body_condition'], ['cameraCondition', 'camera_condition'], ['wifiCondition', 'wifi_condition'], ['powerTest', 'power_test']]) {
     const value = String(form[input] || '')
-    if (!allowedCheck.has(value)) return c.text(`${input} 检查结果无效`, 400)
-    checks[field] = value
+    if (damageFound) {
+      if (!allowedCheck.has(value)) return c.text(`${input} 检查结果无效`, 400)
+      checks[field] = value
+    } else checks[field] = allowedCheck.has(value) ? value : '未测试'
   }
-  const replacementCost = Number(form.replacementCost || 0)
+  const replacementCost = damageFound ? Number(form.replacementCost || 0) : 0
   const batteryCycles = form.batteryCycles ? Number(form.batteryCycles) : null
   if (!Number.isFinite(replacementCost) || replacementCost < 0 || (batteryCycles !== null && (!Number.isInteger(batteryCycles) || batteryCycles < 0))) return c.text('费用或电池循环次数无效', 400)
-  const damageDescription = String(form.damageDescription || '').trim().slice(0, 2000)
+  const damageDescription = damageFound ? String(form.damageDescription || '').trim().slice(0, 2000) : ''
+  if (damageFound && !damageDescription) return c.text('请填写损坏说明', 400)
   const now = new Date().toISOString()
   const receivedDate = formatMelbourneDate(order.return_received_at)
   const contract = await c.env.RENT.prepare('SELECT id FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
@@ -64,8 +69,10 @@ app.post('/staff/orders/:orderId/inspection', async (c) => {
   let inspectionSnapshot: Record<string, any> = {}
   try { inspectionSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
   let damagePhotos = ''
-  try { damagePhotos = (await resolveImageUrls(form.damagePhotoFiles, form.damagePhotos, c, 'rent/damage-photos', 5)).join('\n') } catch (error: any) { return c.text(error.message, 400) }
-  if (damageDescription && !damagePhotos) return c.text('记录损坏时必须提供至少一张损坏照片链接', 400)
+  if (damageFound) {
+    try { damagePhotos = (await resolveImageUrls(form.damagePhotoFiles, form.damagePhotos, c, 'rent/damage-photos', 5)).join('\n') } catch (error: any) { return c.text(error.message, 400) }
+    if (!damagePhotos) return c.text('记录损坏时必须提供至少一张损坏照片链接', 400)
+  }
   await chargeOverdueReturns(c, new Date(), order.id)
   order = (await getOrderById(c, order.id))!
   if (order.deposit_payment_mode === 'PREAUTH') {

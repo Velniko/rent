@@ -16,8 +16,8 @@ import { registerIdentityRoutes } from './routes/identity'
 import { registerRosterRoutes } from './routes/roster'
 import { registerReturnRoutes } from './routes/returns'
 import { registerOrderScanningRoutes } from './routes/orderScanning'
+import { registerInspectionRoutes } from './routes/inspections'
 import { hasReturnScan } from './services/orderScanning'
-import { readInspectionPhotos, renderInspectionPhotos } from './lib/inspectionPhotos'
 import { createNotificationWithDelivery } from './services/notifications'
 import { runRentalPayouts } from './services/rentalPayouts'
 import { rentalPickupBlocks,rentalPickupBlocked } from './services/rentalPickup'
@@ -196,7 +196,7 @@ import { escapeHtml } from './lib/html'
 import { createTallyFeedbackToken } from './lib/tally'
 import { renderPickupPreparation } from './pages/partials/pickupPreparation'
 import { pickupTimeSlotEndMinutes } from './domain/pickupTimeSlots'
-import { readManualInspectionFields, renderManualInspectionFields, inspectionText } from './lib/inspection'
+import { isPreInspectionComplete } from './lib/inspection'
 import { decryptSecret } from './lib/secretBox'
 import { migrateLegacyContractSecrets } from './services/secretMigration'
 import { getCloudinaryConfigSummary } from './lib/cloudinary'
@@ -947,6 +947,7 @@ app.use('*', async (c, next) => {
 registerRosterRoutes(app)
 registerOrderScanningRoutes(app)
 registerReturnRoutes(app)
+registerInspectionRoutes(app)
 
 // 搜索需要先经过会话、访客限制与限流中间件。
 app.get('/api/search', handleGlobalSearch)
@@ -2915,11 +2916,13 @@ app.get('/staff/orders/:orderId/handover', async (c) => {
   const squareDepositUnconfirmed = String(order?.paymentProvider || order?.payment_provider || '') === 'square' && Number(order?.depositAmount || order?.deposit_amount || 0) > 0 && String(order?.deposit_status || '').toUpperCase() !== 'PAID'
   if (!order || squareDepositUnconfirmed || !(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && handoverContract?.status === 'signed')) || (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id))) return c.html(renderForbidden(), 403)
   const device = await getDeviceById(c, order.deviceId)
-  const beforeInspection = await c.env.RENT.prepare("SELECT snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+  const beforeInspection = await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
   let beforeSnapshot: Record<string, any> = {}
   try { beforeSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
-  const inspectionFields = renderManualInspectionFields(beforeSnapshot)
-  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>填写出租前验机报告并确认交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form enctype="multipart/form-data" class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}</div>${renderInspectionPhotos()}<div class="grid grid-2"><div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
+  const inspectionStatus = isPreInspectionComplete(beforeSnapshot)
+    ? `<div class="panel" style="background:#f0fdf4"><h3>出租前验机报告已完成</h3><p>验机人：${sanitizePlainText(String(beforeSnapshot.inspectionBy || ''), 80)} · ${sanitizePlainText(String(beforeSnapshot.inspectionDate || ''), 20)}</p><a class="button button-secondary" href="/inspection/view/${beforeInspection.id}">查看报告</a> <a class="button button-secondary" href="/staff/orders/${order.id}/pre-inspection">修改验机结果</a></div>`
+    : `<div class="panel" style="background:#fff7ed"><h3>尚未完成出租前验机</h3><p>请先完成验机报告，再确认交付。</p><a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写验机报告</a></div>`
+  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>确认出租前验机报告，并记录交付信息。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}${inspectionStatus}<form class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">完成取货</button></form>`
   return c.html(buildLayout('出租前验机与交付 - 电脑租赁管理系统', body, user, { compactStaffNav: true }))
 })
 
@@ -2938,34 +2941,24 @@ app.post('/staff/orders/:orderId/pickup', async (c) => {
   if (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,pickupOrder.id)) return c.html(renderForbidden(), 403)
   const device = await getDeviceById(c, pickupOrder.deviceId)
   const form = await c.req.parseBody({all:true})
-  let inspectionPhotos;try {inspectionPhotos=await readInspectionPhotos(c,user,form)} catch(error){return c.json({success:false,message:error.message},400)}
   const serialNumber = sanitizePlainText(String(form.deviceSerialNumber || ''), 160).trim()
   const accessories = sanitizePlainText(String(form.accessories || ''), 1000).trim()
   const conditionNotes = sanitizePlainText(String(form.conditionNotes || ''), 2000).trim()
   const confirmationName = sanitizePlainText(String(form.customerConfirmationName || ''), 120).trim()
-  const inspectionInput = readManualInspectionFields(form as any)
-  const batteryCycles = form.batteryCycles === '' || form.batteryCycles == null ? null : Number(form.batteryCycles)
-  const batteryHealth = sanitizePlainText(String(form.batteryHealth || ''), 100).trim()
-  const inspectionNotes = sanitizePlainText(String(form.inspectionNotes || ''), 2000).trim()
   const wantsJson = c.req.header('Accept')?.includes('application/json')
-  const missing = [!serialNumber && '设备序列号', !accessories && '交付配件', !conditionNotes && '设备状态与备注', form.customerConfirmed !== '1' && '客户核对确认', !confirmationName && '客户确认姓名', ...inspectionInput.missing.map(label => `出租前验机-${label}`)].filter(Boolean)
+  const missing = [!serialNumber && '设备序列号', !accessories && '交付配件', !conditionNotes && '设备状态与备注', form.customerConfirmed !== '1' && '客户核对确认', !confirmationName && '客户确认姓名'].filter(Boolean)
   if (missing.length) return wantsJson ? c.json({ success: false, message: `请填写：${missing.join('、')}` }, 400) : c.text(`请填写：${missing.join('、')}`, 400)
   if (serialNumber !== String(device?.serialNumber || '')) return wantsJson ? c.json({ success: false, message: '设备序列号与订单设备不一致' }, 409) : c.text('设备序列号与订单设备不一致', 409)
-  if (batteryCycles !== null && (!Number.isInteger(batteryCycles) || batteryCycles < 0)) return wantsJson ? c.json({ success: false, message: '电池循环次数无效' }, 400) : c.text('电池循环次数无效', 400)
   const beforeInspection = await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(orderId).first() as any
   let beforeSnapshot: Record<string, any> = {}
   try { beforeSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
-  Object.assign(beforeSnapshot, inspectionInput.checks, { batteryCycles, batteryHealth, inspectionNotes, inspectionDate: new Date().toISOString().slice(0, 10), inspectionBy: user.name || user.id, source: 'handover_manual', inspectionPhotos })
-  const inspectionWrite = beforeInspection?.id
-    ? c.env.RENT.prepare('UPDATE device_inspections SET snapshot_json = ?, differences_json = ?, performed_by = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(beforeSnapshot), JSON.stringify({}), user.id, beforeInspection.id)
-    : c.env.RENT.prepare("INSERT INTO device_inspections (id, device_id, rental_id, inspection_type, snapshot_json, differences_json, performed_by) VALUES (?, ?, ?, 'before_rental', ?, ?, ?)").bind(`inspection-${nanoid(12)}`, pickupOrder.deviceId, orderId, JSON.stringify(beforeSnapshot), JSON.stringify({}), user.id)
+  if (!isPreInspectionComplete(beforeSnapshot)) return wantsJson ? c.json({ success: false, message: '请先完成出租前验机报告', inspectionUrl: `/staff/orders/${orderId}/pre-inspection` }, 409) : c.text('请先完成出租前验机报告', 409)
   await updateOrderStatus(c, orderId, 'active')
   await c.env.RENT.batch([
-    inspectionWrite,
     c.env.RENT.prepare('UPDATE devices SET inspection_requested_at = NULL WHERE id = ?').bind(pickupOrder.deviceId),
     c.env.RENT.prepare('UPDATE orders SET handover_completed_at = CURRENT_TIMESTAMP, handover_by = ?, handover_overdue = 0, possible_handover = 0 WHERE id = ?').bind(user.id, orderId),
     c.env.RENT.prepare('INSERT INTO rental_status_history (id, rental_id, old_status, new_status, trigger_type, triggered_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(`rsh-${nanoid(16)}`, orderId, pickupOrder.rental_status || 'READY_FOR_PICKUP', 'ACTIVE', 'MANUAL', user.id, '员工确认设备已交付'),
-    c.env.RENT.prepare("INSERT INTO order_fulfillment_records (id, order_id, record_type, device_serial_number, accessories_json, condition_snapshot_json, customer_confirmed, customer_confirmation_name, recorded_by) VALUES (?, ?, 'HANDOVER', ?, ?, ?, 1, ?, ?)").bind(`handover-${nanoid(12)}`, orderId, serialNumber, JSON.stringify(accessories.split(/[\n,，]/).map(item => item.trim()).filter(Boolean)), JSON.stringify({ ...inspectionInput.checks, batteryCycles, batteryHealth, inspectionNotes, notes: conditionNotes }), confirmationName, user.id),
+    c.env.RENT.prepare("INSERT INTO order_fulfillment_records (id, order_id, record_type, device_serial_number, accessories_json, condition_snapshot_json, customer_confirmed, customer_confirmation_name, recorded_by) VALUES (?, ?, 'HANDOVER', ?, ?, ?, 1, ?, ?)").bind(`handover-${nanoid(12)}`, orderId, serialNumber, JSON.stringify(accessories.split(/[\n,，]/).map(item => item.trim()).filter(Boolean)), JSON.stringify({ ...beforeSnapshot, notes: conditionNotes }), confirmationName, user.id),
   ])
   await recordDeviceLifecycle(c, pickupOrder.deviceId, 'RENTED', { orderId, reason: '工作人员确认设备已交付', changedBy: user.id })
   await createAuditLog(c, { actor: user, action: 'HANDOVER_COMPLETED', targetType: 'ORDER', targetId: orderId, before: { status: pickupOrder.status, rentalStatus: pickupOrder.rental_status }, after: { status: 'active', rentalStatus: 'ACTIVE', deviceSerialNumber: serialNumber, customerConfirmed: true }, reason: conditionNotes })

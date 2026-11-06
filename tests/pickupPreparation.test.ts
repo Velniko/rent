@@ -434,6 +434,11 @@ const pickupForm = () => ({
   ...Object.fromEntries(MANUAL_INSPECTION_CHECKS.map(([field]) => [field, '正常'])),
 })
 
+const preInspectionForm = () => ({
+  ...testInspectionFiles(), batteryCycles: '120', batteryHealth: '95%', inspectionNotes: '出租前检查完成',
+  ...Object.fromEntries(MANUAL_INSPECTION_CHECKS.map(([field]) => [field, '正常'])),
+})
+
 test('email QR follows the staff scan and handover flow and completes pickup exactly once', async t => {
   const f = await setup(t)
   await f.request()
@@ -457,6 +462,7 @@ test('email QR follows the staff scan and handover flow and completes pickup exa
   assert.equal((await f.request('staff', path, 'POST', { ...pickupForm(), deviceSerialNumber: 'WRONG-SN' })).status, 409)
   assert.equal((await f.request('staff', path, 'POST', { ...pickupForm(), customerConfirmed: '0' })).status, 400)
   assert.equal(f.row().status, 'paid')
+  assert.equal((await f.request('staff', '/staff/orders/pickup-order/pre-inspection', 'POST', preInspectionForm())).status, 302)
   const completed = await f.request('staff', path, 'POST', pickupForm())
   assert.equal(completed.status, 302, await completed.text())
   assert.equal(f.row().status, 'active')
