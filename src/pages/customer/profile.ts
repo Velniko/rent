@@ -6,6 +6,7 @@
 import { clientPathEnabled, normalizeClientAccess } from '../../clientAccess'
 import { buildLayout, getUserById, formatCurrency } from '../../site';
 import { Context } from 'hono';
+import { identityStatusLabels } from './identity'
 
 export async function renderCustomerProfile(c: Context, user: any, message?: string, type: 'success' | 'error' = 'error') {
   const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
@@ -15,6 +16,8 @@ export async function renderCustomerProfile(c: Context, user: any, message?: str
   const deletionScheduledAt = userToUse.deletionScheduledAt || userToUse.deletion_scheduled_at;
   const marketingOptedOut = Number(userToUse.marketing_email_opt_out ?? userToUse.marketingEmailOptOut) === 1;
 
+  const identity = await c.env.RENT.prepare('SELECT status FROM identity_documents WHERE customer_id = ? ORDER BY rowid DESC LIMIT 1').bind(user.id).first() as any;
+  const identityLabel = identity ? identityStatusLabels[identity.status] : '未认证';
   const countryCodes = [
     { code: '+61', name: 'AU' },
     { code: '+86', name: 'CN' },
@@ -48,57 +51,47 @@ export async function renderCustomerProfile(c: Context, user: any, message?: str
 
   const alertMessage = message ? `<div data-flash-notice class="page-notification page-notification--${type}">${esc(message)}</div>` : ''
   const body = `
-    <div class="panel">
-      <div class="section-title"><h2>个人信息管理</h2></div>
+    <div class="customer-account profile-page">
+      <div class="account-heading"><div><p class="account-eyebrow">GEEKSLOPE / ACCOUNT</p><h2>个人信息</h2></div><a class="account-back" href="/customer/security">安全设置 ↗</a></div>
+      <div class="profile-summary"><div class="profile-avatar" aria-hidden="true">${esc(String(userToUse.name || 'U').slice(0,1))}</div><div class="profile-summary__name"><h3>${esc(userToUse.name)}</h3><span>${esc(userToUse.email)}</span></div><a class="profile-identity-link" href="/customer/identity"><span class="account-status ${identity?.status === 'VERIFIED' ? 'is-verified' : ''}"><i></i>${esc(identityLabel)}</span><strong><span>身份认证</span> <span aria-hidden="true">↗</span></strong></a></div>
+      <div class="account-card profile-details"><div class="account-section-heading"><span class="account-section-icon">◎</span><div><h3>基本资料</h3></div></div>
       ${alertMessage}
-      <form method="POST" action="/customer/profile">
+      <form method="POST" action="/customer/profile" class="profile-form">
         <div class="grid grid-2">
           <div>
-            <label class="form-label">姓名</label>
-            <input class="form-control" name="name" value="${esc(userToUse.name)}" />
+            <label class="form-label" for="profileName">姓名</label>
+            <input class="form-control" id="profileName" autocomplete="name" name="name" value="${esc(userToUse.name)}" />
           </div>
           <div>
-            <label class="form-label">邮箱</label>
-            <input class="form-control" name="email" value="${esc(userToUse.email)}" readonly />
+            <label class="form-label" for="profileEmail">邮箱</label>
+            <input class="form-control" id="profileEmail" name="email" value="${esc(userToUse.email)}" readonly />
           </div>
         </div>
         <div class="grid grid-2">
           <div>
-            <label class="form-label">手机</label>
+            <label class="form-label" for="profilePhone">手机</label>
             <div class="input-group">
-              <select name="countryCode" class="form-control" style="flex: 0 0 auto; width: auto; border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0;">
+              <select name="countryCode" aria-label="国家区号" class="form-control" style="flex: 0 0 auto; width: auto; border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0;">
                 ${countryCodeOptions}
               </select>
-              <input class="form-control" name="phone" value="${esc(localPhoneNumber)}" />
+              <input class="form-control" id="profilePhone" autocomplete="tel-national" name="phone" value="${esc(localPhoneNumber)}" />
             </div>
           </div>
-          <div>
-            <label class="form-label">BSB</label>
-            <input class="form-control" name="bsb" id="bsbInput" value="${esc(userToUse.bsb)}" maxlength="7" inputmode="numeric" pattern="[0-9]{3}-?[0-9]{3}" />
-          </div>
+          <div><label class="form-label" for="profileReferrer">推荐人</label><input class="form-control" id="profileReferrer" name="referrerId" value="${esc(userToUse.referrerId)}" ${userToUse.referrerId ? 'readonly' : ''} />${userToUse.referrerId ? '<p class="form-text">绑定后禁止修改推荐人</p>' : ''}</div>
         </div>
-        <div class="grid grid-2">
-          <div>
-            <label class="form-label">Account</label>
-            <input class="form-control" name="account" value="${esc(userToUse.account)}" />
-          </div>
-          <div>
-            <label class="form-label">推荐人</label>
-            <input class="form-control" name="referrerId" value="${esc(userToUse.referrerId)}" ${userToUse.referrerId ? 'readonly' : ''} />
-            <p class="form-text" style="font-size: 12px; color: #6b7280; margin-top: 4px;">绑定后禁止修改推荐人</p>
-          </div>
-        </div>
-        <div style="margin-top:20px; display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+        <div class="account-section-heading profile-bank-heading"><span class="account-section-icon">↗</span><div><h3>收款账户</h3></div></div>
+        <div class="grid grid-2"><div><label class="form-label" for="bsbInput">BSB</label><input class="form-control" name="bsb" id="bsbInput" value="${esc(userToUse.bsb)}" maxlength="7" inputmode="numeric" pattern="[0-9]{3}-?[0-9]{3}" /></div><div><label class="form-label" for="profileAccount">银行账号</label><input class="form-control" id="profileAccount" name="account" value="${esc(userToUse.account)}" inputmode="numeric" /></div></div>
+        <div class="account-form-footer">
           <button class="button" type="submit">保存修改</button>
         </div>
       </form>
-      <section class="panel" style="margin-top:24px;">
+      </div><section class="account-card profile-subscription">
         <div class="section-title"><h3>营销邮件</h3></div>
         ${marketingOptedOut
       ? `<p class="form-text">当前未订阅营销邮件。</p>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/profile/marketing-subscription','console') ? `<form method="POST" action="/customer/profile/marketing-subscription"><input type="hidden" name="action" value="subscribe"><button class="button button-primary" type="submit">重新订阅营销邮件</button></form>` : ''}`
-      : `<p class="form-text">当前已订阅营销邮件。订单、合同和付款通知不受影响。</p>`}
+      : `<p class="form-text">当前已订阅营销邮件。</p>`}
       </section>
-      <section class="danger-zone" style="margin-top:32px;">
+      <section class="danger-zone profile-danger">
         <h3>删除账户</h3>
         ${deletionScheduledAt
       ? `<p class="form-text">账户已进入冷静期，将于 <strong>${String(deletionScheduledAt).replace('T', ' ').slice(0, 19)}</strong> 后删除。7 天内重新登录即可取消。</p>`

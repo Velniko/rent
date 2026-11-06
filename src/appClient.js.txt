@@ -200,8 +200,7 @@
       const close = function () {
         if (closed) return;
         closed = true;
-        dialog.close();
-        dialog.remove();
+        window.WorkspaceMotion.close(dialog).then(function(){dialog.remove();});
         if (previousFocus && previousFocus.isConnected) previousFocus.focus({ preventScroll: true });
       };
       cancel.addEventListener('click', close);
@@ -209,7 +208,7 @@
       dialog.addEventListener('click', function (event) { if (event.target === dialog) close(); });
       dialog.addEventListener('close', close);
       document.body.appendChild(dialog);
-      dialog.showModal();
+      window.WorkspaceMotion.open(dialog);
       return { dialog: dialog, cancel: cancel, confirm: confirm, close: close, verification: dialog.querySelector('.site-confirm-verification') };
     }
 
@@ -773,6 +772,7 @@
 
   // 筛选标签的滑动指示条。提示图标由 CSS 绘制，避免破坏正文布局。
   window.runFilterTabMotion = function () {
+    if(window.WorkspaceMotion){window.WorkspaceMotion.syncTabs(document);return;}
     document.querySelectorAll('.filter-tabs').forEach(function (group) {
       var active = group.querySelector('.button-primary');
       if (!active) return;

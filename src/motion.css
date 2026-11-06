@@ -1,0 +1,32 @@
+/* Copyright (c) 2026 jiongjiong123441. All rights reserved.
+ * Licensed under PolyForm Noncommercial 1.0.0.
+ * Noncommercial use, modification, and distribution are permitted.
+ * Keep this notice and the LICENSE file with all copies and modified versions. */
+.workspace{--motion-fast:140ms;--motion-normal:220ms;--motion-ease:cubic-bezier(.22,1,.36,1)}
+.workspace .button{transition:background-color var(--motion-fast),border-color var(--motion-fast),color var(--motion-fast),transform var(--motion-fast) var(--motion-ease)}
+.workspace .button:active:not(:disabled){transform:scale(.985)}
+.workspace :is(.roster-shift,.roster-mobile-range,.identity-method,.inspection-photo-drop,.workspace-mobile-pages a,.roster-grid-heading,.sidebar-section a){transition:background-color var(--motion-fast),border-color var(--motion-fast),color var(--motion-fast),box-shadow var(--motion-fast),transform var(--motion-fast) var(--motion-ease)}
+.workspace .form-control{transition:border-color var(--motion-fast),box-shadow var(--motion-fast),background-color var(--motion-fast)}
+.workspace .roster-reassign{transition:background-color var(--motion-fast),border-color var(--motion-fast)}
+.workspace .roster-reassign:focus{background:#edf4f9;border-color:#9cbcd2}
+.workspace .dialog-icon-close{transition:color var(--motion-fast),background-color var(--motion-fast),transform var(--motion-fast)}
+.workspace .dialog-icon-close:active{transform:scale(.94)}
+.workspace dialog.motion-closing{pointer-events:none}
+.workspace dialog.motion-opening::backdrop{animation:workspace-backdrop-in 200ms ease-out both}
+.workspace dialog.motion-closing::backdrop{animation:workspace-backdrop-out 140ms ease-in both}
+@keyframes workspace-backdrop-in{from{opacity:0}to{opacity:1}}
+@keyframes workspace-backdrop-out{from{opacity:1}to{opacity:0}}
+.motion-tabs{position:relative;isolation:isolate}
+.motion-tab-indicator{position:absolute;pointer-events:none;transform-origin:0 0;z-index:0}
+.motion-tab-indicator.is-line{background:var(--c-accent);border-radius:2px}
+.motion-tab-indicator.is-pill{background:#fff;border:1px solid #d3dfe8;border-radius:6px;box-shadow:0 2px 4px rgb(20 43 61 / .05)}
+.workspace .inner-tabs.motion-tabs>a,.workspace .inner-tabs.motion-tabs>button{position:relative;z-index:1}
+.workspace .inner-tabs.motion-tabs :is([aria-current="page"],[aria-selected="true"]){border-bottom-color:transparent!important}
+.workspace .filter-tabs.motion-tabs .button{position:relative;z-index:1;background:transparent!important;box-shadow:none!important;border-color:transparent!important}
+.workspace .filter-tabs.motion-tabs .button:hover:not(.button-primary){background:rgb(255 255 255 / .4)!important}
+.workspace .button.motion-busy{color:transparent!important;position:relative;cursor:progress}
+.workspace .button.motion-busy::after{content:'';position:absolute;width:13px;height:13px;left:calc(50% - 6.5px);top:calc(50% - 6.5px);border:2px solid rgb(255 255 255 / .35);border-top-color:#fff;border-radius:50%;animation:workspace-busy-spin 650ms linear infinite}
+.workspace .button-secondary.motion-busy::after{border-color:#c3d9e8;border-top-color:#27648b}
+@keyframes workspace-busy-spin{to{transform:rotate(360deg)}}
+@media(hover:hover) and (pointer:fine){.workspace .button:hover:not(:disabled){transform:translateY(-1px)}.workspace .button:active:not(:disabled){transform:translateY(0) scale(.985)}.workspace .roster-shift:hover{transform:translateY(-1px)}.workspace .dialog-icon-close:hover{color:var(--c-accent);background:#edf4f9}}
+@media(prefers-reduced-motion:reduce){.workspace dialog.motion-opening::backdrop,.workspace dialog.motion-closing::backdrop,.workspace .button.motion-busy::after{animation:none!important}.workspace :is(.button,.roster-shift,.dialog-icon-close):is(:hover,:active){transform:none!important}.motion-tab-indicator{transition:none!important}}

@@ -203,7 +203,8 @@ export async function renderAdminOrders(c: Context, user: any) {
   const activeCount = stats.activeCount;
   const completedCount = stats.completedCount;
 
-  const body = `
+  const orderTabs=`<nav class="filter-tabs" aria-label="订单筛选">${[['','全部订单'],['active','租赁中'],['pending_payment','待付款'],['completed','已完成'],['cancelled','已取消']].map(([value,label])=>`<a class="button ${(statusFilter==='all'?'':statusFilter)===value?'button-primary':'button-secondary'}" href="/admin/orders${value?'?status='+value:''}">${label}</a>`).join('')}</nav>`
+  const body = `${orderTabs}
     <div class="panel">
       <div class="section-title">
         <div>
