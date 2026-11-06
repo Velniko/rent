@@ -44,7 +44,8 @@ test('mobile workbench: admin sees overview, scan entry and the full admin map',
   // 今日任务入口
   assert.match(html, /class="mq-today-cta" href="\/staff\/mobile\/today"/)
   // 完整后台能力（分组「更多」）
-  for (const label of ['租赁订单', '设备管理', '用户管理', '业务通知', '订单审核']) assert.ok(html.includes(label), `缺少入口：${label}`)
+  for (const label of ['租赁订单', '设备管理', '用户管理', '通知中心', '发布通知', '订单审核']) assert.ok(html.includes(label), `缺少入口：${label}`)
+  assert.match(html, /href="\/notifications\/compose"/)
   assert.match(html, /href="\/admin\/devices"/)
   assert.match(html, /href="\/admin\/users"/)
   assert.match(html, /href="\/admin\/order-review"/)

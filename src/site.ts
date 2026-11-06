@@ -1718,7 +1718,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
     '/admin/rental-settlements': 'bank-transfer', '/admin/settings/client-features': 'client-controls', '/manager/email-events': 'mail-history',
     '/admin/notifications/settings': 'bell-settings', '/admin/rental-links': 'link', '/admin/delivery': 'truck',
     '/admin/marketing-emails/data': 'marketing-chart', '/admin/api-settings': 'code',
-    '/notifications': 'N', '/admin/notifications': 'inbox', '/admin/dashboard': 'rental-console', '/admin/users': 'people', '/admin/orders': '▥',
+    '/notifications': 'N', '/notifications/compose': 'bell-settings', '/admin/notifications': 'inbox', '/admin/dashboard': 'rental-console', '/admin/users': 'people', '/admin/orders': '▥',
     '/admin/refunds': 'deposit-return', '/admin/contracts': 'rental-contract', '/admin/templates/contract': '▧', '/admin/finance': 'rental-finance',
     '/admin/withdrawals': '↗', '/admin/exceptions': 'alert', '/admin/devices': 'asset-register', '/admin/devices/relist': 'device-listing', '/admin/device-agent-bindings': 'device-binding', '/admin/inspections': 'device-inspection', '/admin/calendar': '◫', '/admin/rental-rules': '⚙', '/admin/coupons': '%', '/admin/templates': '◇', '/admin/email-templates': '✉', '/admin/in-app-notification-templates': 'message-template', '/admin/tax-invoice-template': 'receipt', '/admin/documents': 'receipt', '/admin/marketing-emails': '⚑', '/admin/settings': '⚙',
     '/admin/devices/reports': 'device-reports', '/admin/reports': 'trend', '/admin/data-retention': 'data-retention', '/admin/monitoring': 'activity', '/admin/connectivity': '⌘', '/admin/referrals': 'gift',
@@ -1910,7 +1910,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
           ${currentUser.role === 'ADMIN' ? `
             ${renderNavLink('/admin/dashboard', '控制台')}${renderNavLink('/admin/roster', '员工排班')}
             ${renderNavLink('/admin/users', '用户管理')}
-            ${renderNavGroup('通知中心', [['/admin/notifications', '业务通知'], ['/notifications', '发布通知'], ['/manager/email-events', '邮件发送记录'], ['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/notifications/settings', '通知设置']])}
+            ${renderNavGroup('通知中心', [['/notifications', '通知中心'], ['/notifications/compose', '发布通知'], ['/manager/email-events', '邮件发送记录'], ['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/notifications/settings', '通知设置']])}
             ${renderNavGroup('租赁管理', [['/admin/order-review', '网站订单审核'], ['/admin/orders', '租赁订单'], ['/admin/returns', '归还管理'], ['/admin/delivery', '配送管理'], ['/admin/calendar', '租赁日历'], ['/admin/rental-rules', '租赁规则']])}
             ${renderNavGroup('合同管理', [['/admin/contracts', '合同列表'], ['/admin/templates/contract', '合同模板'], ['/admin/templates', '协议模板']])}
             ${renderNavGroup('设备管理', [['/admin/rental-program', '设备出租管理'], ['/admin/devices', '设备管理'], ['/admin/devices/relist', '设备上架'], ['/admin/device-agent-bindings', '绑定设备'], ['/admin/inspections', '验机记录'], ['/admin/devices/reports', '设备运营报表']])}
