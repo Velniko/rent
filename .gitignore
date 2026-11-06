@@ -18,21 +18,11 @@ windows-agent/dist/
 # deps
 node_modules/
 .wrangler
-.tmp/
-.cache/
 
 # env
 .env
 .env.production
 .dev.vars
-.env.*
-!.env.example
-
-# build and test output
-coverage/
-.nyc_output/
-*.tsbuildinfo
-.eslintcache
 
 # logs
 logs/
@@ -52,3 +42,5 @@ lerna-debug.log*
 .claude/
 # local verification artifacts (screenshots, temp reports)
 tmp/
+tests/
+docs/
