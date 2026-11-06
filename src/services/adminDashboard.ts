@@ -88,7 +88,7 @@ export async function getAdminDashboardData(c: Context): Promise<AdminDashboardD
          AND status IN ('active', 'extended', 'overdue')) AS todayReturns,
       (SELECT COUNT(*) FROM orders WHERE status IN ('active', 'extended', 'overdue', 'pending_return')
          AND date(endDate) < date('now')) AS overdueRentals,
-      (SELECT COUNT(*) FROM orders WHERE deposit_status = 'HELD') AS pendingDeposits,
+      (SELECT COUNT(*) FROM orders WHERE deposit_status = 'HELD' AND deleted_at IS NULL AND refund_ignored_at IS NULL) AS pendingDeposits,
       (SELECT COUNT(*) FROM devices WHERE lifecycle_status = 'RESERVED') AS reservedDevices,
       (SELECT COUNT(*) FROM devices WHERE lifecycle_status = 'MAINTENANCE') AS maintenanceDevices,
       (SELECT COUNT(*) FROM devices WHERE lifecycle_status = 'DAMAGED') AS damagedDevices,
