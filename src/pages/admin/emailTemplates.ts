@@ -6,6 +6,7 @@
 import { buildLayout } from '../../site'
 import { ensureDeliveryStatusTemplate } from '../../services/deliveryNotifications'
 import { AGREEMENT_UPDATE_SUBJECT, AGREEMENT_UPDATE_EMAIL_BODY } from '../../services/agreementUpdateTemplate'
+import { WELCOME_EMAIL_TEMPLATE_ID, WELCOME_EMAIL_TEMPLATE_NAME, WELCOME_EMAIL_TEMPLATE_SUBJECT, WELCOME_EMAIL_TEMPLATE_BODY } from '../../services/welcomeEmail'
 
 export async function renderAdminEmailTemplates(c: any, user: any) {
   await ensureDeliveryStatusTemplate(c)
@@ -21,8 +22,7 @@ export async function renderAdminEmailTemplates(c: any, user: any) {
   await c.env.RENT.batch([
     seed('email_verification', '验证邮箱', '请验证您的邮箱 - {company_name}',
       `<h2>验证您的邮箱</h2><p>您好 {customer_name}：</p><p>感谢您注册 <strong>{company_name}</strong>。请验证您的邮箱地址以完成账户激活。</p><h3>验证详情</h3><table style="width:100%; border-collapse:collapse;"><tbody><tr><td style="padding:8px 0; color:#666;">邮箱地址</td><td style="padding:8px 0;"><strong>{customer_email}</strong></td></tr><tr><td style="padding:8px 0; color:#666;">链接有效期</td><td style="padding:8px 0;">24 小时</td></tr></tbody></table><p>请点击以下链接验证您的邮箱地址：<br><a href="{verification_url}">{verification_url}</a></p><p>如需帮助，请联系 <a href="mailto:{company_email}">{company_email}</a>。</p>${sign}${footer}`),
-    seed('welcome_site', '欢迎邮件', '欢迎加入 {company_name}',
-      `<h2>欢迎加入 {company_name}</h2><p>您好 {customer_name}：</p><p>欢迎使用 <strong>{company_name}</strong> 设备租赁服务。您的账户已创建成功。</p><h3>账户信息</h3><table style="width:100%; border-collapse:collapse;"><tbody><tr><td style="padding:8px 0; color:#666;">账户姓名</td><td style="padding:8px 0;"><strong>{customer_name}</strong></td></tr><tr><td style="padding:8px 0; color:#666;">登录邮箱</td><td style="padding:8px 0;">{customer_email}</td></tr></tbody></table><p>您现在可以浏览设备、在线下单并电子签署租赁合同。如需帮助，请联系 <a href="mailto:{company_email}">{company_email}</a>。</p>${sign}${footer}`),
+    seed(WELCOME_EMAIL_TEMPLATE_ID, WELCOME_EMAIL_TEMPLATE_NAME, WELCOME_EMAIL_TEMPLATE_SUBJECT, `${WELCOME_EMAIL_TEMPLATE_BODY}${sign}${footer}`),
     seed('order_created', '订单已创建', '订单已创建 - {order_number}',
       `<h2>订单已创建</h2><p>您好 {customer_name}：</p><p>您的订单已成功创建。感谢您选择 <strong>{company_name}</strong>。</p><h3>订单详情</h3><table style="width:100%; border-collapse:collapse;"><tbody><tr><td style="padding:8px 0; color:#666;">订单编号</td><td style="padding:8px 0;"><strong>{order_number}</strong></td></tr><tr><td style="padding:8px 0; color:#666;">合同编号</td><td style="padding:8px 0;">{contract_number}</td></tr><tr><td style="padding:8px 0; color:#666;">租赁设备</td><td style="padding:8px 0;">{device_name}</td></tr><tr><td style="padding:8px 0; color:#666;">租赁期间</td><td style="padding:8px 0;">{start_date} 至 {end_date}</td></tr><tr><td style="padding:8px 0; color:#666;">租赁时长</td><td style="padding:8px 0;">{rental_period}</td></tr><tr><td style="padding:8px 0; color:#666;">订单金额</td><td style="padding:8px 0;"><strong>{total_amount}</strong></td></tr><tr><td style="padding:8px 0; color:#666;">押金</td><td style="padding:8px 0;">{deposit_amount}</td></tr><tr><td style="padding:8px 0; color:#666;">付款截止</td><td style="padding:8px 0;">{payment_due_date}</td></tr></tbody></table><p>请在 <strong>{payment_due_date}</strong> 前完成付款并电子签署租赁合同。如有疑问，请联系 <a href="mailto:{company_email}">{company_email}</a>，并提供订单编号 <strong>{order_number}</strong>。</p>${sign}${footer}`),
     seed('order_approved', '订单审核通过', '订单审核通过 - {order_number}',

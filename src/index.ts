@@ -173,6 +173,7 @@ import { runConnectivityProbes } from './services/connectivity'
 import { createAdminDeliveryBooking } from './services/deliveryAdmin'
 import { handleDeliveryStatusEmail } from './services/deliveryNotifications'
 import { buildTaxInvoiceDocument, sendTaxInvoiceEmail } from './services/notifications'
+import { handleWelcomeEmail } from './services/welcomeEmail'
 import {
   styleSheetText as siteStyles,
   styleSheetByteLength,
@@ -4535,6 +4536,8 @@ app.post('/admin/delivery/bookings', async (c) => {
 })
 
 app.post('/internal/delivery-status-email', (c) => handleDeliveryStatusEmail(c as any))
+
+app.post('/internal/welcome-email', (c) => handleWelcomeEmail(c as any))
 
 app.get('/admin/order-review', async (c) => {
   const user = await findUserBySession(c, c.req.header('cookie') ?? null)

@@ -7,7 +7,7 @@ import { getSystemSettings } from '../site'
 
 type DeliveryBindings = { RENT: D1Database }
 
-async function sameSecret(left: string, right: string): Promise<boolean> {
+export async function sameSecret(left: string, right: string): Promise<boolean> {
   if (!left || !right) return false
   const [leftHash, rightHash] = await Promise.all([
     crypto.subtle.digest('SHA-256', new TextEncoder().encode(left)),
