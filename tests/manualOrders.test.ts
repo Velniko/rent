@@ -126,6 +126,16 @@ test('creation rejects missing devices, unavailable devices, invalid customers a
   sqlite.close()
 })
 
+test('device stays selectable for a new manual order once an earlier dated order has passed its rental period, even if it was never marked returned', async () => {
+  const { sqlite, request } = setup()
+  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-01-01', endDate: '2026-01-05' })
+  assert.equal(created.status, 303)
+  assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id='d-1'").get()?.status, 'rented')
+  const second = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-02-01', endDate: '2026-02-05' })
+  assert.equal(second.status, 303)
+  sqlite.close()
+})
+
 test('only admins can write manual orders and only the device is required in the form', async () => {
   for (const role of ['STAFF', 'CUSTOMER', '']) {
     const { sqlite, request } = setup(role)

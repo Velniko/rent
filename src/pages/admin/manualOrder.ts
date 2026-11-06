@@ -13,7 +13,7 @@ export async function renderAdminManualOrder(c: Context, user: any, order: Order
   const editable = !order || canEditManualOrder(order)
   const values: Record<string, any> = submitted || (order ? { ...order, rentalAmount: Math.max(0, Number(order.totalAmount) - Number(order.depositAmount)) } : {})
   const [devices, customers, history] = await Promise.all([
-    c.env.RENT.prepare("SELECT id, name, serialNumber, status, pricePerDay, depositAmount FROM devices WHERE status = 'available' OR id = ? ORDER BY name").bind(String(values.deviceId || '')).all(),
+    c.env.RENT.prepare("SELECT id, name, serialNumber, status, pricePerDay, depositAmount FROM devices WHERE status NOT IN ('maintenance', 'retired') OR id = ? ORDER BY name").bind(String(values.deviceId || '')).all(),
     c.env.RENT.prepare("SELECT id, name, email FROM users WHERE role = 'CUSTOMER' AND (COALESCE(status, 'active') != 'inactive' OR id = ?) ORDER BY name").bind(String(values.userId || '')).all(),
     order ? c.env.RENT.prepare("SELECT a.before_json, a.after_json, a.created_at, u.name AS actor_name FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id WHERE a.target_type = 'ORDER' AND a.target_id = ? AND a.action IN ('MANUAL_ORDER_CREATED', 'MANUAL_ORDER_UPDATED') ORDER BY a.created_at DESC LIMIT 20").bind(order.id).all() : Promise.resolve({ results: [] }),
   ])

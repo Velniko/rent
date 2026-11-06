@@ -31,7 +31,7 @@ export async function saveAdminManualOrder(c: Context, orderId?: string) {
   }
   const closing = ['completed', 'cancelled'].includes(data.status)
   if (!closing) {
-    if (data.deviceId !== order?.deviceId && device.status !== 'available') return fail('所选设备当前不可租用', 409)
+    if (data.deviceId !== order?.deviceId && ['maintenance', 'retired'].includes(device.status)) return fail('所选设备当前不可租用', 409)
     const rules = await getDeviceRentalRules(c, data.deviceId)
     const conflict = data.startDate && data.endDate
       ? await hasDeviceBookingConflict(c, data.deviceId, data.startDate, data.endDate, order?.id, rules.bufferDays)
