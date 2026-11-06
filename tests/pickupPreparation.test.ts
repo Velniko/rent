@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { URL } from 'node:url'
 import { readFileSync, readdirSync } from 'node:fs'
 import worker from '../src/index'
-import { seedTestRoster, testInspectionFiles } from './helpers'
+import { testOrderScanCookie, seedTestRoster, testInspectionFiles } from './helpers'
 import { createAuthSession, getOrderById, invalidateSystemSettingsCache } from '../src/site'
 import { createDueDateNotifications, sendScheduledPickupReminders } from '../src/services/notifications'
 import { pickupAppointmentAt } from '../src/domain/pickupPreparation'
@@ -43,12 +43,20 @@ async function setup(t: any) {
     async batch(statements: any[]) { return Promise.all(statements.map(statement => statement.run())) },
   }
   invalidateSystemSettingsCache()
+  const scanCookies=new Map<string,string>()
   const env = { RENT: db, CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret',RESEND_API_KEY: 'pickup-test-key', EMAIL_FROM: 'sender@example.test' }
   const sessions = new Map<string, string>()
   for (const id of ['staff', 'other-staff', 'admin', 'customer', 'other-customer']) sessions.set(id, (await createAuthSession({ env } as any, id)).token)
-  const request = (actor = 'staff', path = '/staff/orders/pickup-order/prepare-pickup', method = 'POST', form?: Record<string, string|File>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
-    method, body: form ? (Object.values(form).some(v=>v instanceof File)?Object.entries(form).reduce((body,[key,value])=>{body.set(key,value);return body},new FormData()):new URLSearchParams(form as Record<string,string>)) : undefined, headers: { Cookie: `session=${sessions.get(actor) || ''}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
+  const request = async (actor = 'staff', path = '/staff/orders/pickup-order/prepare-pickup', method = 'POST', form?: Record<string, string|File>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
+    method, body: form ? (Object.values(form).some(v=>v instanceof File)?Object.entries(form).reduce((body,[key,value])=>{body.set(key,value);return body},new FormData()):new URLSearchParams(form as Record<string,string>)) : undefined, headers: { Cookie: `session=${sessions.get(actor) || ''}${scanCookies.get(actor)||await testOrderScanCookie(sqlite,actor,path,form)}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), env, { waitUntil() {} } as any)
+  const scan = async (actor:string,code:string,source='camera') => {
+    const call=(operation:string,body:any)=>worker.fetch(new Request('https://rent.example.test/staff/mobile/scan/'+operation,{method:'POST',body:JSON.stringify(body),headers:{Cookie:'session='+sessions.get(actor)+(scanCookies.get(actor)||''),Origin:'https://rent.example.test','Sec-Fetch-Site':'same-origin','Content-Type':'application/json'}}),env,{waitUntil(){}} as any)
+    const verified=await call('verify',{code,source});if(!verified.ok)return verified
+    scanCookies.set(actor,'; '+verified.headers.get('set-cookie')!.split(';')[0])
+    const order=await verified.json() as any
+    return call('confirm',{orderId:order.orderId,stage:order.stage})
+  }
   const sent: any[] = []
   let emailOk = true, beforeSend: (() => Promise<void>) | undefined
   t.mock.method(globalThis, 'fetch', async (url: any, init: any) => {
@@ -65,7 +73,7 @@ async function setup(t: any) {
   }
   const reminders = () => sendScheduledPickupReminders({ env, req: { url: 'https://scheduled-event' } } as any)
   const row = () => sqlite.prepare("SELECT * FROM orders WHERE id = 'pickup-order'").get()!
-  return { sqlite, env, request, sent, row, scheduled, reminders, failEmail: () => { emailOk = false }, restoreEmail: () => { emailOk = true }, beforeSend: (callback: () => Promise<void>) => { beforeSend = callback } }
+  return { sqlite, env, request, scan, sent, row, scheduled, reminders, failEmail: () => { emailOk = false }, restoreEmail: () => { emailOk = true }, beforeSend: (callback: () => Promise<void>) => { beforeSend = callback } }
 }
 
 test('assigned staff marks equipment ready and sends pickup details and a scannable QR exactly once', async t => {
@@ -81,6 +89,8 @@ test('assigned staff marks equipment ready and sends pickup details and a scanna
   assert.equal(f.row().handover_completed_at, null)
   assert.equal(f.sent.length, 1)
   assert.deepEqual(f.sent[0].to, ['customer@example.test'])
+  const code=String(f.sqlite.prepare("SELECT verification_code FROM order_verification_codes WHERE order_id='pickup-order'").get()!.verification_code)
+  assert.match(code,/^[A-Z0-9]{6}$/);assert.match(code,/[A-Z]/);assert.match(code,/[0-9]/);assert.ok(f.sent[0].html.includes(code))
   assert.match(f.sent[0].html, /取货二维码/)
   assert.match(f.sent[0].html, /客户&lt;img src=x&gt;/)
   assert.match(f.sent[0].html, /2090-01-01/)
@@ -433,11 +443,12 @@ test('email QR follows the staff scan and handover flow and completes pickup exa
   const opened = await f.request('staff', new URL(payload).pathname, 'GET')
   assert.equal(opened.status, 302)
   const scanPath = opened.headers.get('location')!
-  assert.equal(new URL(scanPath, 'https://rent.example.test').searchParams.get('code'), payload)
-  const scanned = await f.request('staff', scanPath, 'GET')
-  assert.equal(scanned.status, 302)
-  assert.equal(scanned.headers.get('location'), '/staff/orders/pickup-order/handover')
-  const handover = await f.request('staff', scanned.headers.get('location')!, 'GET')
+  assert.equal(scanPath, '/staff/mobile#scan')
+  const scanned = await f.scan('staff', payload)
+  assert.equal(scanned.status, 200)
+  const next = (await scanned.json() as any).next
+  assert.equal(next, '/staff/orders/pickup-order/handover')
+  const handover = await f.request('staff', next, 'GET')
   assert.equal(handover.status, 200)
   assert.match(await handover.text(), /出租前验机报告/)
   assert.equal(f.row().status, 'paid', 'opening the QR must not mark pickup complete')
@@ -472,9 +483,9 @@ test('QR links preserve login and ownership checks; customer cannot confirm pick
   assert.equal((await f.request('customer', path, 'POST', pickupForm())).status, 401)
   assert.equal((await f.request('other-staff', path, 'POST', pickupForm())).status, 403)
   const scanPath = '/staff/mobile/scan?code=' + encodeURIComponent('https://rent.example.test/pickup/pickup-order')
-  const denied = await f.request('other-staff', scanPath, 'GET')
-  assert.equal(denied.status, 409)
-  assert.match(await denied.text(), /你没有权限处理该客户的订单/)
+  const denied = await f.scan('other-staff','https://rent.example.test/pickup/pickup-order')
+  assert.equal(denied.status, 403)
+  assert.match(await denied.text(), /你没有权限处理该客户的订单|当前未排班/)
   assert.equal((await f.request('other-staff', '/staff/orders/pickup-order/handover', 'GET')).status, 403)
   assert.equal(f.row().handover_completed_at, null)
 })
@@ -482,72 +493,40 @@ test('QR links preserve login and ownership checks; customer cannot confirm pick
 test('admin can scan pickup QR; invalid, cancelled and deleted orders cannot be handed over', async t => {
   const f = await setup(t)
   const scanPath = '/staff/mobile/scan?code=' + encodeURIComponent('RENT-PICKUP:pickup-order')
-  const scan = await f.request('admin', scanPath, 'GET')
-  assert.equal(scan.status, 302)
-  assert.equal(scan.headers.get('location'), '/staff/orders/pickup-order/handover')
-  assert.equal((await f.request('admin', '/staff/mobile/scan?code=invalid-code', 'GET')).status, 409)
+  const scan = await f.scan('admin','RENT-PICKUP:pickup-order')
+  assert.equal(scan.status, 200)
+  assert.equal((await scan.json() as any).next, '/staff/orders/pickup-order/handover')
+  assert.equal((await f.request('admin', '/staff/mobile/scan?code=invalid-code', 'GET')).status, 403)
   assert.equal((await f.request('admin', '/pickup/missing-order', 'GET')).status, 404)
   f.sqlite.exec("UPDATE orders SET status = 'cancelled'")
-  assert.equal((await f.request('admin', scanPath, 'GET')).status, 409)
-  assert.equal((await f.request('admin', '/staff/orders/pickup-order/handover', 'GET')).status, 403)
+  assert.equal((await f.request('admin', scanPath, 'GET')).status, 403)
+  assert.equal((await f.request('admin', '/staff/orders/pickup-order/handover', 'GET')).status, 302)
   assert.equal((await f.request('admin', '/staff/orders/pickup-order/pickup', 'POST', pickupForm())).status, 409)
   f.sqlite.exec("UPDATE orders SET status = 'paid', deleted_at = CURRENT_TIMESTAMP")
   assert.equal((await f.request('admin', '/pickup/pickup-order', 'GET')).status, 404)
-  assert.equal((await f.request('admin', scanPath, 'GET')).status, 409)
+  assert.equal((await f.request('admin', scanPath, 'GET')).status, 403)
   assert.equal(f.row().handover_completed_at, null)
 })
 
-test('manual lookup accepts the last six characters, lowercase and full order numbers', async t => {
+test('order numbers and their last six characters cannot bypass verification', async t => {
   const f = await setup(t)
-  f.sqlite.exec("UPDATE orders SET orderNo = 'OD-20900101-AB12CD'")
-  for (const actor of ['staff', 'admin']) {
-    for (const code of ['AB12CD', 'ab12cd', '  aB12Cd  ', 'OD-20900101-AB12CD', 'od-20900101-ab12cd']) {
-      const response = await f.request(actor, '/staff/mobile/scan?code=' + encodeURIComponent(code), 'GET')
-      assert.equal(response.status, 302, `${actor}: ${code}`)
-      assert.equal(response.headers.get('location'), '/staff/orders/pickup-order/handover')
-    }
+  f.sqlite.exec("UPDATE orders SET orderNo='OD-20900101-AB12CD'")
+  for(const actor of ['staff','admin'])for(const code of ['AB12CD','ab12cd','OD-20900101-AB12CD','RENT-PICKUP:pickup-order']) {
+    assert.equal((await f.request(actor,'/staff/mobile/scan?code='+encodeURIComponent(code),'GET')).status,403)
   }
-  const page = await f.request('staff', '/staff/mobile/scan', 'GET')
-  assert.match(await page.text(), /输入订单号或后 6 位/)
-  for (const code of ['AB12C', 'AB12CDE', 'AB%2CD', 'AB_2CD']) {
-    assert.equal((await f.request('staff', '/staff/mobile/scan?code=' + encodeURIComponent(code), 'GET')).status, 409)
-  }
-  f.sqlite.exec("UPDATE orders SET status = 'active'")
-  const returning = await f.request('staff', '/staff/mobile/scan?code=ab12cd', 'GET')
-  assert.equal(returning.headers.get('location'), '/staff/orders/pickup-order')
+  const page=await f.request('staff','/staff/mobile','GET')
+  const html=await page.text();assert.match(html,/6 位取还校验码/);assert.doesNotMatch(html,/输入订单号或后 6 位/)
+  assert.equal((await f.scan('staff','AB12CD','code')).status,400)
 })
 
-test('duplicate last-six codes require the full number and deleted orders do not cause ambiguity', async t => {
-  const f = await setup(t)
-  f.sqlite.exec(`UPDATE orders SET orderNo = 'OD-20900101-AB12CD';
-    INSERT INTO orders (id, orderNo, userId, deviceId, startDate, endDate, rentalPeriod, totalAmount, depositAmount, status, paymentMethod)
-    SELECT 'second-order', 'OD-20900102-AB12CD', userId, 'replacement', startDate, endDate, rentalPeriod, totalAmount, depositAmount, status, paymentMethod FROM orders WHERE id = 'pickup-order';`)
-  const response = await f.request('staff', '/staff/mobile/scan?code=AB12CD', 'GET')
-  assert.equal(response.status, 409)
-  assert.match(await response.text(), /匹配到多个订单，请输入完整订单号/)
-  const exact = await f.request('staff', '/staff/mobile/scan?code=OD-20900102-AB12CD', 'GET')
-  assert.equal(exact.headers.get('location'), '/staff/orders/second-order/handover')
-  f.sqlite.exec("UPDATE orders SET deleted_at = CURRENT_TIMESTAMP WHERE id = 'second-order'")
-  const unique = await f.request('staff', '/staff/mobile/scan?code=AB12CD', 'GET')
-  assert.equal(unique.headers.get('location'), '/staff/orders/pickup-order/handover')
-  assert.equal(f.row().handover_completed_at, null)
-})
-
-test('short-code lookup is scoped to assigned customers; admins detect collisions across staff', async t => {
-  const f = await setup(t)
-  f.sqlite.exec("UPDATE orders SET orderNo = 'OD-20900101-AB12CD'")
-  assert.equal((await f.request('other-staff', '/staff/mobile/scan?code=AB12CD', 'GET')).status, 409)
-  f.sqlite.exec(`INSERT INTO orders (id, orderNo, userId, deviceId, startDate, endDate, rentalPeriod, totalAmount, depositAmount, status, paymentMethod)
-    SELECT 'other-order', 'OD-20900102-AB12CD', 'other-customer', 'replacement', startDate, endDate, rentalPeriod, totalAmount, depositAmount, status, paymentMethod FROM orders WHERE id = 'pickup-order';`)
-  for (const [actor, id] of [['staff', 'pickup-order'], ['other-staff', 'other-order']]) {
-    const response = await f.request(actor, '/staff/mobile/scan?code=ab12cd', 'GET')
-    assert.equal(response.status, 302)
-    assert.equal(response.headers.get('location'), `/staff/orders/${id}/handover`)
+test('verification codes are case-insensitive and unrelated to order number suffixes', async t => {
+  const f=await setup(t)
+  f.sqlite.exec("INSERT INTO order_verification_codes(order_id,verification_code) VALUES ('pickup-order','A7K2P9')")
+  for(const code of ['A7K2P9','a7k2p9',' a7K2p9 ']){
+    const response=await f.scan('staff',code,'code');assert.equal(response.status,200)
+    assert.equal((await response.json() as any).next,'/staff/orders/pickup-order/handover')
   }
-  const administrator = await f.request('admin', '/staff/mobile/scan?code=AB12CD', 'GET')
-  assert.equal(administrator.status, 409)
-  assert.match(await administrator.text(), /匹配到多个订单/)
-  assert.equal((await f.request('other-staff', '/staff/mobile/scan?code=OD-20900101-AB12CD', 'GET')).status, 409)
-  const customer = await f.request('customer', '/staff/mobile/scan?code=AB12CD', 'GET')
-  assert.equal(customer.headers.get('location'), '/login')
+  assert.equal((await f.scan('other-staff','A7K2P9','code')).status,403)
+  assert.equal((await f.scan('staff','https://evil.test/pickup/pickup-order')).status,400)
+  assert.equal((await f.scan('staff','pickup-order')).status,400)
 })

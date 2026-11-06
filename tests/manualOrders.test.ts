@@ -10,6 +10,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { URL } from 'node:url'
 import { Hono } from 'hono'
 import { parseManualOrder, canEditManualOrder } from '../src/domain/manualOrders'
+import { testOrderScanCookie } from './helpers'
 import { saveAdminManualOrder } from '../src/actions/admin/manualOrders'
 import { renderAdminOrderDetail } from '../src/pages/admin/orderDetail'
 import { renderAdminManualOrder } from '../src/pages/admin/manualOrder'
@@ -95,6 +96,8 @@ test('admin can create with only a device, edit optional fields, swap equipment 
   assert.equal(row().userId, null)
   assert.equal(row().startDate, null)
   assert.equal(row().totalAmount, 0)
+  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', status: 'completed' })).status, 409)
+  await testOrderScanCookie(sqlite, 'admin', '/admin/orders/'+row().id+'/update', {status:'completed'})
   assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', status: 'completed' })).status, 303)
   assert.equal(row().status, 'completed')
   assert.ok(row().return_received_at)

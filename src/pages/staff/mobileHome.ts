@@ -95,7 +95,7 @@ const adminMoreGroups: MoreGroup[] = [
   },
   {
     title: '用户与通知',
-    links: [['/admin/users', '用户管理'], ['/admin/notifications', '业务通知'], ['/notifications', '发布通知'], ['/admin/notifications/settings', '通知设置'], ['/admin/exceptions', '异常任务中心']],
+    links: [['/admin/users', '用户管理'], ['/notifications', '通知中心'], ['/notifications/compose', '发布通知'], ['/admin/notifications/settings', '通知设置'], ['/admin/exceptions', '异常任务中心']],
   },
   {
     title: '系统',

@@ -15,6 +15,8 @@ import { registerStorageRoutes } from './routes/storage'
 import { registerIdentityRoutes } from './routes/identity'
 import { registerRosterRoutes } from './routes/roster'
 import { registerReturnRoutes } from './routes/returns'
+import { registerOrderScanningRoutes } from './routes/orderScanning'
+import { hasReturnScan } from './services/orderScanning'
 import { readInspectionPhotos, renderInspectionPhotos } from './lib/inspectionPhotos'
 import { createNotificationWithDelivery } from './services/notifications'
 import { runRentalPayouts } from './services/rentalPayouts'
@@ -193,7 +195,6 @@ import {
 import { escapeHtml } from './lib/html'
 import { createTallyFeedbackToken } from './lib/tally'
 import { renderPickupPreparation } from './pages/partials/pickupPreparation'
-import { parsePickupQrPayload } from './lib/pickupQr'
 import { pickupTimeSlotEndMinutes } from './domain/pickupTimeSlots'
 import { readManualInspectionFields, renderManualInspectionFields, inspectionText } from './lib/inspection'
 import { decryptSecret } from './lib/secretBox'
@@ -738,7 +739,7 @@ function applySecurityHeaders(c: any): void {
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('X-Frame-Options', 'DENY')
   c.header('Referrer-Policy', 'no-referrer')
-  c.header('Permissions-Policy', `${c.req.path === '/staff/mobile/scan' ? 'camera=(self)' : 'camera=()'}, microphone=(), geolocation=()`)
+  c.header('Permissions-Policy', `${['/staff/mobile','/staff/mobile/today','/staff/mobile/pickup','/staff/mobile/return','/staff/mobile/scan'].includes(c.req.path) ? 'camera=(self)' : 'camera=()'}, microphone=(), geolocation=()`)
   c.header('Cross-Origin-Opener-Policy', 'same-origin')
   c.header('Cross-Origin-Resource-Policy', 'same-origin')
   c.header('X-Permitted-Cross-Domain-Policies', 'none')
@@ -944,6 +945,7 @@ app.use('*', async (c, next) => {
 })
 
 registerRosterRoutes(app)
+registerOrderScanningRoutes(app)
 registerReturnRoutes(app)
 
 // 搜索需要先经过会话、访客限制与限流中间件。
@@ -1633,7 +1635,7 @@ app.get('/pickup/:orderId', async (c) => {
   if (!order) return c.html(renderNotFound(), 404)
   const user = c.get('user')
   if (!user) return c.redirect(`/login?redirect=${encodeURIComponent(c.req.path)}`)
-  if (['STAFF', 'ADMIN'].includes(user.role)) return c.redirect(`/staff/mobile/scan?code=${encodeURIComponent(c.req.url)}`)
+  if (['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/staff/mobile#scan')
   if (user.role === 'CUSTOMER' && order.userId === user.id) return c.redirect(`/customer/orders/${encodeURIComponent(order.id)}`)
   return c.html(renderForbidden(), 403)
 })
@@ -1810,34 +1812,34 @@ app.get('/notifications', async (c) => {
   const page = Math.min(requestedPage, pageCount)
   const pageNotifications = allNotifications.slice((page - 1) * pageSize, page * pageSize)
   const notifications = pageNotifications
-  // 通告历史单独放在 /admin/announcements，通知中心只显示收件通知。
-  const sentAnnouncements: any[] = []
-  const recipients = user.role === 'ADMIN' || user.role === 'STAFF' ? (await getUsers(c)).filter((account: any) => (user.role === 'ADMIN' ? ['CUSTOMER', 'STAFF'].includes(account.role) : account.role === 'CUSTOMER' && account.staffId === user.id) && account.status !== 'inactive') : []
-  if (user.role === 'ADMIN' || user.role === 'STAFF') await ensureInAppNotificationTemplates(c)
-  const inAppNotificationTemplates = user.role === 'ADMIN' || user.role === 'STAFF' ? ((await c.env.RENT.prepare("SELECT id, name FROM in_app_notification_templates WHERE enabled = 1 AND deleted_at IS NULL ORDER BY name").all()).results || []) as any[] : []
-  const inAppNotificationTemplateOptions = `<option value="custom">自定义通知</option>${inAppNotificationTemplates.map((item: any) => `<option value="${sanitizePlainText(item.id, 120)}">使用模板：${sanitizePlainText(item.name, 120)}</option>`).join('')}`
-  const defaultDelivery = getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email'
-  const deliveryChoice = `<div class="form-group"><label class="form-label" for="notificationDelivery">发送方式</label><select class="form-control" id="notificationDelivery" name="delivery"><option value="in_app_email" ${defaultDelivery === 'in_app_email' ? 'selected' : ''}>站内通知 + 邮件</option><option value="in_app_only" ${defaultDelivery === 'in_app_only' ? 'selected' : ''}>仅站内通知</option><option value="email_only" ${defaultDelivery === 'email_only' ? 'selected' : ''}>仅邮件</option></select></div>`
-  const resultCount = (key: string) => Math.min(10000, Math.max(0, Number.parseInt(c.req.query(key) || '0', 10) || 0))
-  const sentCount = resultCount('sent'), emailSent = resultCount('emailSent'), emailFailed = resultCount('emailFailed')
-  const sendResult = c.req.query('sent') ? `<div role="status" data-flash-notice class="page-notification page-notification--${emailFailed ? 'error' : 'success'}">${c.req.query('delivery') !== 'email_only' ? `<span>站内通知已发送：</span> ${sentCount}` : ''}${c.req.query('delivery') !== 'in_app_only' ? `${c.req.query('delivery') !== 'email_only' ? ' · ' : ''}<span>邮件已提交：</span> ${emailSent} · <span>邮件失败：</span> ${emailFailed}` : ''}${user.role === 'ADMIN' ? ' · <a href="/manager/email-events">查看邮件发送记录</a>' : ''}</div>` : ''
-  const recipientOptions = recipients.map((account: any) => `<option value="${sanitizePlainText(account.id, 120)}">${sanitizePlainText(account.name || account.email, 120)} · ${sanitizePlainText(account.email, 160)}</option>`).join('')
-  const body = `<div class="panel"><div class="section-title"><h2>通知中心</h2><span class="section-note">订单和归还提醒</span></div>${user.role === 'ADMIN' ? `<form method="post" action="/notifications/announcement" class="panel notification-compose"><h3>发布通告</h3>${renderAnnouncementEditor()}<div class="form-group"><label class="form-label" for="announcementExpiresAt">下架日期和时间（选填）</label><input class="form-control" id="announcementExpiresAt" name="expiresAt" type="datetime-local"></div><button class="button button-primary" type="submit">发布通告</button></form>` : ''}${user.role === 'ADMIN' || user.role === 'STAFF' ? `<form method="post" action="/notifications/send" class="panel notification-compose"><h3>发送通知</h3>${sendResult}${deliveryChoice}<div class="form-group"><label class="form-label" for="notificationRecipient">收件人（可多选）</label><input class="form-control recipient-search" id="notificationRecipientSearch" type="search" placeholder="搜索姓名或邮箱…" autocomplete="off"><div class="recipient-picker-actions"><button type="button" class="button button-sm button-secondary" id="selectVisibleRecipients">全选当前结果</button><button type="button" class="button button-sm button-secondary" id="clearRecipients">清空选择</button><span id="recipientCount" class="section-note">已选 0 人</span></div><select class="form-control recipient-select" id="notificationRecipient" name="recipientId" multiple size="7" required>${recipientOptions}</select><small class="form-text">可搜索后全选当前结果，也可以按住 Command（Mac）或 Ctrl（Windows）逐个选择。</small></div><div class="form-group"><label class="form-label" for="notificationTitle">标题（自定义通知时必填）</label><input class="form-control" id="notificationTitle" name="title" maxlength="120" required></div><div class="form-group"><label class="form-label" for="notificationMessage">内容（支持 HTML，自定义通知时必填）</label><textarea class="form-control html-editor" id="notificationMessage" name="message" maxlength="1000" required></textarea></div><button class="button button-primary" type="submit">发送通知</button></form><script>(()=>{const search=document.getElementById('notificationRecipientSearch'),select=document.getElementById('notificationRecipient'),count=document.getElementById('recipientCount'),template=document.getElementById('notificationTemplate'),title=document.getElementById('notificationTitle'),message=document.getElementById('notificationMessage');if(!search||!select)return;const update=()=>{const query=search.value.trim().toLowerCase();Array.from(select.options).forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});count.textContent='已选 '+Array.from(select.selectedOptions).length+' 人';};const syncTemplateFields=()=>{const custom=!template||template.value==='custom';[title,message].forEach(field=>{if(!field)return;field.required=custom;field.setAttribute('aria-required',String(custom));});};search.addEventListener('input',update);select.addEventListener('change',update);template?.addEventListener('change',syncTemplateFields);document.getElementById('selectVisibleRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>{if(!option.hidden)option.selected=true;});update();});document.getElementById('clearRecipients')?.addEventListener('click',()=>{Array.from(select.options).forEach(option=>option.selected=false);update();});update();syncTemplateFields();})();</script>` : ''}${user.role === 'ADMIN' && sentAnnouncements.length ? `<section class="panel"><h3>已发布通告历史</h3><div class="notification-list">${sentAnnouncements.map((item: any) => `<article class="notification-item"><div><strong>${sanitizePlainText(item.title, 120)}</strong><div class="notification-message">${renderNotificationMarkdown(normalizeDisplayedNotification(item))}</div><small>${formatMelbourneDateTime(item.created_at)}</small></div><form method="post" action="/notifications/announcements/${item.id}/delete" data-site-confirm="删除后这条通告及其历史记录将从所有收件人处撤回，无法恢复。" data-confirm-variant="danger" data-confirm-title="删除这条通告？" data-confirm-label="删除通告"><button class="button button-sm button-danger" type="submit">删除</button></form></article>`).join('')}</div></section>` : ''}${notifications.length ? `<div class="notification-list">${notifications.map((item: any) => `<a class="notification-item ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><div><strong>${sanitizePlainText(item.title, 200)}</strong><div class="notification-message">${renderNotificationMarkdown(notificationListMessage(item))}</div><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div>${item.order_id ? `<span class="button button-sm button-secondary">查看订单</span>` : ''}</a>`).join('')}</div>` : '<p class="empty-state">暂无通知</p>'}</div>`
   const pagination = pageCount > 1 ? `<nav class="pagination" aria-label="通知分页">${Array.from({ length: pageCount }, (_, index) => `<a class="button button-sm ${index + 1 === page ? 'button-primary' : 'button-secondary'}" href="/notifications?page=${index + 1}">${index + 1}</a>`).join('')}</nav>` : ''
-  const bodyWithAnnouncementExpiry = body
-  const bodyWithSendAnchor = bodyWithAnnouncementExpiry.replace('<form method="post" action="/notifications/send" class="panel notification-compose">', '<form id="send-notification" method="post" action="/notifications/send" class="panel notification-compose">')
-  const bodyWithTemplateChoice = bodyWithSendAnchor.replace('<div class="form-group"><label class="form-label" for="notificationTitle">标题（自定义通知时必填）</label>', `<div class="form-group"><label class="form-label" for="notificationTemplate">发送内容</label><select class="form-control" id="notificationTemplate" name="templateId">${inAppNotificationTemplateOptions}</select><small class="form-text">管理模板：<a href="/admin/in-app-notification-templates">站内通知模板</a></small></div><div class="form-group"><label class="form-label" for="notificationTitle">标题（自定义通知时必填）</label>`)
-  const bodyWithArchiveLink = user.role === 'ADMIN' ? bodyWithTemplateChoice.replace('<h3>发布通告</h3><p><a class="button button-secondary" href="/admin/website-advertisements">官网广告</a></p>', '<div class="section-title"><h3>发布通告</h3><p><a class="button button-secondary" href="/admin/website-advertisements">官网广告</a></p><a class="link-button" href="/admin/announcements">历史通告 →</a></div>') : bodyWithTemplateChoice
-  return c.html(buildLayout('通知中心', bodyWithArchiveLink + pagination, user))
+  const publishLink = ['ADMIN', 'STAFF'].includes(user.role) ? '<a class="button button-primary" href="/notifications/compose">发布通知</a>' : ''
+  const body = `<div class="page-header"><h2>通知中心</h2>${publishLink}</div><section class="panel">${notifications.length ? `<div class="notification-list">${notifications.map((item: any) => `<a class="notification-item ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><div><strong>${sanitizePlainText(item.title, 200)}</strong><div class="notification-message">${renderNotificationMarkdown(notificationListMessage(item))}</div><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div>${item.order_id ? '<span class="button button-sm button-secondary">查看订单</span>' : ''}</a>`).join('')}</div>` : '<p class="empty-state">暂无通知</p>'}</section>${pagination}`
+  return c.html(buildLayout('通知中心', body, user))
+})
+
+app.get('/notifications/compose', async (c) => {
+  const user = c.get('user')
+  if (!user) return c.redirect('/login')
+  if (!['ADMIN', 'STAFF'].includes(user.role)) return c.html(renderForbidden(), 403)
+  const announcement = c.req.query('mode') === 'announcement'
+  if (announcement && user.role !== 'ADMIN') return c.html(renderForbidden(), 403)
+  await loadSystemSettingsFromDB(c)
+  const recipients = announcement ? [] : (await getUsers(c)).filter((account: any) => (user.role === 'ADMIN' ? ['CUSTOMER', 'STAFF'].includes(account.role) : account.role === 'CUSTOMER' && account.staffId === user.id) && account.status !== 'inactive')
+  if (!announcement) await ensureInAppNotificationTemplates(c)
+  const templates = announcement ? [] : ((await c.env.RENT.prepare("SELECT id, name FROM in_app_notification_templates WHERE enabled = 1 AND deleted_at IS NULL ORDER BY name").all()).results || [])
+  const count = (key: string) => Math.min(10000, Math.max(0, Number.parseInt(c.req.query(key) || '0', 10) || 0))
+  return c.html(pages.renderNotificationCompose(user, {
+    recipients, templates, announcement, published: c.req.query('published') === '1',
+    defaultDelivery: getSystemSettings().notificationSettings?.defaultDelivery || 'in_app_email',
+    result: c.req.query('sent') ? { sent: count('sent'), emailSent: count('emailSent'), emailFailed: count('emailFailed'), delivery: c.req.query('delivery') || 'in_app_email' } : undefined,
+  }))
 })
 
 app.get('/admin/notifications', async (c) => {
   const user = c.get('user')
   if (!user || user.role !== 'ADMIN') return c.redirect('/login')
-  await ensureNotificationsTable(c)
-  const notifications = (await getNotifications(c, user.id)).filter((item: any) => item.type !== 'announcement')
-  const body = `<div class="page-header"><div><p class="section-code">ADMIN INBOX</p><h2>管理员通知中心</h2><p>这里显示充值、退款、付款审核、推荐风险审核和其他系统业务通知。</p></div><a class="button button-secondary" href="/notifications">发布通知</a></div><section class="panel"><div class="section-title"><h3>业务通知</h3><span class="section-note">共 ${notifications.length} 条</span></div>${notifications.length ? `<div class="admin-notification-cards">${notifications.map((item: any) => { const typeLabel = item.type === 'c2c_payout_pending' ? '出租结算待转账' : item.type === 'rental_application' ? '租赁申请' : item.type === 'referral_risk_review' ? '推荐风险审核' : item.type === 'payment_review_submitted' ? '付款凭证待审核' : item.type === 'payment_review_overdue' ? '付款审核逾期' : item.type || '系统通知'; return `<a class="admin-notification-card ${item.read_at ? '' : 'is-unread'}" href="/notifications/${encodeURIComponent(item.id)}"><span class="admin-notification-card__type">${sanitizePlainText(typeLabel, 40)}</span><div class="admin-notification-card__content"><strong>${sanitizePlainText(item.title, 200)}</strong><p>${sanitizePlainText(notificationPlainText(item.message), 180)}</p><small>${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</small></div><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` }).join('')}</div>` : '<p class="empty-state">暂无业务通知</p>'}</section>`
-  return c.html(buildLayout('管理员通知中心', body, user))
+  return c.redirect('/notifications' + new URL(c.req.url).search)
 })
 
 app.get('/admin/notifications/settings', async (c) => {
@@ -1892,7 +1894,7 @@ app.get('/admin/announcements', async (c) => {
   }).join('')
   const itemsWithHide = items.replace(/<form method="post" action="(\/admin\/announcements\/[^\"]+)\/delete"/g, '<form method="post" action="$1/hide" data-site-confirm="隐藏后所有用户都不会再看到这条通告，之后仍可在历史公告中恢复。" data-confirm-title="隐藏这条通告？" data-confirm-label="隐藏通告"><button class="button button-sm button-secondary" type="submit">隐藏通告</button></form><form method="post" action="$1/delete"')
   const countLabel = pageCount > 1 ? `第 ${page}/${pageCount} 页 · 共 ${total} 条` : `共 ${total} 条`
-  const body = `<div class="page-header"><div><p class="section-code">ANNOUNCEMENT ARCHIVE</p><h2>历史公告</h2><p>编辑后所有收件人同步更新；删除后将从所有人处撤回。</p></div><div class="record-actions"><a class="button button-secondary" href="/admin/website-advertisements">官网广告</a><a class="button button-primary" href="/notifications#send-notification">发送通知</a><a class="button button-secondary" href="/notifications">返回通知中心</a></div></div><div class="record-archive">${total ? `<div class="record-archive__toolbar"><input type="search" id="announcementSearch" class="form-control" placeholder="在本页搜索标题或内容…" autocomplete="off"><div class="record-archive__sort">${sortLink('desc', '最新在前')}${sortLink('asc', '最早在前')}</div><span class="record-archive__count" id="announcementCount" data-base="${countLabel}">${countLabel}</span></div><div class="record-archive__list">${itemsWithHide}</div><p class="empty-state" id="announcementNoResult" style="display:none">本页没有匹配的公告</p>${pagination}` : '<p class="empty-state">暂无历史公告</p>'}</div><script>(()=>{const s=document.getElementById('announcementSearch');if(!s)return;const list=[...document.querySelectorAll('.record-archive__item')];const count=document.getElementById('announcementCount');const none=document.getElementById('announcementNoResult');const run=()=>{const q=s.value.trim().toLowerCase();let n=0;list.forEach(it=>{const hit=!q||(it.dataset.search||'').includes(q);it.style.display=hit?'':'none';if(hit)n++;});count.textContent=q?('匹配 '+n+' 条'):count.dataset.base;none.style.display=q&&!n?'':'none';};s.addEventListener('input',run);})();</script>`
+  const body = `<div class="page-header"><div><p class="section-code">ANNOUNCEMENT ARCHIVE</p><h2>历史公告</h2><p>编辑后所有收件人同步更新；删除后将从所有人处撤回。</p></div><div class="record-actions"><a class="button button-secondary" href="/admin/website-advertisements">官网广告</a><a class="button button-primary" href="/notifications/compose#send-notification">发送通知</a><a class="button button-secondary" href="/notifications">返回通知中心</a></div></div><div class="record-archive">${total ? `<div class="record-archive__toolbar"><input type="search" id="announcementSearch" class="form-control" placeholder="在本页搜索标题或内容…" autocomplete="off"><div class="record-archive__sort">${sortLink('desc', '最新在前')}${sortLink('asc', '最早在前')}</div><span class="record-archive__count" id="announcementCount" data-base="${countLabel}">${countLabel}</span></div><div class="record-archive__list">${itemsWithHide}</div><p class="empty-state" id="announcementNoResult" style="display:none">本页没有匹配的公告</p>${pagination}` : '<p class="empty-state">暂无历史公告</p>'}</div><script>(()=>{const s=document.getElementById('announcementSearch');if(!s)return;const list=[...document.querySelectorAll('.record-archive__item')];const count=document.getElementById('announcementCount');const none=document.getElementById('announcementNoResult');const run=()=>{const q=s.value.trim().toLowerCase();let n=0;list.forEach(it=>{const hit=!q||(it.dataset.search||'').includes(q);it.style.display=hit?'':'none';if(hit)n++;});count.textContent=q?('匹配 '+n+' 条'):count.dataset.base;none.style.display=q&&!n?'':'none';};s.addEventListener('input',run);})();</script>`
   return c.html(buildLayout('历史公告 - 电脑租赁管理系统', body, user))
 })
 
@@ -2478,7 +2480,7 @@ app.post('/notifications/announcement', async (c) => {
   if (expiresAt && !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(expiresAt)) return c.text('下架日期和时间格式无效', 400)
   const recipients = (await getUsers(c)).filter((account: any) => ['CUSTOMER', 'STAFF'].includes(account.role) && account.status !== 'inactive')
   await Promise.all(recipients.map((recipient: any) => createNotification(c, { recipientId: recipient.id, senderId: user.id, type: 'announcement', title, message, titleEn, messageEn, expiresAt })))
-  return c.redirect('/notifications')
+  return c.redirect('/notifications/compose?mode=announcement&published=1')
 })
 
 app.post('/notifications/send', async (c) => {
@@ -2521,7 +2523,7 @@ app.post('/notifications/send', async (c) => {
   const emailSent = results.filter(result => result.email?.ok).length
   const emailFailed = delivery !== 'in_app_only' ? results.filter(result => result.inserted && !result.email?.ok).length : 0
   await createAuditLog(c, { actor: user, action: 'MANUAL_NOTIFICATIONS_SENT', targetType: 'NOTIFICATION', targetId: user.id, after: { count, delivery, emailSent, emailFailed } })
-  return c.redirect(`/notifications?sent=${count}&emailSent=${emailSent}&emailFailed=${emailFailed}&delivery=${delivery}#send-notification`, 303)
+  return c.redirect(`/notifications/compose?sent=${count}&emailSent=${emailSent}&emailFailed=${emailFailed}&delivery=${delivery}#send-notification`, 303)
 })
 
 // Existing links keep working while new pages use the rental-program name.
@@ -2743,7 +2745,7 @@ app.get('/staff/mobile', async (c) => {
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
   const stage = c.req.query('stage')
   if (['pickup', 'return'].includes(stage)) return c.redirect(`/staff/mobile/${stage}`, 302)
-  return c.html(pages.renderStaffDashboard(user,{stats:{},recentOrders:[],recentDevices:[],roster:await loadRoster(c,user)}))
+  return c.html(await pages.renderStaffMobileOperations(c, user))
 })
 
 for (const stage of ['pickup', 'return'] as const) {
@@ -2764,32 +2766,9 @@ app.get('/staff/mobile/today', async (c) => {
 app.get('/staff/mobile/scan', async (c) => {
   const user = c.get('user')
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
+  if (c.req.query('code')) return c.text('请使用相机扫描客户邮件中的二维码', 403)
   const stage = ['pickup', 'return'].includes(String(c.req.query('stage') || '')) ? c.req.query('stage') : ''
-  const code = String(c.req.query('code') || '').trim().slice(0, 300)
-  if (code) {
-    const payloadOrderId = parsePickupQrPayload(code)
-    let row = payloadOrderId
-      ? await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE id = ?').bind(payloadOrderId).first()
-      : await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE deleted_at IS NULL AND (id = ? OR UPPER(orderNo) = UPPER(?)) LIMIT 1').bind(code, code).first()
-    if (!row && !payloadOrderId && /^[A-Za-z0-9]{6}$/.test(code)) {
-      const matches = ((await c.env.RENT.prepare(`SELECT o.id, o.orderNo, o.status, o.userId
-        FROM orders o JOIN users u ON u.id = o.userId
-        WHERE o.deleted_at IS NULL AND UPPER(SUBSTR(o.orderNo, -6)) = ?${user.role === 'ADMIN' ? '' : ' AND u.staff_id = ?'}
-        ORDER BY o.id LIMIT 2`).bind(code.toUpperCase(), ...(user.role === 'ADMIN' ? [] : [user.id])).all()).results || []) as any[]
-      if (matches.length > 1) return c.html(pages.renderStaffMobileScan(c, user, '匹配到多个订单，请输入完整订单号'), 409)
-      row = matches[0] || null
-    }
-    const order = row ? await getOrderById(c, String(row.id)) : null
-    const customer = order ? await getUserById(c, order.userId) : null
-    const signedPickup = order?.status === 'approved' && await getContractByOrderId(c, order.id).then(contract => contract?.status === 'signed')
-    const pickupReady = stage !== 'return' && order && (['paid', 'pending_pickup'].includes(String(order.status)) || signedPickup)
-    const returnReady = stage !== 'pickup' && order && (['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) || (order.status === 'completed' && Number(order.overdue_outstanding_amount || 0) > 0))
-    if ((pickupReady || returnReady) && (user.role === 'ADMIN' || customer?.staffId === user.id)) {
-      return c.redirect(pickupReady?`/staff/orders/${encodeURIComponent(order.id)}/handover`:`/staff/orders/${encodeURIComponent(order.id)}`)
-    }
-    return c.html(await pages.renderStaffMobileScan(c, user, !order ? '请核实输入信息是否正确' : !pickupReady && !returnReady ? '该订单当前没有待处理的取货或归还任务。' : '你没有权限处理该客户的订单。'), 409)
-  }
-  return c.html(pages.renderStaffMobileScan(c, user))
+  return c.redirect('/staff/mobile' + (stage ? '/' + stage : '') + '#scan')
 })
 
 app.get('/staff/profile', async (c) => {
@@ -2940,7 +2919,7 @@ app.get('/staff/orders/:orderId/handover', async (c) => {
   let beforeSnapshot: Record<string, any> = {}
   try { beforeSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
   const inspectionFields = renderManualInspectionFields(beforeSnapshot)
-  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>扫码或打开订单后，先填写出租前验机报告，再完成取货交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form enctype="multipart/form-data" class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}</div>${renderInspectionPhotos()}<div class="grid grid-2"><div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
+  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>填写出租前验机报告并确认交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form enctype="multipart/form-data" class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}</div>${renderInspectionPhotos()}<div class="grid grid-2"><div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
   return c.html(buildLayout('出租前验机与交付 - 电脑租赁管理系统', body, user, { compactStaffNav: true }))
 })
 
@@ -4217,7 +4196,7 @@ app.get('/manager/email-events', async (c) => {
   const statusLabels = { PENDING: '待发送', SENT: '邮件已提交', FAILED: '发送失败', SKIPPED: '已跳过' }
   const eventLabels = { SITE_NOTIFICATION: '手动通知', TEMPLATE: '模板邮件', MARKETING: '营销邮件', C2C_NEW_RENTAL: '新出租通知' }
   const rows = results.map((event: any) => `<tr><td>${sanitizePlainText(eventLabels[event.event_type] || event.event_type, 40)}<br><small>${sanitizePlainText(event.subject || '—', 200)}</small></td><td>${sanitizePlainText(event.recipient, 254)}</td><td><span class="badge ${event.status === 'SENT' ? 'badge-success' : event.status === 'FAILED' ? 'badge-danger' : 'badge-neutral'}">${sanitizePlainText(statusLabels[event.status] || event.status, 20)}</span></td><td>${event.retry_count}/${event.max_attempts}</td><td>${sanitizePlainText(event.error_message || '—', 200)}</td><td>${sanitizePlainText(event.sent_at || event.created_at, 40)}</td><td>${['FAILED', 'SKIPPED'].includes(event.status) && Number(event.retry_count) < Number(event.max_attempts) ? `<form method="post" action="/manager/email-events/${encodeURIComponent(event.id)}/retry" data-site-confirm="确认重新发送该邮件吗？"><button class="button button-sm button-primary">重新发送</button></form>` : '—'}</td></tr>`).join('') || '<tr><td colspan="7">暂无邮件事件</td></tr>'
-  return c.html(buildLayout('邮件发送记录', `<div class="panel"><div class="section-title"><h2>邮件发送记录</h2><a class="button button-secondary" href="/notifications#send-notification">发送通知</a></div><div class="table-wrapper"><table><thead><tr><th>事件与主题</th><th>收件人</th><th>状态</th><th>尝试</th><th>失败原因</th><th>时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>`, user))
+  return c.html(buildLayout('邮件发送记录', `<div class="panel"><div class="section-title"><h2>邮件发送记录</h2><a class="button button-secondary" href="/notifications/compose#send-notification">发送通知</a></div><div class="table-wrapper"><table><thead><tr><th>事件与主题</th><th>收件人</th><th>状态</th><th>尝试</th><th>失败原因</th><th>时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>`, user))
 })
 
 app.post('/manager/email-events/:id/retry', async (c) => {
@@ -4767,6 +4746,7 @@ app.post('/admin/orders/:id/update', async (c) => {
   }
   if (status==='completed' && force && (!reason || String(form.deviceConfirmed||'')!=='1'))return wantsJson?c.json({ok:false,error:'请填写原因并确认设备已收回'},400):c.text('请填写原因并确认设备已收回',400)
   if (status === 'completed') {
+    if (!order.return_received_at || !await hasReturnScan(c, order)) return wantsJson ? c.json({ok:false,error:'请先扫码并确认归还'},403) : c.text('请先扫码并确认归还',403)
     const contract = await c.env.RENT.prepare('SELECT contract_data FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
     if (!JSON.parse(contract?.contract_data || '{}').inspection_date && !force) return wantsJson ? c.json({ ok: false, error: '完成订单前必须提交归还验机' }, 409) : c.text('完成订单前必须提交归还验机', 409)
   }

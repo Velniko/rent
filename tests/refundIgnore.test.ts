@@ -12,6 +12,7 @@ import { Hono } from 'hono'
 import worker from '../src/index'
 import { createAuthSession } from '../src/site'
 import { renderAdminRefunds } from '../src/pages/admin/refunds'
+import { getAdminDashboardData } from '../src/services/adminDashboard'
 
 async function setup(t: any, status: string, withPayment = false) {
   const sqlite = new DatabaseSync(':memory:')
@@ -44,13 +45,14 @@ async function setup(t: any, status: string, withPayment = false) {
   app.get('/', async c => c.html(await renderAdminRefunds(c, { id: 'ignore-admin', role: 'ADMIN' })))
   const queue = async () => (await app.request('https://rent.example.test/', {}, env)).text()
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('Ignoring a refund must not make an external request') })
-  return { sqlite, ignore, queue }
+  return { sqlite, ignore, queue, env }
 }
 
 for (const status of ['completed', 'cancelled']) {
   for (const withPayment of [false, true]) {
     test(`${status} refund can be ignored ${withPayment ? 'with' : 'without'} a payment without creating financial records`, async t => {
-      const { sqlite, ignore, queue } = await setup(t, status, withPayment)
+      const { sqlite, ignore, queue, env } = await setup(t, status, withPayment)
+      const pendingBefore = (await getAdminDashboardData({ env } as any)).stats.pendingDeposits
       assert.match(await queue(), /action="\/admin\/orders\/ignore-order\/ignore-refund"/)
       const response = await ignore()
       assert.equal(response.status, 302, await response.text())
@@ -71,6 +73,7 @@ for (const status of ['completed', 'cancelled']) {
       assert.equal(audit[0].actor_id, 'ignore-admin')
       assert.equal(audit[0].reason, '已核对，无需退款')
       assert.doesNotMatch(await queue(), /action="\/admin\/orders\/ignore-order\/ignore-refund"/)
+      assert.equal((await getAdminDashboardData({ env } as any)).stats.pendingDeposits, pendingBefore - 1)
       assert.equal((await ignore()).status, 409)
       assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE target_id = 'ignore-order' AND action = 'REFUND_IGNORED'").get()?.count, 1)
     })

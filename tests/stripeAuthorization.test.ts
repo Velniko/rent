@@ -15,7 +15,7 @@ import { handleSaveAdminSettings } from '../src/actions/admin/saveSettings'
 import { saveStripeConfig } from '../src/stripe'
 import { createAuthSession, formatMelbourneDateTime, getOrderById, releaseStripePendingPaymentIntents, reconcileOrderPayments, runDataConsistencyChecks } from '../src/site'
 import worker from '../src/index'
-import { testInspectionFiles } from './helpers'
+import { testOrderScanCookie, testInspectionFiles } from './helpers'
 import { renderAdminOrderDetail } from '../src/pages/admin/orderDetail'
 import { renderCustomerOrderDetail } from '../src/pages/customer/orderDetail'
 import { renderStaffInspection } from '../src/pages/staff/inspection'
@@ -121,7 +121,7 @@ async function requestAsAdmin(context: any, path: string, form: Record<string, s
   const session = await createAuthSession(context, 'admin')
   return worker.fetch(new Request(`https://rent.example.test${path}`, {
     method: 'POST', body,
-    headers: { Cookie: `session=${session.token}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
+    headers: { Cookie: `session=${session.token}${await testOrderScanCookie(context.env.RENT,'admin',path,form)}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), context.env, { waitUntil() {} } as any)
 }
 

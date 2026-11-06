@@ -12,7 +12,7 @@ import { registerOrderReturn, renderReturnRegistration } from '../services/retur
 import { RosterError, canStaffReadRosterOrder } from '../services/roster'
 import { readInspectionPhotos } from '../lib/inspectionPhotos'
 import { resolveImageUrls } from '../services/objectStorage'
-import { formatMelbourneDate, canTransitionOrder, getOrderById, getUserById, getDeviceById, recordDeviceLifecycle, releaseDeviceIfUnbooked, staffOrderPath } from '../site'
+import { buildLayout, formatMelbourneDate, canTransitionOrder, getOrderById, getUserById, getDeviceById, recordDeviceLifecycle, releaseDeviceIfUnbooked, staffOrderPath } from '../site'
 import { chargeOverdueReturns, refundUnusedRentalDays, settleCompletedOrderAuthorization } from '../actions/stripePayments'
 import { computeOrderSettlementStatus } from '../domain/orderSettlement'
 import { createAuditLog } from '../services/audit'
@@ -20,7 +20,7 @@ import { createAuditLog } from '../services/audit'
 export function registerReturnRoutes(app: WorkspaceApp) {
 app.get('/admin/returns',async c=>{const user=c.get('user');if(user?.role!=='ADMIN')return c.html(renderForbidden(),403);return c.html(await renderReturnQueue(c,user))})
 app.get('/staff/returns',async c=>{const user=c.get('user');if(!user||!['STAFF','ADMIN'].includes(user.role))return c.html(renderForbidden(),403);return c.html(await renderReturnQueue(c,user))})
-app.get('/staff/orders/:orderId/receive-return',async c=>{const user=c.get('user');if(!user||!['STAFF','ADMIN'].includes(user.role))return c.html(renderForbidden(),403);const order=await getOrderById(c,c.req.param('orderId'));if(!order)return c.text('订单不存在',404);return c.html(renderReturnRegistration(order))})
+app.get('/staff/orders/:orderId/receive-return',async c=>{const user=c.get('user');if(!user||!['STAFF','ADMIN'].includes(user.role))return c.html(renderForbidden(),403);const order=await getOrderById(c,c.req.param('orderId'));if(!order)return c.text('订单不存在',404);return c.html(c.req.query('fragment')==='1'?renderReturnRegistration(order):buildLayout('登记归还',renderReturnRegistration(order),user))})
 app.post('/staff/orders/:orderId/receive-return',async c=>{const user=c.get('user');if(!user||!['STAFF','ADMIN'].includes(user.role))return c.html(renderForbidden(),403);try{await registerOrderReturn(c,user,c.req.param('orderId'));return c.redirect(user.role==='ADMIN'?'/admin/orders/'+c.req.param('orderId'):'/staff/orders/'+c.req.param('orderId'),303)}catch(error){if(error instanceof RosterError)return c.text(error.message,error.status);throw error}})
 
 

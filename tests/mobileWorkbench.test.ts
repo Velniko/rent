@@ -44,7 +44,8 @@ test('mobile workbench: admin sees overview, scan entry and the full admin map',
   // 今日任务入口
   assert.match(html, /class="mq-today-cta" href="\/staff\/mobile\/today"/)
   // 完整后台能力（分组「更多」）
-  for (const label of ['租赁订单', '设备管理', '用户管理', '业务通知', '订单审核']) assert.ok(html.includes(label), `缺少入口：${label}`)
+  for (const label of ['租赁订单', '设备管理', '用户管理', '通知中心', '发布通知', '订单审核']) assert.ok(html.includes(label), `缺少入口：${label}`)
+  assert.match(html, /href="\/notifications\/compose"/)
   assert.match(html, /href="\/admin\/devices"/)
   assert.match(html, /href="\/admin\/users"/)
   assert.match(html, /href="\/admin\/order-review"/)
@@ -81,8 +82,11 @@ function taskDb() {
 test('mobile tabs: only core rental actions, with aria-current on the active tab', async () => {
   const html = await renderStaffMobileOperations({ req: { query: () => '' }, env: { RENT: taskDb() } } as any, staff)
   const nav = html.slice(html.indexOf('<nav class="mobile-bottom-nav"'), html.indexOf('</nav>', html.indexOf('<nav class="mobile-bottom-nav"')))
-  // 仍然是 5 个核心 tab，且不把通知/设置等塞进来
-  assert.equal((nav.match(/<a /g) || []).length, 5)
+  // 扫码已整合进今日订单，底部保留四个核心入口
+  assert.equal((nav.match(/<a /g) || []).length, 4)
+  assert.doesNotMatch(nav, /href="\/staff\/mobile\/scan"/)
+  assert.match(html, /id="open-mobile-scanner"/)
+  assert.match(html, /id="mobile-order-scanner"/)
   assert.doesNotMatch(nav, /通知|设置|客户|合同/)
   // /staff/mobile/today 属于「今日订单」tab：服务端直接输出 aria-current
   assert.match(nav, /<a href="\/staff\/mobile" class="active" aria-current="page">/)

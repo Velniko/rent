@@ -14,7 +14,7 @@ import worker from '../src/index'
 import { createAuthSession, MAINTENANCE_CHECK_TYPES, releaseDeviceIfUnbooked, updateOrderStatus } from '../src/site'
 import { renderAdminDevices } from '../src/pages/admin/devices'
 import { renderAdminDeviceCalendar } from '../src/pages/admin/deviceCalendar'
-import { extractInlineScripts, testInspectionFiles } from './helpers'
+import { testOrderScanCookie, extractInlineScripts, testInspectionFiles } from './helpers'
 
 async function setup(t: any, depositStatus = 'HELD', mode = 'PAID') {
   const sqlite = new DatabaseSync(':memory:')
@@ -37,8 +37,8 @@ async function setup(t: any, depositStatus = 'HELD', mode = 'PAID') {
   }
   const context = { env: { RENT: db,CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret' } } as any
   const session = await createAuthSession(context, 'release-admin')
-  const request = (path: string, form: Record<string, string|File>, method = 'POST') => worker.fetch(new Request(`https://rent.example.test${path}`, {
-    method, body: method === 'GET' ? undefined : (Object.values(form).some(v=>v instanceof File)?Object.entries(form).reduce((body,[key,value])=>{body.set(key,value);return body},new FormData()):new URLSearchParams(form as Record<string,string>)), headers: { Cookie: `session=${session.token}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
+  const request = async (path: string, form: Record<string, string|File>, method = 'POST') => worker.fetch(new Request(`https://rent.example.test${path}`, {
+    method, body: method === 'GET' ? undefined : (Object.values(form).some(v=>v instanceof File)?Object.entries(form).reduce((body,[key,value])=>{body.set(key,value);return body},new FormData()):new URLSearchParams(form as Record<string,string>)), headers: { Cookie: `session=${session.token}${await testOrderScanCookie(sqlite,'release-admin',path,form)}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), context.env, { waitUntil() {} } as any)
   return { sqlite, context, request }
 }

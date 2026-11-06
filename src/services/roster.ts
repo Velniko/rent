@@ -13,7 +13,7 @@ import type { RosterEmployee, RosterTask, RosterShift, RosterGrant, RosterSettin
 export type RosterDraft = {start:string;shifts:RosterShift[];warnings:RosterWarning[];settings?:RosterSettings;employees?:RosterEmployee[];preferenceBaseline?:RosterEmployee[]}
 export type RosterState = {settings:RosterSettings;employees:RosterEmployee[];published:RosterShift[];drafts:Record<string,RosterDraft>;requests:RosterGrant[];overrides:Record<string,string>;assignments:Record<string,string|null>}
 export type RosterData = RosterState & {revision:number;now:string;today:string;instant:string;selectedStart:string;currentEmployeeId:string;actorName:string;business:RosterBusiness;tasks:RosterTask[];logs:any[];preferencePolicy:'rolling30';_previousAssignments?:Record<string,string|null>}
-export class RosterError extends Error { constructor(message:string,public status:400|403|409=400){super(message)} }
+export class RosterError extends Error { constructor(message:string,public status:400|403|404|409|429=400){super(message)} }
 export function rosterClock(date=new Date()) {
   const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Melbourne',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date)
   const get=(type:string)=>parts.find(p=>p.type===type)!.value
@@ -31,8 +31,8 @@ export async function loadRoster(c:Context,user:any,start?:string):Promise<Roste
   const row=await db.prepare('SELECT revision, state_json FROM staff_roster WHERE id = 1').first()
   if(!row)throw new RosterError('排班尚未初始化',409)
   const state:RosterState=JSON.parse(row.state_json),business=pickupTimeSettings(getSystemSettings().rentalRules)
-  const staff=await db.prepare("SELECT id,name FROM users WHERE role = 'STAFF' AND status = 'active' AND deleted_at IS NULL ORDER BY name,id").all()
-  state.employees=(staff.results||[]).map((u:any)=>({...{dailyHours:null,enabled:true,preferredStart:'',preferredEnd:'',unavailableDates:[]},...state.employees.find(e=>e.id===u.id),id:u.id,name:u.name}))
+  const staff=await db.prepare("SELECT id,name,role FROM users WHERE role IN ('STAFF','ADMIN') AND status = 'active' AND deleted_at IS NULL ORDER BY name,id").all()
+  state.employees=(staff.results||[]).map((u:any)=>({...{dailyHours:null,enabled:true,preferredStart:'',preferredEnd:'',unavailableDates:[]},...state.employees.find(e=>e.id===u.id),id:u.id,name:u.name,role:u.role}))
   const enabledIds=new Set(state.employees.map(e=>e.id));state.published=state.published.filter(s=>enabledIds.has(s.employeeId))
   const from=[clock.today,rosterAddDays(selectedStart,-6)].sort()[0],until=[rosterAddDays(clock.today,6),rosterAddDays(selectedStart,6)].sort().at(-1)!
   const result=await db.prepare(`SELECT o.id,o.orderNo,o.status,o.startDate,o.endDate,o.startPeriod,o.endPeriod,o.pickupTimeSlot,o.returnTimeSlot,o.return_received_at,o.overdue_outstanding_amount,d.name AS deviceName,u.name AS customer
@@ -56,6 +56,9 @@ export async function loadRoster(c:Context,user:any,start?:string):Promise<Roste
   return {...state,...clock,revision:Number(row.revision),selectedStart,currentEmployeeId:user.id,actorName:user.name,business,tasks:visibleTasks,logs,preferencePolicy:'rolling30'}
 }
 function storedState(data:RosterData):RosterState { const {settings,employees,published,drafts,requests,overrides,assignments}=data;return {settings,employees,published,drafts,requests,overrides,assignments} }
+export function rosterTaskVisibleTo(data:RosterData,user:any,task:RosterTask):boolean {
+  return user.role==='ADMIN'||task.employeeId===user.id||data.requests.some(request=>request.employeeId===user.id&&request.taskId===task.id&&request.status==='APPROVED'&&request.day===data.today&&`${request.day}T${request.end}`>data.now)
+}
 export function rosterClientData(data:RosterData,user:any) {
   if(user.role==='ADMIN')return data
   const taskIds=new Set(data.tasks.filter(t=>t.day===data.today).map(t=>t.id))

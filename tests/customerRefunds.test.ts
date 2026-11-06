@@ -4,6 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import test from 'node:test'
+import { testOrderScanCookie } from './helpers'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { URL } from 'node:url'
@@ -43,9 +44,9 @@ async function setup(t: any, method = 'card', authorization = false) {
   await saveStripeConfig({ env } as any, { publishableKey: 'pk_test_refund', secretKey: 'sk_test_refund', webhookSecret: 'whsec_refund' })
   const sessions = new Map<string, string>()
   for (const id of ['customer', 'other', 'admin', 'staff']) sessions.set(id, (await createAuthSession({ env } as any, id)).token)
-  const request = (path: string, actor = 'customer', form?: Record<string, string>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
+  const request = async (path: string, actor = 'customer', form?: Record<string, string>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
     method: form ? 'POST' : 'GET', body: form ? new URLSearchParams(form) : undefined,
-    headers: { Cookie: `session=${sessions.get(actor)}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
+    headers: { Cookie: `session=${sessions.get(actor)}${await testOrderScanCookie(sqlite,actor,path,form)}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), env, { waitUntil() {} } as any)
   const refunds: any[] = []
   let posts = 0, loseResponse = false, remoteStatus = 'succeeded', captures = 0, releases = 0

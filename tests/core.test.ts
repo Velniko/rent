@@ -26,7 +26,7 @@ import { renderAdminOrderReview } from '../src/pages/admin/orderReview'
 import { renderAdminOrders } from '../src/pages/admin/orders'
 import { renderStaffContracts } from '../src/pages/staff/contracts'
 import { renderStaffMobileOperations } from '../src/pages/staff/mobileOperations'
-import { renderStaffMobileScan } from '../src/pages/staff/mobileScan'
+import { renderMobileOrderScanner } from '../src/pages/staff/mobileScan'
 import { buildPickupQrPayload, parsePickupQrPayload } from '../src/lib/pickupQr'
 import { renderStaffCustomerDetail } from '../src/pages/staff/customerDetail'
 import { renderStaffOrdersOngoing } from '../src/pages/staff/ordersPending'
@@ -227,7 +227,7 @@ test('staff and admin mobile navigation keeps only core rental operations', () =
     assert.match(mobileNav, /href="\/staff\/mobile"[^>]*>.*今日订单/s)
     assert.match(mobileNav, /href="\/staff\/mobile\/pickup"[^>]*>.*取货/s)
     assert.match(mobileNav, /href="\/staff\/mobile\/return"[^>]*>.*归还/s)
-    assert.match(mobileNav, /href="\/staff\/mobile\/scan"[^>]*>.*扫码/s)
+    assert.doesNotMatch(mobileNav, /href="\/staff\/mobile\/scan"/)
     assert.match(mobileNav, /href="\/staff\/inspections"[^>]*>.*验机/s)
     assert.doesNotMatch(mobileNav, /通知|设置|客户|合同/)
     assert.match(html, /class="sidebar sidebar--desktop"/)
@@ -245,21 +245,24 @@ test('staff and admin mobile navigation keeps only core rental operations', () =
   assert.match(customerMobileNav, /href="\/customer\/profile"[^>]*>.*我的/s)
 })
 
-test('mobile staff operations page renders scheduled tasks with separate return and inspection actions', async () => {
+test('mobile staff operations page renders scheduled tasks with separate return and inspection actions', async t => {
+  t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-06T00:00:00Z')})
   invalidateSystemSettingsCache()
   const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Melbourne',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
   const state={settings:{dailyHours:8,maxDays:5,maxConsecutive:5,minStaff:1},employees:[],published:[{id:'s',employeeId:'staff-1',day:today,start:'09:00',end:'20:00'}],drafts:{},requests:[],overrides:{},assignments:{}}
   const db={prepare(sql:string){return {bind(){return this},async first(){return sql.includes('staff_roster')?{revision:0,state_json:JSON.stringify(state)}:null},async all(){return {results:sql.includes('FROM users')?[{id:'staff-1',name:'Staff'}]:sql.includes('FROM orders')?[{id:'pickup-1',orderNo:'OD-PICKUP',status:'pending_pickup',customer:'张三',deviceName:'Laptop A',startDate:today,endDate:today,pickupTimeSlot:'10:00'},{id:'return-1',orderNo:'OD-RETURN',status:'active',customer:'李四',deviceName:'Laptop B',startDate:today,endDate:today,returnTimeSlot:'14:00'}]:[]}}}}}
   const html=await renderStaffMobileOperations({req:{query:()=>''},env:{RENT:db}} as any,{id:'staff-1',name:'Staff',role:'STAFF'})
-  assert.match(html,/今日取还任务/);assert.match(html,/OD-PICKUP/);assert.match(html,/OD-RETURN/);assert.match(html,/name="q"/);assert.match(html,/data-workspace-modal/);assert.doesNotMatch(html,/去验机/)
+  assert.match(html,/今日订单/);assert.match(html,/OD-PICKUP/);assert.match(html,/OD-RETURN/);assert.match(html,/name="q"/);assert.match(html,/扫码归还/);assert.doesNotMatch(html,/去验机/)
 })
 
 test('mobile scan page uses the camera and routes pickup QR payloads', () => {
-  const html = renderStaffMobileScan({} as any, { id: 'staff-1', name: 'Staff', role: 'STAFF' })
-  assert.match(html, /<title>扫码作业 - 电脑租赁管理系统<\/title>/)
+  const html = renderMobileOrderScanner()
+  assert.match(html, /<dialog[^>]+id="mobile-order-scanner"/)
   assert.match(html, /getUserMedia/)
   assert.match(html, /Html5Qrcode/)
-  assert.match(html, /\/staff\/mobile\/scan\?code=/)
+  assert.match(html, /\/staff\/mobile\/scan\/verify/)
+  assert.match(html, /6 位取还校验码/)
+  assert.doesNotMatch(html, /输入订单号或后 6 位/)
   assertInlineScriptsParse(html)
   const payload = buildPickupQrPayload('o-abc_123')
   assert.equal(parsePickupQrPayload(payload), 'o-abc_123')
@@ -267,7 +270,7 @@ test('mobile scan page uses the camera and routes pickup QR payloads', () => {
   assert.equal(directUrl, 'https://rent.example.test/pickup/o-abc_123')
   assert.equal(parsePickupQrPayload(directUrl), 'o-abc_123')
   assert.equal(parsePickupQrPayload('not-a-rental-code'), '')
-  const retryHtml = renderStaffMobileScan({} as any, { id: 'staff-1', name: 'Staff', role: 'STAFF' }, '请核实输入信息是否正确')
+  const retryHtml = renderMobileOrderScanner('', '请核实输入信息是否正确')
   assert.match(retryHtml, /请核实输入信息是否正确/)
   assert.match(retryHtml, />继续扫码</)
 })

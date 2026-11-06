@@ -8,7 +8,7 @@ import { buildLayout, sanitizePlainText } from '../../site'
 export function renderAdminNotificationSettings(user: any, settings: any, message = '', type: 'success' | 'error' = 'success'): string {
     const delivery = ['in_app_only', 'email_only'].includes(settings?.defaultDelivery) ? settings.defaultDelivery : 'in_app_email'
     const alert = message ? `<div data-flash-notice class="page-notification page-notification--${type}">${sanitizePlainText(message, 300)}</div>` : ''
-    const body = `<div class="page-header"><div><p class="section-code">COMMUNICATION / NOTIFICATIONS</p><h2>通知设置</h2></div><a class="button button-secondary" href="/admin/notifications">返回通知管理</a></div>
+    const body = `<div class="page-header"><div><p class="section-code">COMMUNICATION / NOTIFICATIONS</p><h2>通知设置</h2></div><a class="button button-secondary" href="/notifications">返回通知中心</a></div>
     ${alert}
     <section class="panel"><div class="section-title"><h3>默认通知发送方式</h3></div>
       <form method="post" action="/admin/notifications/settings">

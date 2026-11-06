@@ -4,13 +4,14 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import {getOrderVerificationCode,generateOrderVerificationCode} from '../src/services/orderVerificationCodes'
 import {URL} from 'node:url'
 import {DatabaseSync} from 'node:sqlite'
 import {readFileSync,readdirSync} from 'node:fs'
 import worker from '../src/index'
 import {createAuthSession,invalidateSystemSettingsCache} from '../src/site'
 import {loadRoster,mutateRoster,rosterPermission,rosterClientData,rosterClock} from '../src/services/roster'
-import {extractInlineScripts} from './helpers'
+import { testOrderScanCookie,extractInlineScripts} from './helpers'
 
 async function setup(t:any) {
  t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-06T00:00:00Z')})
@@ -25,9 +26,10 @@ async function setup(t:any) {
  const c={env,req:{url:'https://rent.test/admin/roster',query(){return undefined},header(){return undefined}},get(){return null}} as any
  const actors:any={admin:{id:'admin',name:'管理员',role:'ADMIN'},a:{id:'a',name:'员工 A',role:'STAFF'},b:{id:'b',name:'员工 B',role:'STAFF'},c:{id:'c',name:'客户',role:'CUSTOMER'}}
  const sessions:any={};for(const id of Object.keys(actors))sessions[id]=(await createAuthSession(c,id)).token
- const request=(path:string,id='admin',body?:any,json=false)=>worker.fetch(new Request('https://rent.test'+path,{method:body?'POST':'GET',body:body?(json?JSON.stringify(body):body instanceof FormData?body:new URLSearchParams(body)):undefined,headers:{Cookie:'session='+sessions[id],Origin:'https://rent.test','Sec-Fetch-Site':'same-origin',...(json?{'Content-Type':'application/json','Accept':'application/json'}:{})}}),env,ctx)
+ const request=async(path:string,id='admin',body?:any,json=false)=>worker.fetch(new Request('https://rent.test'+path,{method:body?'POST':'GET',body:body?(json?JSON.stringify(body):body instanceof FormData?body:new URLSearchParams(body)):undefined,headers:{Cookie:'session='+sessions[id]+await testOrderScanCookie(sql,id,path,body),Origin:'https://rent.test','Sec-Fetch-Site':'same-origin',...(json?{'Content-Type':'application/json','Accept':'application/json'}:{})}}),env,ctx)
  const state=JSON.parse(String(sql.prepare('SELECT state_json FROM staff_roster').get()!.state_json));state.published=[{id:'shift-a',employeeId:'a',day:'2026-11-06',start:'09:00',end:'17:00'}];sql.prepare('UPDATE staff_roster SET state_json=?').run(JSON.stringify(state))
- return {sql,db,c,actors,request,objects,env}
+ const rawRequest=(path:string,id='a',body?:any,pass='',json=true)=>worker.fetch(new Request('https://rent.test'+path,{method:body?'POST':'GET',body:body?(json?JSON.stringify(body):new URLSearchParams(body)):undefined,headers:{Cookie:'session='+sessions[id]+(pass?'; '+pass:''),Origin:'https://rent.test','Sec-Fetch-Site':'same-origin',...(body?{'Content-Type':json?'application/json':'application/x-www-form-urlencoded'}:{})}}),env,ctx)
+ return {sql,db,c,actors,request,rawRequest,objects,env,sessions}
 }
 test('real worker roster pages render without demo state, script syntax is valid, staff receives only own schedules',async t=>{
  const {request,c,actors}=await setup(t)
@@ -92,6 +94,71 @@ test('auto drafts use real employees, publish atomically, and never schedule unb
 test('roster clock uses Melbourne date at UTC midnight and DST transitions',()=>{
  assert.equal(rosterClock(new Date('2026-11-05T14:30Z')).now,'2026-11-06T01:30')
  assert.equal(rosterClock(new Date('2026-10-03T16:30Z')).now,'2026-10-04T03:30')
+})
+
+test('active administrators can be scheduled manually, automatically and receive assigned tasks', async t => {
+ const {c,actors,sql}=await setup(t)
+ sql.exec("INSERT INTO users(id,name,email,role,status) VALUES ('inactive-admin','停用管理员','inactive@roster.test','ADMIN','inactive'),('deleted-admin','已删除管理员','deleted@roster.test','ADMIN','active'); UPDATE users SET deleted_at=CURRENT_TIMESTAMP WHERE id='deleted-admin'")
+ let data=await loadRoster(c,actors.admin)
+ assert.equal(data.employees.find(employee=>employee.id==='admin')?.role,'ADMIN')
+ assert.ok(data.employees.find(employee=>employee.id==='admin')?.enabled)
+ assert.ok(!data.employees.some(employee=>['c','inactive-admin','deleted-admin'].includes(employee.id)))
+ data=await mutateRoster(c,actors.admin,{operation:'shift',revision:data.revision,employeeId:'admin',day:data.today,start:'09:00',end:'17:00',locked:true})
+ assert.ok(data.drafts[data.today].shifts.some(shift=>shift.employeeId==='admin'))
+ data=await mutateRoster(c,actors.admin,{operation:'auto',revision:data.revision,start:data.today,dailyHours:11,minStaff:1,maxDays:7,maxConsecutive:7,employees:data.employees.map(employee=>({...employee,enabled:employee.id==='admin'}))})
+ assert.ok(data.drafts[data.today].shifts.length>0)
+ assert.ok(data.drafts[data.today].shifts.every(shift=>shift.employeeId==='admin'))
+ data=await mutateRoster(c,actors.admin,{operation:'publish',revision:data.revision})
+ assert.equal(data.tasks.find(task=>task.orderId==='o')?.employeeId,'admin')
+ assert.ok(data.published.some(shift=>shift.employeeId==='admin'))
+ assert.ok((await rosterPermission(c,actors.admin,'o','return')).allowed)
+})
+
+test('mobile orders embeds scanning, rejects GET code lookup and does not accept raw order IDs', async t => {
+ const {request,sql,rawRequest}=await setup(t)
+ sql.exec("UPDATE orders SET id='scan-order' WHERE id='o'")
+ const inbox=await request('/staff/mobile','a');assert.equal(inbox.status,200)
+ assert.match(inbox.headers.get('Permissions-Policy')||'',/camera=\(self\)/)
+ const html=await inbox.text();assert.match(html,/<h1>今日订单<\/h1>/);assert.match(html,/id="open-mobile-scanner"/);assert.match(html,/6 位取还校验码/)
+ for(const script of extractInlineScripts(html))new Function(script)
+ assert.equal((await request('/staff/mobile/scan','a')).headers.get('location'),'/staff/mobile#scan')
+ for(const code of ['scan-order','OD-20261106-ROSTER','ROSTER','RENT-PICKUP:scan-order'])assert.equal((await rawRequest('/staff/mobile/scan?code='+encodeURIComponent(code))).status,403)
+ assert.equal((await rawRequest('/staff/mobile/scan/verify','a',{source:'camera',code:'scan-order'})).status,400)
+})
+
+test('scan verification needs manual confirmation, is bound to actor and order, and is consumed once',async t=>{
+ const {sql,rawRequest}=await setup(t);sql.exec("UPDATE orders SET id='scan-order' WHERE id='o'")
+ assert.equal((await rawRequest('/staff/orders/scan-order/receive-return','a',{received:'1'},'',false)).status,403)
+ const verified=await rawRequest('/staff/mobile/scan/verify','a',{source:'camera',code:'https://rent.test/pickup/scan-order'})
+ assert.equal(verified.status,200,await verified.clone().text());const data=await verified.json() as any
+ assert.equal(data.stage,'return');assert.equal(sql.prepare("SELECT status FROM orders WHERE id='scan-order'").get()!.status,'active')
+ const pass=verified.headers.get('set-cookie')!.split(';')[0]
+ assert.equal((await rawRequest('/staff/orders/scan-order/receive-return','a',{received:'1'},pass,false)).status,403)
+ assert.equal((await rawRequest('/staff/mobile/scan/confirm','a',{orderId:'wrong-order',stage:'return'},pass)).status,403)
+ assert.equal((await rawRequest('/staff/mobile/scan/confirm','b',{orderId:'scan-order',stage:'return'},pass)).status,403)
+ const confirmed=await rawRequest('/staff/mobile/scan/confirm','a',{orderId:'scan-order',stage:'return'},pass)
+ assert.equal(confirmed.status,200);assert.equal((await confirmed.json() as any).next,'/staff/orders/scan-order')
+ assert.equal(sql.prepare("SELECT status FROM orders WHERE id='scan-order'").get()!.status,'pending_return')
+ assert.equal((await rawRequest('/staff/orders/scan-order/receive-return','a',{received:'1'},pass,false)).status,403)
+ assert.equal(sql.prepare("SELECT status FROM orders WHERE id='scan-order'").get()!.status,'pending_return')
+ assert.equal((await rawRequest('/staff/orders/scan-order/receive-return','a',{received:'1'},pass,false)).status,403)
+ for(const action of ['ORDER_QR_SCANNED','ORDER_QR_CONFIRMED','ORDER_SCAN_OPERATION_COMPLETED','ORDER_SCAN_OPERATION_BLOCKED'])assert.ok(sql.prepare("SELECT id FROM audit_logs WHERE target_type='ORDER' AND target_id='scan-order' AND action=?").get(action),action)
+})
+
+test('random verification codes display uppercase, accept lowercase and expire with the confirmation session',async t=>{
+ const {sql,rawRequest,c}=await setup(t);sql.exec("UPDATE orders SET id='scan-order' WHERE id='o'; INSERT INTO order_verification_codes(order_id,verification_code) VALUES ('scan-order','A7K2P9')")
+ assert.equal(await getOrderVerificationCode(c,'scan-order'),'A7K2P9')
+ for(let i=0;i<30;i++)assert.match(generateOrderVerificationCode(),/^[A-Z0-9]{6}$/)
+ const verified=await rawRequest('/staff/mobile/scan/verify','a',{source:'code',code:'a7k2p9'});assert.equal(verified.status,200)
+ const pass=verified.headers.get('set-cookie')!.split(';')[0]
+ assert.ok(sql.prepare("SELECT id FROM audit_logs WHERE target_type='ORDER' AND target_id='scan-order' AND action='ORDER_CODE_VERIFIED'").get())
+ assert.ok(!String(sql.prepare("SELECT after_json FROM audit_logs WHERE action='ORDER_CODE_VERIFIED'").get()!.after_json).includes('A7K2P9'))
+ t.mock.timers.setTime(new Date('2026-11-06T00:31:00Z').getTime())
+ assert.equal((await rawRequest('/staff/mobile/scan/confirm','a',{orderId:'scan-order',stage:'return'},pass)).status,403)
+ assert.equal((await rawRequest('/staff/mobile/scan/verify','a',{source:'code',code:'ROSTER'})).status,400)
+ const admin=await rawRequest('/admin/orders/scan-order/update','admin',{status:'completed',force:'1',reason:'测试强制完成',deviceConfirmed:'1'},'',false)
+ assert.equal(admin.status,403)
+ assert.equal(sql.prepare("SELECT status FROM orders WHERE id='scan-order'").get()!.status,'active')
 })
 
 test('a complete return inspection stores five encrypted R2 photos and separate order activity',async t=>{

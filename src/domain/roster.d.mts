@@ -3,7 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
-export interface RosterEmployee {id:string;name:string;dailyHours:number|null;enabled:boolean;preferredStart:string;preferredEnd:string;unavailableDates:string[];weekdays?:number[];weeklyHours?:number;maxDays?:number;lastSelfPreferenceChange?:string|null;preferenceUpdatedBy?:string;preferenceUpdatedAt?:string}
+export interface RosterEmployee {id:string;name:string;role?:'ADMIN'|'STAFF';dailyHours:number|null;enabled:boolean;preferredStart:string;preferredEnd:string;unavailableDates:string[];weekdays?:number[];weeklyHours?:number;maxDays?:number;lastSelfPreferenceChange?:string|null;preferenceUpdatedBy?:string;preferenceUpdatedAt?:string}
 export interface RosterShift {id:string;employeeId:string;day:string;start:string;end:string;service?:boolean;locked?:boolean}
 export interface RosterTask {id:string;orderId:string;orderNo:string;deviceName:string;customer:string;kind:'pickup'|'return';day:string;start:string;end:string;employeeId?:string|null;assignmentReason?:string;service?:boolean;received?:boolean;collection?:boolean;ambiguous?:boolean}
 export interface RosterGrant {id:string;employeeId:string;day:string;start:string;end:string;scope:'task';taskId:string;reason:string;status:'PENDING'|'APPROVED'|'REJECTED'|'REVOKED';requestedAt:string;reviewedBy?:string;reviewedAt?:string;reviewReason?:string}

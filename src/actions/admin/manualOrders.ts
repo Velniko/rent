@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid'
 import { getOrderById, getUserById, getDeviceById, hasDeviceBookingConflict, getDeviceRentalRules, recordDeviceLifecycle, releaseDeviceIfUnbooked, createAuditLog } from '../../site'
 import { insertManualOrder, updateManualOrder } from '../../db/repositories'
 import { canEditManualOrder, parseManualOrder } from '../../domain/manualOrders'
+import { hasReturnScan } from '../../services/orderScanning'
 import { renderAdminManualOrder } from '../../pages/admin/manualOrder'
 
 export async function saveAdminManualOrder(c: Context, orderId?: string) {
@@ -21,6 +22,7 @@ export async function saveAdminManualOrder(c: Context, orderId?: string) {
   const parsed = parseManualOrder(order ? form : { ...form, status: 'active' }, order?.status)
   if (parsed.error) return fail(parsed.error)
   const data = parsed.data!
+  if(order&&data.status!==order.status&&['completed','pending_return'].includes(data.status)&&(!order.return_received_at||data.deviceId!==order.deviceId||data.userId!==(order.userId||null)||!await hasReturnScan(c,order)))return fail('请先扫码并确认归还',409)
   const device = await getDeviceById(c, data.deviceId)
   if (!device) return fail('所选设备不存在')
   if (data.userId) {
