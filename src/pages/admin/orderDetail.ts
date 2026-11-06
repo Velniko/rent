@@ -30,9 +30,9 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
     return buildLayout('订单详情 - 电脑租赁管理系统', '<div class="panel"><h2>订单未找到</h2><p>您请求的订单不存在。</p></div>', user);
   }
   if (order.is_manual === 1) return renderAdminManualOrder(c, user, order)
-  const deliveryBookings = await getDeliveryBookingsForOrder(c, order.id)
 
-  const [customer, device, existingContract, completedRefund, depositRefundSummary, pendingPriceRefundSummary, transferProof, statusHistory, depositSettlement, changeHistory, swapDevices] = await Promise.all([
+  const [deliveryBookings, customer, device, existingContract, completedRefund, depositRefundSummary, pendingPriceRefundSummary, transferProof, statusHistory, depositSettlement, changeHistory, swapDevices] = await Promise.all([
+    getDeliveryBookingsForOrder(c, order.id),
     getUserById(c, order.userId), getDeviceById(c, order.deviceId), getContractByOrderId(c, order.id),
     c.env.RENT.prepare("SELECT type, status, refundable_amount, refund_amount, refunded_processing_fee, deduction_amount, deduction_reason, refund_method, refund_bsb, refund_account_number, refund_account_name FROM payment_refunds WHERE order_id = ? ORDER BY created_at DESC LIMIT 1").bind(order.id).first(),
     c.env.RENT.prepare("SELECT COALESCE(SUM(refund_amount), 0) AS refunded_amount FROM payment_refunds WHERE order_id = ? AND type = 'deposit' AND status = 'succeeded'").bind(order.id).first(),
@@ -47,21 +47,23 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   if (risk?.blocked) return buildLayout('订单风控限制 - 电脑租赁管理系统', `<div class="panel"><h2>订单存在风控限制</h2><p>客户风险分 ${risk.score}/100，当前不能创建合同。请先完成风控处理后再继续。</p></div>`, user)
   const contract = existingContract || (order.status === 'approved' ? await ensureContractForOrder(c, order, user.id) : null)
   const preRentalPending = !['cancelled', 'completed'].includes(String(order.status)) && !order.handover_completed_at
-  const preInspection = preRentalPending
-    ? await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
-    : null
+  const [preInspection, returnInspection, reconciliation, paymentSources, refundRows] = await Promise.all([
+    preRentalPending
+      ? c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+      : Promise.resolve(null),
+    order.return_received_at
+      ? c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+      : Promise.resolve(null),
+    reconcileOrderPayments(c, order.id),
+    c.env.RENT.prepare("SELECT id, payment_method, payment_provider, amount, status, processing_fee, stripe_payment_intent_id FROM payments WHERE rental_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
+    c.env.RENT.prepare("SELECT id, payment_id, type, refund_amount, refund_method, status, created_at FROM payment_refunds WHERE order_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
+  ]);
   let preInspectionSnapshot: Record<string, any> = {}
   try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
   const preInspectionAction = !preRentalPending ? '' : isPreInspectionComplete(preInspectionSnapshot)
     ? `<a class="button button-secondary" href="/inspection/view/${preInspection.id}">查看验机报告</a>`
     : `<a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写出租前验机</a>`
-  const returnInspection = order.return_received_at ? await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any : null
   const returnInspectionAction = returnInspection ? `<a class="button button-secondary" href="/inspection/view/${returnInspection.id}">查看归还验机报告</a>` : ''
-  const [reconciliation, paymentSources, refundRows] = await Promise.all([
-    reconcileOrderPayments(c, order.id),
-    c.env.RENT.prepare("SELECT id, payment_method, payment_provider, amount, status, processing_fee, stripe_payment_intent_id FROM payments WHERE rental_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
-    c.env.RENT.prepare("SELECT id, payment_id, type, refund_amount, refund_method, status, created_at FROM payment_refunds WHERE order_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
-  ]);
   const canModifyOrder = !['completed', 'cancelled'].includes(String(order.status));
   const paymentMethodLabels: Record<string, string> = {
     card: '信用卡（Stripe）', stripe: '信用卡（Stripe）', cash: '现金', bank_transfer: '银行转账',

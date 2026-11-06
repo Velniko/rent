@@ -23,20 +23,22 @@ export async function saveAdminManualOrder(c: Context, orderId?: string) {
   if (parsed.error) return fail(parsed.error)
   const data = parsed.data!
   if(order&&data.status!==order.status&&['completed','pending_return'].includes(data.status)&&(!order.return_received_at||data.deviceId!==order.deviceId||data.userId!==(order.userId||null)||!await hasReturnScan(c,order)))return fail('请先扫码并确认归还',409)
-  const device = await getDeviceById(c, data.deviceId)
+  const [device, customer] = await Promise.all([
+    getDeviceById(c, data.deviceId),
+    data.userId ? getUserById(c, data.userId) : Promise.resolve(null),
+  ])
   if (!device) return fail('所选设备不存在')
-  if (data.userId) {
-    const customer = await getUserById(c, data.userId)
-    if (!customer || customer.role !== 'CUSTOMER' || customer.status === 'inactive' || customer.deletedAt) return fail('请选择有效的客户账户')
-  }
+  if (data.userId && (!customer || customer.role !== 'CUSTOMER' || customer.status === 'inactive' || customer.deletedAt)) return fail('请选择有效的客户账户')
   const closing = ['completed', 'cancelled'].includes(data.status)
   if (!closing) {
     if (data.deviceId !== order?.deviceId && device.status !== 'available') return fail('所选设备当前不可租用', 409)
     const rules = await getDeviceRentalRules(c, data.deviceId)
-    const conflict = data.startDate && data.endDate
-      ? await hasDeviceBookingConflict(c, data.deviceId, data.startDate, data.endDate, order?.id, rules.bufferDays)
-      : Boolean(await c.env.RENT.prepare("SELECT id FROM orders WHERE deviceId = ? AND id != ? AND status NOT IN ('completed', 'cancelled') LIMIT 1").bind(data.deviceId, order?.id || '').first())
-    const undated = await c.env.RENT.prepare("SELECT id FROM orders WHERE deviceId = ? AND id != ? AND is_manual = 1 AND status NOT IN ('completed', 'cancelled') AND (startDate IS NULL OR endDate IS NULL) LIMIT 1").bind(data.deviceId, order?.id || '').first()
+    const [conflict, undated] = await Promise.all([
+      data.startDate && data.endDate
+        ? hasDeviceBookingConflict(c, data.deviceId, data.startDate, data.endDate, order?.id, rules.bufferDays)
+        : c.env.RENT.prepare("SELECT id FROM orders WHERE deviceId = ? AND id != ? AND status NOT IN ('completed', 'cancelled') LIMIT 1").bind(data.deviceId, order?.id || '').first().then(Boolean),
+      c.env.RENT.prepare("SELECT id FROM orders WHERE deviceId = ? AND id != ? AND is_manual = 1 AND status NOT IN ('completed', 'cancelled') AND (startDate IS NULL OR endDate IS NULL) LIMIT 1").bind(data.deviceId, order?.id || '').first(),
+    ])
     if (conflict || undated) return fail('所选设备存在未结束的订单或租期冲突', 409)
   }
   const id = order?.id || `o-${nanoid(12)}`
