@@ -1409,7 +1409,7 @@ app.get('/customer/dashboard', async (c) => {
   const [orders, devices, account] = await Promise.all([getOrdersForUser(c, user.id), getDevicesAsync(c), c.env.RENT.prepare('SELECT balance FROM users WHERE id = ?').bind(user.id).first()])
   const dashboardUser = { ...user, balance: Number((account as any)?.balance ?? user.balance ?? 0) }
   await ensureNotificationsTable(c)
-  const announcementPageSize = 10
+  const announcementPageSize = 3
   const announcementPageCount = Math.max(1, Math.ceil(Number(((await c.env.RENT.prepare("SELECT COUNT(*) AS count FROM notifications WHERE recipient_id = ? AND type = 'announcement' AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)").bind(user.id).first()) as any)?.count || 0) / announcementPageSize))
   const requestedAnnouncementPage = Math.max(1, Number(c.req.query('announcementPage') || 1) || 1)
   const announcementPage = Math.min(requestedAnnouncementPage, announcementPageCount)

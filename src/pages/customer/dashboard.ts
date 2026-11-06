@@ -4,9 +4,9 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { clientPathEnabled, normalizeClientAccess } from '../../clientAccess'
-import { buildLayout, formatCurrency, formatDate, sanitizePlainText } from '../../site';
+import { buildLayout, formatCurrency, formatDate, formatMelbourneDateTime, sanitizePlainText } from '../../site';
 import { escapeHtml } from '../../lib/html';
-import { renderAnnouncementTitle, renderAnnouncementMessage } from '../../domain/announcement';
+import { renderAnnouncementTitle } from '../../domain/announcement';
 
 export function renderCustomerDashboard(user: any, allOrders: any[], devices: any[], announcementData: { items: any[], page: number, pageCount: number } = { items: [], page: 1, pageCount: 1 }) {
   const announcements = announcementData.items || []
@@ -52,6 +52,17 @@ export function renderCustomerDashboard(user: any, allOrders: any[], devices: an
     <div class="hero">
       <h2>欢迎回来，${sanitizePlainText(user.name, 80)}</h2>
     </div>
+    <section class="panel customer-notices" aria-labelledby="customer-notices-title">
+      <div class="customer-notices__heading">
+        <span class="customer-notices__icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m15 4-8 4H4v8h3l8 4V4Z"/><path d="M7 16v4h3M18 8a6 6 0 0 1 0 8M21 5a10 10 0 0 1 0 14"/></svg></span>
+        <h3 id="customer-notices-title">通告</h3>
+      </div>
+      ${announcements.length ? `<div class="customer-notices__list">${announcements.map(item => `<a class="customer-notices__item" href="/notifications/${encodeURIComponent(item.id)}">
+        <div class="customer-notices__content"><strong>${renderAnnouncementTitle(item)}</strong><div class="customer-notices__preview"><span class="legal-lang" data-lang="zh" data-i18n-ignore>${sanitizePlainText(item.message, 180)}</span><span class="legal-lang" data-lang="en" data-i18n-ignore hidden>${sanitizePlainText(item.message_en || item.message, 180)}</span></div></div>
+        <span class="customer-notices__date">${sanitizePlainText(formatMelbourneDateTime(item.created_at), 80)}</span>
+        <svg class="customer-notices__arrow" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+      </a>`).join('')}</div>${announcementData.pageCount > 1 ? `<nav class="customer-notices__pagination" aria-label="通告分页">${announcementData.page > 1 ? `<a class="button button-sm button-secondary" href="/customer/dashboard?announcementPage=${announcementData.page - 1}#customer-notices-title">上一页</a>` : ''}<span class="mono">${announcementData.page} / ${announcementData.pageCount}</span>${announcementData.page < announcementData.pageCount ? `<a class="button button-sm button-secondary" href="/customer/dashboard?announcementPage=${announcementData.page + 1}#customer-notices-title">下一页</a>` : ''}</nav>` : ''}` : '<p class="customer-notices__empty">暂无通告</p>'}
+    </section>
     ${negativeBalance ? `<div class="page-notification page-notification--error"><strong>账户余额为负：${formatCurrency(user.balance)}</strong><p>请充值至非负余额，否则无法提交新订单。</p>${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/customer/balance/top-up','console') ? `<a class="button button-sm button-primary" href="/customer/balance/top-up">立即充值</a>` : ''}</div>` : ''}
     <section class="summary" aria-label="账户摘要">
       <div class="summary__lead">
@@ -82,7 +93,7 @@ export function renderCustomerDashboard(user: any, allOrders: any[], devices: an
       <div class="attention__head"><h3 id="customer-attention-title">需要你处理</h3><span>共 ${todo.length} 项</span></div>
       <ol>${todo.map(item => `<li><a href="${item.href}"><span class="attention__title">${escapeHtml(item.title)}</span><span class="attention__meta ${item.tone === 'alert' ? 'is-alert' : 'is-warn'}">${escapeHtml(item.meta)} ›</span></a></li>`).join('')}</ol>
     </section>` : ''}
-    <div class="grid grid-3">
+    <div class="customer-dashboard-actions">
       <div class="card quick-actions">
         <div class="quick-actions__heading"><div><h3>快捷操作</h3></div></div>
         <div class="quick-actions__list">
@@ -91,10 +102,6 @@ export function renderCustomerDashboard(user: any, allOrders: any[], devices: an
           <a class="quick-action" href="/customer/profile"><span class="quick-action__icon">◎</span><span><strong>完善账户信息</strong><small>更新资料与联系方式</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>
           ${clientPathEnabled(user.clientAccess || normalizeClientAccess(null),'/feedback','console') ? `<a class="quick-action" href="/feedback"><span class="quick-action__icon">♥</span><span><strong>填写客户反馈</strong><small>完成问卷领取奖励</small></span><b aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></b></a>` : ''}
         </div>
-      </div>
-      <div class="card dashboard-announcements">
-        <div class="section-title"><h3>历史通告</h3><a class="link-button" href="/notifications">通知中心 →</a></div>
-        ${announcements.length ? `<div class="notification-list">${announcements.map(item => `<a class="dashboard-announcement" href="/notifications/${encodeURIComponent(item.id)}"><strong>${renderAnnouncementTitle(item)}</strong><span>${sanitizePlainText(item.created_at, 40)}</span><div class="announcement-preview">${renderAnnouncementMessage({ ...item, message: sanitizePlainText(item.message, 300), message_en: sanitizePlainText(item.message_en || item.message, 300) })}</div></a>`).join('')}</div>${announcementData.pageCount > 1 ? `<nav class="pagination" aria-label="历史通告分页">${Array.from({ length: announcementData.pageCount }, (_, index) => `<a class="button button-sm ${index + 1 === announcementData.page ? 'button-primary' : 'button-secondary'}" href="/customer/dashboard?announcementPage=${index + 1}">${index + 1}</a>`).join('')}</nav>` : ''}` : '<p class="empty-state">暂无通告</p>'}
       </div>
     </div>
     <div class="panel" style="margin-top: 20px;">

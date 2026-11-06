@@ -1839,7 +1839,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
       }).join('')
     : `<a href="/login"><span class="nav-icon">${navIconSvg('↗')}</span><small>登录</small></a><a href="/register"><span class="nav-icon">${navIconSvg('+')}</span><small>注册</small></a>`
   const mobileLabel = currentUser?.role === 'ADMIN' ? '管理端' : currentUser?.role === 'STAFF' ? '员工端' : currentUser?.accountType === 'guest' ? '访客合同' : '客户端'
-  const mobileUserBlock = currentUser ? `<span class="mobile-user-avatar">${getAvatarInitials(currentUser.name)}</span>` : ''
+  const mobileUserBlock = currentUser ? `<details class="mobile-account-menu"><summary aria-label="账户菜单"><span class="mobile-user-avatar" aria-hidden="true">${getAvatarInitials(currentUser.name)}</span></summary><div class="mobile-account-menu__panel"><strong>${sanitizePlainText(currentUser.name, 80)}</strong><a href="${currentUser.role === 'ADMIN' ? `/admin/users/${encodeURIComponent(currentUser.id)}/edit` : currentUser.role === 'STAFF' ? '/staff/profile' : '/customer/profile'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>个人信息</a><form method="post" action="/logout"><button type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>退出登录</button></form></div></details>` : ''
 
   const languageSwitcher = `<button class="language-toggle" type="button" data-language-toggle data-language-label aria-label="切换到英文" title="切换到英文">English</button>`
 

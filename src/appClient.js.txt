@@ -660,12 +660,11 @@
       });
     });
 
-    // 页脚「更多」折叠菜单：点击菜单以外的任意位置或按 Esc 时收起。
+    // 账户与页脚折叠菜单：点击菜单外或按 Esc 时收起。
     // 用 pointerdown + 捕获阶段监听，确保在 SPA 局部导航处理器
     // （其 click 处理器会 stopImmediatePropagation）之前就能收到事件。
     document.addEventListener('DOMContentLoaded', function () {
-      const more = document.querySelector('details.legal-footer__more');
-      if (!more) return;
+      document.querySelectorAll('details.legal-footer__more, details.mobile-account-menu').forEach(function (more) {
       document.addEventListener('pointerdown', function (event) {
         if (more.open && !more.contains(event.target)) more.open = false;
       }, true);
@@ -675,6 +674,7 @@
           const summary = more.querySelector('summary');
           if (summary) summary.focus();
         }
+      });
       });
     });
 
