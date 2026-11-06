@@ -143,7 +143,7 @@ export async function submitC2CListing(c: Context, ownerId: string, form: Record
       WHERE id=? AND owner_id=? AND status IN ('rejected','paused') AND EXISTS(SELECT 1 FROM c2c_memberships WHERE user_id=? AND mode=?)`).bind(name,model,serial,description,daily,deposit,photos,membership.mode,pickupAddress,pickupAddressJson,publicCity,id,ownerId,ownerId,membership.mode).run()
     if (!result.meta.changes) throw new Error('设备当前不可编辑')
   } else {
-    id=`c2c-${nanoid(16)}`
+    id=`rp-${nanoid(16)}`
     const result=await c.env.RENT.prepare('INSERT INTO c2c_listings (id,owner_id,device_id,name,model,serial_number,description,daily_rate,deposit,photos_json,listing_mode,pickup_address,pickup_address_json,public_city) SELECT ?,?,?,?,?,?,?,?,?,?,mode,?,?,? FROM c2c_memberships WHERE user_id=? AND mode=?').bind(id,ownerId,`d-${id}`,name,model,serial,description,daily,deposit,photos,pickupAddress,pickupAddressJson,publicCity,ownerId,membership.mode).run()
     if (!result.meta.changes) throw new Error('出租模式已变更，请刷新后重试')
   }

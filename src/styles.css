@@ -12152,6 +12152,8 @@ select.form-control {
 
 .form-text { margin-top: 5px; font-size: var(--t-xs); color: var(--c-text-3); }
 
+.form-text.is-danger { color: var(--c-danger); }
+
 .form-row {
   display: flex;
   align-items: center;
