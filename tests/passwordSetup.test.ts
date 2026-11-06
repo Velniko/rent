@@ -9,15 +9,18 @@ import { DatabaseSync } from 'node:sqlite'
 import { readFileSync, readdirSync } from 'node:fs'
 import { URL } from 'node:url'
 import worker from '../src/index'
+import { seedTestRoster, testInspectionFiles } from './helpers'
 import { createAuthSession, verifyUserCredentials } from '../src/site'
 import { renderAdminUserNew } from '../src/pages/admin/userNew'
 import { renderStaffCustomerNew } from '../src/pages/staff/customerNew'
 import { renderPasswordSetupNotice } from '../src/pages/partials/passwordSetupNotice'
 
 async function setup(t: any, emailStatus = 200) {
+  t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-06T00:00Z')})
   const sqlite = new DatabaseSync(':memory:')
   for (const name of readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()) sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'))
   sqlite.exec("DELETE FROM systemSettings WHERE key = 'notificationChannels'; INSERT INTO users (id, name, email, role, status, account_status) VALUES ('test-admin', '管理员', 'admin@example.test', 'ADMIN', 'active', 'active'), ('test-staff', '员工', 'staff@example.test', 'STAFF', 'active', 'active');")
+  seedTestRoster(sqlite,'test-staff')
   const db = {
     prepare(sql: string) {
       let values: any[] = []

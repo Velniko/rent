@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import styles from '../src/styles.css'
-import { buildLayout, canTransitionOrder, ensureOrderNumber, findUserBySession, getContractBySignToken, hashPassword, verifyPassword, isStrongPassword, generateTemporaryPassword, isContractExpired, isContractFinalized, renderContractVariables, renderSiteVariables, CONTRACT_VARIABLE_GROUPS, CONTRACT_VARIABLE_NAMES, validateHostedImageUrls, sanitizePlainText, sanitizeRichHtml, createPageBreakHtml, updateOrder, loadSystemSettingsFromDB, splitPersonName, canUseAccountBalance, getAccountTypeDisplay, getCustomerSigningUser, getContractCustomerSnapshot, cancelExpiredPendingBalanceTopUps } from '../src/site'
+import { buildLayout, canTransitionOrder, ensureOrderNumber, findUserBySession, getContractBySignToken, hashPassword, verifyPassword, isStrongPassword, generateTemporaryPassword, isContractExpired, isContractFinalized, renderContractVariables, renderSiteVariables, CONTRACT_VARIABLE_GROUPS, CONTRACT_VARIABLE_NAMES, validateHostedImageUrls, sanitizePlainText, sanitizeRichHtml, createPageBreakHtml, updateOrder, invalidateSystemSettingsCache, loadSystemSettingsFromDB, splitPersonName, canUseAccountBalance, getAccountTypeDisplay, getCustomerSigningUser, getContractCustomerSnapshot, cancelExpiredPendingBalanceTopUps } from '../src/site'
 import { generateWindowsPassword } from '../src/lib/password'
 import { decryptSecret, encryptSecret, isEncryptedSecret } from '../src/lib/secretBox'
 import { renderAdminSettings } from '../src/pages/admin/settings'
@@ -245,31 +245,13 @@ test('staff and admin mobile navigation keeps only core rental operations', () =
   assert.match(customerMobileNav, /href="\/customer\/profile"[^>]*>.*我的/s)
 })
 
-test('mobile staff operations page renders a fast searchable task list', async () => {
-  let query = ''
-  const db = {
-    prepare(sql: string) {
-      query = sql
-      return {
-        bind() { return this },
-        async all() {
-          return { results: [
-            { order_id: 'pickup-1', order_no: 'OD-PICKUP', status: 'pending_pickup', customer_name: '张三', device_name: 'Laptop A', task_type: 'pickup', task_slot: 'morning' },
-            { order_id: 'return-1', order_no: 'OD-RETURN', status: 'active', customer_name: '李四', device_name: 'Laptop B', task_type: 'return', task_slot: 'afternoon' },
-          ] }
-        },
-      }
-    },
-  }
-  const html = await renderStaffMobileOperations({ req: { query: () => '' }, env: { RENT: db } } as any, { id: 'staff-1', name: 'Staff', role: 'STAFF' })
-  assert.match(query, /date\(o\.startDate\) = \?/)
-  assert.match(query, /date\(o\.endDate\) = \?/)
-  assert.match(html, /今日租赁任务/)
-  assert.match(html, /OD-PICKUP[\s\S]*去取货/)
-  assert.match(html, /OD-RETURN[\s\S]*去验机/)
-  assert.match(html, /name="q"/)
-  assert.match(html, /扫码或搜索订单号、客户、设备/)
-  assert.match(html, /class="sidebar sidebar--desktop"/)
+test('mobile staff operations page renders scheduled tasks with separate return and inspection actions', async () => {
+  invalidateSystemSettingsCache()
+  const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Melbourne',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
+  const state={settings:{dailyHours:8,maxDays:5,maxConsecutive:5,minStaff:1},employees:[],published:[{id:'s',employeeId:'staff-1',day:today,start:'09:00',end:'20:00'}],drafts:{},requests:[],overrides:{},assignments:{}}
+  const db={prepare(sql:string){return {bind(){return this},async first(){return sql.includes('staff_roster')?{revision:0,state_json:JSON.stringify(state)}:null},async all(){return {results:sql.includes('FROM users')?[{id:'staff-1',name:'Staff'}]:sql.includes('FROM orders')?[{id:'pickup-1',orderNo:'OD-PICKUP',status:'pending_pickup',customer:'张三',deviceName:'Laptop A',startDate:today,endDate:today,pickupTimeSlot:'10:00'},{id:'return-1',orderNo:'OD-RETURN',status:'active',customer:'李四',deviceName:'Laptop B',startDate:today,endDate:today,returnTimeSlot:'14:00'}]:[]}}}}}
+  const html=await renderStaffMobileOperations({req:{query:()=>''},env:{RENT:db}} as any,{id:'staff-1',name:'Staff',role:'STAFF'})
+  assert.match(html,/今日取还任务/);assert.match(html,/OD-PICKUP/);assert.match(html,/OD-RETURN/);assert.match(html,/name="q"/);assert.match(html,/data-workspace-modal/);assert.doesNotMatch(html,/去验机/)
 })
 
 test('mobile scan page uses the camera and routes pickup QR payloads', () => {
@@ -417,7 +399,7 @@ test('return inspection is available for every active rental status', async () =
         const statement = {
           bind() { return this },
           async first() {
-            if (sql.includes('FROM orders')) return { id: 'o1', userId: 'u1', deviceId: 'd1', status, totalAmount: 100, depositAmount: 50, startDate: '2026-09-01', endDate: '2026-09-10' }
+            if (sql.includes('FROM orders')) return { id: 'o1', userId: 'u1', deviceId: 'd1', status, return_received_at:'2026-09-10T10:00:00Z', totalAmount: 100, depositAmount: 50, startDate: '2026-09-01', endDate: '2026-09-10' }
             if (sql.includes('FROM devices')) return { id: 'd1', name: '测试设备', pricePerDay: 10, depositAmount: 50 }
             if (sql.includes('FROM users')) return { id: 'u1', name: '客户', role: 'CUSTOMER', staff_id: 'staff-1' }
             return null
@@ -427,7 +409,7 @@ test('return inspection is available for every active rental status', async () =
         return statement
       },
     }
-    const html = await renderStaffInspection({ env: { RENT: db } } as any, { id: 'staff-1', role: 'STAFF', name: 'Staff' }, 'o1')
+    const html = await renderStaffInspection({ req:{query:()=>''}, env: { RENT: db } } as any, { id: 'staff-1', role: 'STAFF', name: 'Staff' }, 'o1')
     assert.match(html, /<h2>归还后验机<\/h2>/)
     assert.doesNotMatch(html, /当前订单不能执行归还验机/)
   }
@@ -448,6 +430,7 @@ test('order updates never bind undefined values into D1', async () => {
 })
 
 test('system settings load in one D1 query instead of eight serial queries', async () => {
+  invalidateSystemSettingsCache()
   let queryCount = 0
   const context = { env: { RENT: { prepare() { queryCount += 1; return { async all() { return { results: [{ key: 'paymentMethods', value: JSON.stringify({ stripe: true, bankTransfer: true, balancePayment: false }) }] } } } } } } } as any
   const settings = await loadSystemSettingsFromDB(context)

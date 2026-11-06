@@ -72,8 +72,8 @@ test('mobile workbench: overview query failure degrades to zero without breaking
 /** 今日任务列表用的假 D1：任务查询返回 all()，概览查询返回 first()。 */
 function taskDb() {
   return {
-    prepare() {
-      return { bind() { return this }, async all() { return { results: [] } }, async first() { return {} } }
+    prepare(sql:string) {
+      return { bind() { return this }, async all() { return { results: [] } }, async first() { return sql.includes('staff_roster')?{revision:0,state_json:JSON.stringify({settings:{dailyHours:8,maxDays:5,maxConsecutive:5,minStaff:1},employees:[],published:[],drafts:{},requests:[],overrides:{},assignments:{}})}:{} } }
     },
   }
 }

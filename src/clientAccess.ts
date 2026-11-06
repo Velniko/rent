@@ -67,7 +67,8 @@ export function clientPathEnabled(policy: ClientAccess, href: string, surface: '
 }
 export function consoleEssentialPath(path: string): boolean {
   return /^\/(?:login|logout|forgot-password|reset-password|verify-email|sso|admin|webhooks)(?:\/|$)/.test(path)
-    || /^\/customer\/(?:profile|security|orders|rentals|guest)(?:\/|$)/.test(path)
+    || /^\/customer\/(?:profile|security|identity|orders|rentals|guest)(?:\/|$)/.test(path)
+    || path.startsWith('/media/')
     || path === '/customer/balance'
     || /^\/customer\/rental-program\/settlements(?:\/|$)/.test(path)
     || /^\/(?:contract|contracts|orders|payment)(?:\/|$)/.test(path)

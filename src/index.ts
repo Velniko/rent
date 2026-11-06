@@ -10,6 +10,12 @@ import { handleTranslation } from './services/translation'
 import { ensureBankTransferReference, listBankTransferPayments } from './services/bankTransferReferences'
 import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
+import { loadRoster, canStaffReadRosterOrder, syncRosterAssignments } from './services/roster'
+import { registerStorageRoutes } from './routes/storage'
+import { registerIdentityRoutes } from './routes/identity'
+import { registerRosterRoutes } from './routes/roster'
+import { registerReturnRoutes } from './routes/returns'
+import { readInspectionPhotos, renderInspectionPhotos } from './lib/inspectionPhotos'
 import { createNotificationWithDelivery } from './services/notifications'
 import { runRentalPayouts } from './services/rentalPayouts'
 import { rentalPickupBlocks,rentalPickupBlocked } from './services/rentalPickup'
@@ -192,7 +198,11 @@ import { pickupTimeSlotEndMinutes } from './domain/pickupTimeSlots'
 import { readManualInspectionFields, renderManualInspectionFields, inspectionText } from './lib/inspection'
 import { decryptSecret } from './lib/secretBox'
 import { migrateLegacyContractSecrets } from './services/secretMigration'
-import { getCloudinaryConfigSummary, getCloudinaryRuntimeConfig, uploadCloudinaryImage, uploadCloudinaryImages } from './lib/cloudinary'
+import { getCloudinaryConfigSummary } from './lib/cloudinary'
+import { uploadSiteImage, uploadSiteImages, resolveImageUrls, repairStorageReplicas } from './services/objectStorage'
+import { purgeExpiredIdentityMaterials } from './services/identityVerification'
+import { archiveHistoricalData, migrateLegacyImages } from './services/storageMaintenance'
+import { hasOciStorage } from './lib/ociStorage'
 
 function parseFormBody(body: string | null | undefined): Record<string, string> {
   const form: Record<string, string> = {}
@@ -296,15 +306,6 @@ import { deliverC2CEmails } from './services/c2cEmails'
 
 const app = new Hono()
 
-async function resolveImageUrls(fileValue: unknown, legacyUrl: unknown, c: any, folder: string, maxFiles = 1): Promise<string[]> {
-  if (fileValue) {
-    const uploaded = await uploadCloudinaryImages(fileValue, await getCloudinaryRuntimeConfig(c), folder, maxFiles, { watermark: true })
-    if (uploaded.length) return uploaded
-  }
-  if (String(legacyUrl || '').trim()) throw new Error('请直接上传图片，系统会自动添加上传日期和唯一编号水印')
-  return []
-}
-
 async function parseFormBodyForRequest(c: any): Promise<Record<string, any>> {
   const form = String(c.req.header('content-type') || '').toLowerCase().includes('multipart/form-data')
     ? await c.req.parseBody()
@@ -320,7 +321,7 @@ async function addWatermarkedContractDamagePhotos(c: any, form: Record<string, a
   const existing = submittedData.damage_photos
     ? validateHostedImageUrls(submittedData.damage_photos).join('\n')
     : ''
-  const uploaded = await uploadCloudinaryImages(form.damagePhotoFiles, await getCloudinaryRuntimeConfig(c), 'rent/damage-photos', 5, { watermark: true })
+  const uploaded = await uploadSiteImages(form.damagePhotoFiles, c, 'rent/damage-photos', 5, { watermark: true })
   submittedData.damage_photos = [existing, ...uploaded].filter(Boolean).join('\n')
 }
 
@@ -888,6 +889,8 @@ app.use('*', async (c, next) => {
     : c.req.method === 'POST' && (/^\/staff\/orders\/[^/]+\/return-collection$/.test(c.req.path) || /^\/staff\/return-collections\//.test(c.req.path)) ? ['return-collection', 20, 600] as const
     : c.req.method === 'POST' && (/^\/staff\/orders\/[^/]+\/cancel$/.test(c.req.path) || /^\/admin\/orders\/[^/]+\/(?:cancel-and-refund|retry-cancellation-refund)$/.test(c.req.path)) ? ['cancellation-refund', 10, 600] as const
     : c.req.method === 'POST' && (/^\/customer\/orders\/[^/]+\/refund-request$/.test(c.req.path) || /^\/admin\/refund-requests\//.test(c.req.path) || /^\/admin\/refunds\/[^/]+\/complete-customer-refund$/.test(c.req.path)) ? ['customer-refund', 10, 600] as const
+    : (/^\/customer\/identity(?:\/(?:visa|driver-licence|passport|other))?$/.test(c.req.path) || /^\/admin\/(?:identity-documents\/[^/]+\/view|users\/[^/]+\/identity-status)$/.test(c.req.path)) && c.req.method === 'POST' ? ['identity-write', 10, 3600] as const
+    : c.req.path.startsWith('/admin/storage/') && c.req.method === 'POST' ? ['storage-admin', 10, 600] as const
     : c.req.path === '/admin/settings/upload-image' ? ['admin-settings-image', 10, 3600] as const
     : c.req.method === 'POST' && ['/admin/users/new', '/staff/customers/new'].includes(c.req.path) ? ['managed-user-create', 30, 600] as const
     : c.req.method === 'POST' && c.req.path.startsWith('/rent/') ? ['rental-link-booking', 10, 900] as const
@@ -939,6 +942,9 @@ app.use('*', async (c, next) => {
     return c.html(renderServerError(), 500)
   }
 })
+
+registerRosterRoutes(app)
+registerReturnRoutes(app)
 
 // 搜索需要先经过会话、访客限制与限流中间件。
 app.get('/api/search', handleGlobalSearch)
@@ -1530,37 +1536,9 @@ app.post('/admin/users/:id/balance-adjust', async (c) => {
   return c.redirect(`/admin/users/${target.id}`)
 })
 
-app.get('/admin/users/:id/identity', async (c) => {
-  const admin = c.get('user')
-  if (!admin || admin.role !== 'ADMIN') return c.html(renderForbidden(), 403)
-  const target = await getUserById(c, c.req.param('id'))
-  if (!target || target.role !== 'CUSTOMER') return c.text('客户不存在', 404)
-  const { results = [] } = await c.env.RENT.prepare('SELECT status, verification_method, document_last4, rejection_reason, verified_at, created_at FROM identity_verification_records WHERE customer_id = ? ORDER BY created_at DESC LIMIT 20').bind(target.id).all() as any
-  const history = results.map((row: any) => `<tr><td>${sanitizePlainText(row.status, 30)}</td><td>${sanitizePlainText(row.verification_method || '—', 80)}</td><td>${row.document_last4 ? `****${sanitizePlainText(row.document_last4, 4)}` : '—'}</td><td>${sanitizePlainText(row.rejection_reason || '—', 500)}</td><td>${sanitizePlainText(row.verified_at || row.created_at, 40)}</td></tr>`).join('') || '<tr><td colspan="5">暂无身份验证记录</td></tr>'
-  const body = `<div class="panel"><div class="section-title"><div><h2>身份验证 · ${sanitizePlainText(target.name, 100)}</h2><p>仅保存证件末四位；完整证件资料不在系统页面或日志中显示。</p></div><a class="button button-secondary" href="/admin/users/${encodeURIComponent(target.id)}">返回客户</a></div><form method="post" action="/admin/users/${encodeURIComponent(target.id)}/identity-status" class="form-grid"><label>状态<select class="form-control" name="status" required><option value="PENDING">待审核</option><option value="VERIFIED">已验证</option><option value="REJECTED">已拒绝</option><option value="EXPIRED">已过期</option><option value="NOT_REQUIRED">无需验证</option></select></label><label>验证方式<input class="form-control" name="method" maxlength="80" placeholder="例如：人工核验"></label><label>证件末四位<input class="form-control" name="documentLast4" inputmode="numeric" maxlength="4"></label><label style="grid-column:1/-1">拒绝原因（拒绝时必填）<textarea class="form-control" name="rejectionReason" maxlength="500"></textarea></label><button class="button button-primary">保存身份验证</button></form><div class="table-wrapper"><table><thead><tr><th>状态</th><th>方式</th><th>证件</th><th>原因</th><th>时间</th></tr></thead><tbody>${history}</tbody></table></div></div>`
-  return c.html(buildLayout('身份验证', body, admin))
-})
+registerStorageRoutes(app)
 
-app.post('/admin/users/:id/identity-status', async (c) => {
-  const admin = c.get('user')
-  if (!admin || admin.role !== 'ADMIN') return c.html(renderForbidden(), 403)
-  const target = await getUserById(c, c.req.param('id'))
-  if (!target || target.role !== 'CUSTOMER') return c.text('客户不存在', 404)
-  const form = await c.req.parseBody()
-  const status = String(form.status || '')
-  const last4 = String(form.documentLast4 || '').replace(/\D/g, '').slice(-4)
-  const method = String(form.method || '').trim().slice(0, 80)
-  const rejectionReason = String(form.rejectionReason || '').trim().slice(0, 500)
-  if (!['NOT_REQUIRED', 'PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED'].includes(status)) return c.text('身份验证状态无效', 400)
-  if (status === 'REJECTED' && !rejectionReason) return c.text('拒绝身份验证必须填写原因', 400)
-  const legacyStatus = status === 'REJECTED' ? 'FAILED' : status
-  await c.env.RENT.batch([
-    c.env.RENT.prepare("UPDATE users SET identity_status = ?, identity_document_last4 = ?, identity_verified_at = CASE WHEN ? = 'VERIFIED' THEN CURRENT_TIMESTAMP ELSE identity_verified_at END, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(legacyStatus, last4 || null, status, target.id),
-    c.env.RENT.prepare('INSERT INTO identity_verification_records (id, customer_id, status, verification_method, document_last4, rejection_reason, verified_by, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = \'VERIFIED\' THEN CURRENT_TIMESTAMP END)').bind(`ivr-${nanoid(12)}`, target.id, status, method || null, last4 || null, rejectionReason || null, admin.id, status),
-  ])
-  await createAuditLog(c, { actor: admin, action: 'IDENTITY_STATUS_UPDATED', targetType: 'USER', targetId: target.id, before: { status: (target as any).identityStatus }, after: { status, documentLast4: last4 ? `****${last4}` : null, method }, reason: rejectionReason || undefined })
-  return c.redirect(`/admin/users/${target.id}`, 303)
-})
+registerIdentityRoutes(app)
 
 app.get('/admin/users/:id/risk', async (c) => {
   const admin = c.get('user')
@@ -1764,7 +1742,7 @@ app.post('/staff/orders/:orderId/early-return/approve', async (c) => {
   const order = await getOrderById(c, c.req.param('orderId')) as any
   if (!order || order.status !== 'active' || !order.early_return_requested_at) return c.text('没有待审批的提前归还申请', 409)
   const customer = await getUserById(c, order.userId)
-  if (user.role === 'STAFF' && customer?.staffId !== user.id) return c.html(renderForbidden(), 403)
+  if (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id)) return c.html(renderForbidden(), 403)
   await c.env.RENT.batch([
     c.env.RENT.prepare("UPDATE orders SET early_return_approved_at = CURRENT_TIMESTAMP, early_return_approved_by = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND status = 'active' AND early_return_requested_at IS NOT NULL").bind(user.id, order.id),
     c.env.RENT.prepare('INSERT INTO rental_status_history (id, rental_id, old_status, new_status, trigger_type, triggered_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(`rsh-${nanoid(16)}`, order.id, order.rental_status || 'ACTIVE', 'RETURN_PENDING', 'MANUAL', user.id, '提前归还申请已批准')
@@ -2743,7 +2721,7 @@ app.post('/customer/rent/:id', async (c) => {
   }
   if (c2cDelivery) c.executionCtx.waitUntil(deliverC2CEmails(c).catch(error=>console.error('C2C email delivery failed',error?.message)))
   const customer = await getUserById(c, user.id)
-  const recipients = customer?.staffId ? [customer.staffId] : (await getUsers(c)).filter((account: any) => account.role === 'ADMIN' && account.status !== 'inactive').map((account: any) => account.id)
+  const recipients = (await getUsers(c)).filter((account: any) => account.role === 'ADMIN' && account.status !== 'inactive').map((account: any) => account.id)
   await Promise.all(recipients.map((recipientId: string) => createNotification(c, { recipientId, type: 'rental_application', title: deliveryMethod === 'Delivery' ? '新租赁申请及配送确认' : '新租赁申请待审核', message: `${customer?.name || '客户'} 申请租赁 ${device.name}（${startDate} 至 ${endDate}）${deliveryMethod === 'Delivery' ? `，需要配送至：${deliveryAddress}，运费请确认` : '，客户选择到店自取'}。${rentalNote ? `备注：${rentalNote}` : ''}`, orderId: orderId })))
   return c.redirect(`/customer/orders/${orderId}?success=${encodeURIComponent(deliveryMethod === 'Delivery' ? '租赁申请已提交。工作人员确认配送范围和运费后，订单将进入待付款状态。' : '租赁申请已提交。工作人员审核通过后，订单将进入待付款状态。')}`)
 })
@@ -2756,9 +2734,8 @@ app.get('/staff/dashboard', async (c) => {
   if (user.role !== 'STAFF' && user.role !== 'ADMIN') {
     return c.html(renderForbidden(), 403)
   }
-  if (isMobileDeviceRequest(c)) return c.redirect('/staff/mobile')
   const dashboardData = await getStaffDashboardData(c, user.role === 'ADMIN' ? undefined : user.id)
-  return c.html(pages.renderStaffDashboard(user, dashboardData))
+  return c.html(pages.renderStaffDashboard(user, {...dashboardData,roster:await loadRoster(c,user)}))
 })
 
 app.get('/staff/mobile', async (c) => {
@@ -2766,7 +2743,7 @@ app.get('/staff/mobile', async (c) => {
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
   const stage = c.req.query('stage')
   if (['pickup', 'return'].includes(stage)) return c.redirect(`/staff/mobile/${stage}`, 302)
-  return c.html(await pages.renderStaffMobileHome(c, user))
+  return c.html(pages.renderStaffDashboard(user,{stats:{},recentOrders:[],recentDevices:[],roster:await loadRoster(c,user)}))
 })
 
 for (const stage of ['pickup', 'return'] as const) {
@@ -2808,7 +2785,7 @@ app.get('/staff/mobile/scan', async (c) => {
     const pickupReady = stage !== 'return' && order && (['paid', 'pending_pickup'].includes(String(order.status)) || signedPickup)
     const returnReady = stage !== 'pickup' && order && (['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) || (order.status === 'completed' && Number(order.overdue_outstanding_amount || 0) > 0))
     if ((pickupReady || returnReady) && (user.role === 'ADMIN' || customer?.staffId === user.id)) {
-      return c.redirect(`/staff/orders/${encodeURIComponent(order.id)}/${pickupReady ? 'handover' : 'inspection'}`)
+      return c.redirect(pickupReady?`/staff/orders/${encodeURIComponent(order.id)}/handover`:`/staff/orders/${encodeURIComponent(order.id)}`)
     }
     return c.html(await pages.renderStaffMobileScan(c, user, !order ? '请核实输入信息是否正确' : !pickupReady && !returnReady ? '该订单当前没有待处理的取货或归还任务。' : '你没有权限处理该客户的订单。'), 409)
   }
@@ -2901,7 +2878,7 @@ app.use('/staff/orders/*', async (c, next) => {
     const isOrderNoPath = /^\d{8}$/.test(seg3) && !!seg4 && /^[0-9A-Za-z]{6}$/.test(seg4)
     const order = isOrderNoPath ? await getOrderByOrderNo(c, `OD-${seg3}-${seg4}`) : await getOrderById(c, seg3)
     const customer = order ? await getUserById(c, order.userId) : null
-    if (!order || customer?.staffId !== user.id) return c.html(renderForbidden(), 403)
+    if (!order || (customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id))) return c.html(renderForbidden(), 403)
   }
   await next()
 })
@@ -2933,7 +2910,7 @@ app.post('/staff/orders/:orderId/suspend', async (c) => {
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
   const order = await getOrderById(c, c.req.param('orderId'))
   const customer = order ? await getUserById(c, order.userId) : null
-  if (!order || (user.role === 'STAFF' && customer?.staffId !== user.id)) return c.html(renderForbidden(), 403)
+  if (!order || (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id))) return c.html(renderForbidden(), 403)
   if (!['active', 'extended', 'overdue'].includes(String(order.status)) || !canTransitionOrder(order.status, 'suspended')) return c.text('当前订单状态不能暂停', 409)
   const suspendForm = await c.req.parseBody()
   const suspendReason = String(suspendForm.reason || '').trim().slice(0, 300)
@@ -2957,13 +2934,13 @@ app.get('/staff/orders/:orderId/handover', async (c) => {
   const customer = order ? await getUserById(c, order.userId) : null
   const handoverContract = order ? await getContractByOrderId(c, order.id) : null
   const squareDepositUnconfirmed = String(order?.paymentProvider || order?.payment_provider || '') === 'square' && Number(order?.depositAmount || order?.deposit_amount || 0) > 0 && String(order?.deposit_status || '').toUpperCase() !== 'PAID'
-  if (!order || squareDepositUnconfirmed || !(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && handoverContract?.status === 'signed')) || (user.role === 'STAFF' && customer?.staffId !== user.id)) return c.html(renderForbidden(), 403)
+  if (!order || squareDepositUnconfirmed || !(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && handoverContract?.status === 'signed')) || (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id))) return c.html(renderForbidden(), 403)
   const device = await getDeviceById(c, order.deviceId)
   const beforeInspection = await c.env.RENT.prepare("SELECT snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
   let beforeSnapshot: Record<string, any> = {}
   try { beforeSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
   const inspectionFields = renderManualInspectionFields(beforeSnapshot)
-  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>扫码或打开订单后，先填写出租前验机报告，再完成取货交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}<div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
+  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>扫码或打开订单后，先填写出租前验机报告，再完成取货交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form enctype="multipart/form-data" class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}</div>${renderInspectionPhotos()}<div class="grid grid-2"><div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
   return c.html(buildLayout('出租前验机与交付 - 电脑租赁管理系统', body, user, { compactStaffNav: true }))
 })
 
@@ -2979,9 +2956,10 @@ app.post('/staff/orders/:orderId/pickup', async (c) => {
   const squareDepositUnconfirmedForPickup = String(pickupOrder?.paymentProvider || pickupOrder?.payment_provider || '') === 'square' && Number(pickupOrder?.depositAmount || pickupOrder?.deposit_amount || 0) > 0 && String(pickupOrder?.deposit_status || '').toUpperCase() !== 'PAID'
   if (!pickupOrder || squareDepositUnconfirmedForPickup || !(['paid', 'pending_pickup'].includes(String(pickupOrder.status)) || (pickupOrder.status === 'approved' && pickupContract?.status === 'signed'))) return c.json({ success: false, message: squareDepositUnconfirmedForPickup ? '礼品卡订单的押金尚未审核到账，不能交付设备' : '只有已签署合同的待交付订单可以确认交付' }, 409)
   const customer = await getUserById(c, pickupOrder.userId)
-  if (user.role === 'STAFF' && customer?.staffId !== user.id) return c.html(renderForbidden(), 403)
+  if (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,pickupOrder.id)) return c.html(renderForbidden(), 403)
   const device = await getDeviceById(c, pickupOrder.deviceId)
-  const form = await c.req.parseBody()
+  const form = await c.req.parseBody({all:true})
+  let inspectionPhotos;try {inspectionPhotos=await readInspectionPhotos(c,user,form)} catch(error){return c.json({success:false,message:error.message},400)}
   const serialNumber = sanitizePlainText(String(form.deviceSerialNumber || ''), 160).trim()
   const accessories = sanitizePlainText(String(form.accessories || ''), 1000).trim()
   const conditionNotes = sanitizePlainText(String(form.conditionNotes || ''), 2000).trim()
@@ -2998,7 +2976,7 @@ app.post('/staff/orders/:orderId/pickup', async (c) => {
   const beforeInspection = await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(orderId).first() as any
   let beforeSnapshot: Record<string, any> = {}
   try { beforeSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
-  Object.assign(beforeSnapshot, inspectionInput.checks, { batteryCycles, batteryHealth, inspectionNotes, inspectionDate: new Date().toISOString().slice(0, 10), inspectionBy: user.name || user.id, source: 'handover_manual' })
+  Object.assign(beforeSnapshot, inspectionInput.checks, { batteryCycles, batteryHealth, inspectionNotes, inspectionDate: new Date().toISOString().slice(0, 10), inspectionBy: user.name || user.id, source: 'handover_manual', inspectionPhotos })
   const inspectionWrite = beforeInspection?.id
     ? c.env.RENT.prepare('UPDATE device_inspections SET snapshot_json = ?, differences_json = ?, performed_by = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?').bind(JSON.stringify(beforeSnapshot), JSON.stringify({}), user.id, beforeInspection.id)
     : c.env.RENT.prepare("INSERT INTO device_inspections (id, device_id, rental_id, inspection_type, snapshot_json, differences_json, performed_by) VALUES (?, ?, ?, 'before_rental', ?, ?, ?)").bind(`inspection-${nanoid(12)}`, pickupOrder.deviceId, orderId, JSON.stringify(beforeSnapshot), JSON.stringify({}), user.id)
@@ -3030,7 +3008,7 @@ app.post('/staff/orders/:orderId/approve', async (c) => {
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
   const order = await getOrderById(c, c.req.param('orderId'))
   const customer = order ? await getUserById(c, order.userId) : null
-  if (user.role === 'STAFF' && customer?.staffId !== user.id) return c.html(renderForbidden(), 403)
+  if (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id)) return c.html(renderForbidden(), 403)
   const customerRisk = customer?.role === 'CUSTOMER' ? await getCustomerRiskAssessment(c, customer.id) : null
   if (customerRisk?.blocked) return c.text(`该客户存在风控限制，不能创建合同或审核订单（风险分 ${customerRisk.score}/100）`, 403)
   const form = await c.req.parseBody()
@@ -3111,7 +3089,7 @@ app.post('/staff/orders/:orderId/reject', async (c) => {
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
   const order = await getOrderById(c, c.req.param('orderId'))
   const customer = order ? await getUserById(c, order.userId) : null
-  if (user.role === 'STAFF' && customer?.staffId !== user.id) return c.html(renderForbidden(), 403)
+  if (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id)) return c.html(renderForbidden(), 403)
   if (!order || !canTransitionOrder(order.status, 'cancelled')) return c.text('订单状态无效，无法拒绝', 409)
   const automaticCancellationPayment = await c.env.RENT.prepare("SELECT id FROM payments WHERE rental_id = ? AND ((status = 'paid' AND payment_method IN ('balance', 'card')) OR (status = 'pending' AND payment_method = 'card' AND stripe_payment_intent_id = (SELECT stripe_deposit_payment_intent_id FROM orders WHERE id = ?))) LIMIT 1").bind(order.id, order.id).first()
   if (automaticCancellationPayment) {
@@ -3165,80 +3143,6 @@ for (const action of ['verify-stripe', 'cancel']) app.post(`/staff/return-collec
     else await cancelReturnCollection(c, user, c.req.param('id'), form.confirmUnpaid === '1')
     return c.redirect(`/staff/return-collections/${encodeURIComponent(c.req.param('id'))}`, 303)
   } catch (error: any) { return c.text(error.message || '收款处理失败', error.message === '无权操作' ? 403 : 409) }
-})
-
-app.get('/staff/orders/:orderId/inspection', async (c) => {
-  const user = c.get('user')
-  if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
-  const order = await getOrderById(c, c.req.param('orderId'))
-  const customer = order ? await getUserById(c, order.userId) : null
-  if (order && user.role === 'STAFF' && customer?.staffId !== user.id) return c.html(renderForbidden(), 403)
-  const inspectionStatuses = ['active', 'extended', 'overdue', 'suspended', 'pending_return']
-  if (order && inspectionStatuses.includes(String(order.status))) {
-    await c.env.RENT.prepare('UPDATE devices SET inspection_requested_at = CURRENT_TIMESTAMP WHERE id = ?').bind(order.deviceId).run()
-    await recordDeviceLifecycle(c, order.deviceId, 'INSPECTION', { orderId: order.id, reason: '已进入归还验机', changedBy: user.id })
-  }
-  return c.html(await pages.renderStaffInspection(c, user, c.req.param('orderId')))
-})
-
-app.post('/staff/orders/:orderId/inspection', async (c) => {
-  const user = c.get('user')
-  if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.html(renderForbidden(), 403)
-  let order = await getOrderById(c, c.req.param('orderId'))
-  if (!order || !['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status))) return c.text('当前订单不能验机', 409)
-  const returnCustomer = await getUserById(c, order.userId)
-  if (user.role === 'STAFF' && returnCustomer?.staffId !== user.id) return c.html(renderForbidden(), 403)
-  const form = await c.req.parseBody()
-  const allowedCheck = new Set(['正常', '异常', '未测试'])
-  const checks: Record<string, string> = {}
-  for (const [input, field] of [['screenCondition', 'screen_condition'], ['keyboardCondition', 'keyboard_condition'], ['trackpadCondition', 'trackpad_condition'], ['bodyCondition', 'body_condition'], ['cameraCondition', 'camera_condition'], ['wifiCondition', 'wifi_condition'], ['powerTest', 'power_test']]) {
-    const value = String(form[input] || '')
-    if (!allowedCheck.has(value)) return c.text(`${input} 检查结果无效`, 400)
-    checks[field] = value
-  }
-  const replacementCost = Number(form.replacementCost || 0)
-  const batteryCycles = form.batteryCycles ? Number(form.batteryCycles) : null
-  if (!Number.isFinite(replacementCost) || replacementCost < 0 || (batteryCycles !== null && (!Number.isInteger(batteryCycles) || batteryCycles < 0))) return c.text('费用或电池循环次数无效', 400)
-  const damageDescription = String(form.damageDescription || '').trim().slice(0, 2000)
-  const now = new Date().toISOString()
-  const contract = await c.env.RENT.prepare('SELECT id FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
-  if (!contract) return c.text('订单缺少合同', 409)
-  const beforeInspection = await c.env.RENT.prepare("SELECT snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND device_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.deviceId).first() as any
-  let inspectionSnapshot: Record<string, any> = {}
-  try { inspectionSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
-  let damagePhotos = ''
-  try { damagePhotos = (await resolveImageUrls(form.damagePhotoFiles, form.damagePhotos, c, 'rent/damage-photos', 5)).join('\n') } catch (error: any) { return c.text(error.message, 400) }
-  if (damageDescription && !damagePhotos) return c.text('记录损坏时必须提供至少一张损坏照片链接', 400)
-  await chargeOverdueReturns(c, new Date(), order.id)
-  order = (await getOrderById(c, order.id))!
-  if (order.deposit_payment_mode === 'PREAUTH') {
-    if (!/^\d+(\.\d{1,2})?$/.test(String(form.replacementCost || '0')) || (replacementCost > 0 && !damageDescription)) return c.text('请填写有效的损坏扣款金额和损坏说明', 400)
-    if (replacementCost + Number(order.overdue_deposit_applied || 0) > Number(order.depositAmount || 0)) return c.text('扣款金额不能高于押金金额', 400)
-  }
-  try {
-    await refundUnusedRentalDays(c, user, order, now.slice(0, 10))
-  } catch (error: any) {
-    return c.text(error.message || '未使用租金退款失败，订单暂未完成', 502)
-  }
-  Object.assign(inspectionSnapshot, checks, { batteryCycles, batteryHealth: String(form.batteryHealth || '').trim().slice(0, 100), damageDescription, damagePhotos, replacementCost: replacementCost.toFixed(2), returnDate: now.slice(0, 10), inspectionBy: user.name || user.id })
-  const inspectionId = `inspection-${nanoid(12)}`
-  const returnDevice = await getDeviceById(c, order.deviceId)
-  // 订单进 completed 的这一刻押金往往还没结清（HELD/PENDING）——settlement_status
-  // 要单独反映这个事实，不能让“已完成”看起来什么都办完了。
-  const settlementStatusOnCompletion = computeOrderSettlementStatus({ status: 'completed', deposit_status: order.deposit_status, overdue_outstanding_amount: order.overdue_outstanding_amount })
-  await c.env.RENT.batch([
-    c.env.RENT.prepare("UPDATE orders SET status = 'completed', order_status = 'COMPLETED', payment_status = COALESCE(payment_status, 'PAID'), rental_status = 'COMPLETED', return_received_at = COALESCE(return_received_at, CURRENT_TIMESTAMP), return_received_by = COALESCE(return_received_by, ?), settlement_status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?").bind(user.id, settlementStatusOnCompletion, order.id),
-    c.env.RENT.prepare("INSERT INTO rental_status_history (id, rental_id, old_status, new_status, trigger_type, triggered_by, reason) VALUES (?, ?, ?, 'RETURNED', 'MANUAL', ?, ?), (?, ?, 'RETURNED', 'COMPLETED', 'SYSTEM', ?, ?)").bind(`rsh-${nanoid(16)}`, order.id, order.rental_status || 'RETURN_PENDING', user.id, '工作人员收到设备并开始归还验机', `rsh-${nanoid(16)}`, order.id, user.id, '归还验机完成'),
-    c.env.RENT.prepare('INSERT INTO device_inspections (id, device_id, rental_id, inspection_type, snapshot_json, differences_json) VALUES (?, ?, ?, \'after_return\', ?, ?)').bind(inspectionId, order.deviceId, order.id, JSON.stringify(inspectionSnapshot), JSON.stringify({})),
-    c.env.RENT.prepare("INSERT OR IGNORE INTO order_fulfillment_records (id, order_id, record_type, device_serial_number, accessories_json, condition_snapshot_json, notes, recorded_by) VALUES (?, ?, 'RETURN', ?, '[]', ?, ?, ?)").bind(`return-${nanoid(12)}`, order.id, String(returnDevice?.serialNumber || ''), JSON.stringify(inspectionSnapshot), damageDescription || null, user.id),
-    ...(damageDescription ? [c.env.RENT.prepare("INSERT INTO damage_cases (id, order_id, device_id, description, photo_urls, estimated_cost_cents, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(`damage-${nanoid(12)}`, order.id, order.deviceId, damageDescription, damagePhotos, Math.round(replacementCost * 100), user.id)] : []),
-  ])
-  if (damageDescription) await recordDeviceLifecycle(c, order.deviceId, 'DAMAGED', { orderId: order.id, reason: damageDescription, changedBy: user.id })
-  else await releaseDeviceIfUnbooked(c, order.deviceId, { orderId: order.id, reason: '归还验机完成', changedBy: user.id })
-  await createAuditLog(c, { actor: user, action: damageDescription ? 'RETURN_INSPECTION_COMPLETED_WITH_DAMAGE' : 'RETURN_INSPECTION_COMPLETED', targetType: 'ORDER', targetId: order.id, before: { status: order.status, rentalStatus: order.rental_status }, after: { status: 'completed', rentalStatus: 'COMPLETED', inspectionId, damageReported: Boolean(damageDescription) }, reason: damageDescription || '归还验机完成' })
-  const settlementResponse = await settleCompletedOrderAuthorization(c, user, order.id)
-  if (settlementResponse && settlementResponse.status >= 400) return settlementResponse
-  return c.redirect(user.role === 'ADMIN' ? `/admin/orders/${order.id}` : staffOrderPath(order))
 })
 
 // 必须注册在 /staff/orders/:orderId/handover、/staff/orders/:orderId/inspection 等二段式字面量路由之后，
@@ -4861,6 +4765,7 @@ app.post('/admin/orders/:id/update', async (c) => {
       return wantsJson ? c.json({ ok: true }) : response
     } catch (error: any) { return wantsJson ? c.json({ ok: false, error: error?.message || '全额退款失败' }, 502) : c.text(error?.message || '全额退款失败', 502) }
   }
+  if (status==='completed' && force && (!reason || String(form.deviceConfirmed||'')!=='1'))return wantsJson?c.json({ok:false,error:'请填写原因并确认设备已收回'},400):c.text('请填写原因并确认设备已收回',400)
   if (status === 'completed') {
     const contract = await c.env.RENT.prepare('SELECT contract_data FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
     if (!JSON.parse(contract?.contract_data || '{}').inspection_date && !force) return wantsJson ? c.json({ ok: false, error: '完成订单前必须提交归还验机' }, 409) : c.text('完成订单前必须提交归还验机', 409)
@@ -4868,6 +4773,7 @@ app.post('/admin/orders/:id/update', async (c) => {
   await updateOrderStatus(c, order.id, status, { reason, triggeredBy: user.id })
   if (status === 'suspended') await createNotification(c, { recipientId: order.userId, senderId: user.id, type: 'rental_suspended', title: '租赁已暂停', message: `您的订单 ${order.orderNo || order.id} 已由${user.name || '管理员'}暂停，原因：${reason}。`, orderId: order.id })
   if (status === 'completed') {
+    if(force){await c.env.RENT.prepare('UPDATE orders SET return_received_at=COALESCE(return_received_at,CURRENT_TIMESTAMP),return_received_by=COALESCE(return_received_by,?) WHERE id=?').bind(user.id,order.id).run();await releaseDeviceIfUnbooked(c,order.deviceId,{orderId:order.id,changedBy:user.id,reason});await createAuditLog(c,{actor:user,action:'ORDER_FORCE_COMPLETED_RELISTED',targetType:'ORDER',targetId:order.id,before:{status:order.status},after:{status:'completed'},reason})}
     await enqueueRentalUserDeletion(c, order)
     const settlementResponse = await settleCompletedOrderAuthorization(c, user, order.id)
     if (settlementResponse && settlementResponse.status >= 400) return wantsJson ? c.json({ ok: false, error: await settlementResponse.text() }, settlementResponse.status as any) : settlementResponse
@@ -5581,7 +5487,8 @@ app.get('/admin/devices/:id/edit', async (c) => {
     return result
   }, {})
   const lifecycleEvents = (await c.env.RENT.prepare('SELECT previous_status, next_status, reason, changed_by, created_at FROM device_lifecycle_events WHERE device_id = ? ORDER BY created_at DESC LIMIT 8').bind(device.id).all()).results || []
-  return c.html(pages.renderAdminDeviceEdit(user, { ...device, unavailableDates, unavailableTimeSlots, lifecycleEvents }))
+  const changes=await c.env.RENT.prepare("SELECT a.created_at,a.before_json,a.after_json,a.reason,u.name AS actor FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id WHERE a.target_type='DEVICE' AND a.target_id=? AND a.action IN ('DEVICE_PROFILE_UPDATED','DEVICE_STATUS_CHANGED','DEVICE_RETIRED') ORDER BY a.created_at DESC LIMIT 100").bind(device.id).all()
+  return c.html(pages.renderAdminDeviceEdit(user, { ...device, unavailableDates, unavailableTimeSlots, lifecycleEvents:changes.results||[] }))
 })
 
 app.get('/admin/devices/:id/control', async (c) => {
@@ -5896,6 +5803,7 @@ app.post('/admin/devices/:id/edit', async (c) => {
     description: form.description || form.remark
   })
   if (form.lifecycleStatus) await recordDeviceLifecycle(c, c.req.param('id'), form.lifecycleStatus as any, { reason: '管理员手动更新设备生命周期', changedBy: user.id })
+  const deviceAfter=await getDeviceById(c,c.req.param('id'));const profileFields=['name','category','brand','model','serialNumber','cpu','ram','storage','gpu','os','pricePerDay','depositAmount','description','weeklyDiscountPercent','monthlyDiscountPercent','minimumRentalDays','bufferDays'];const profileBefore=Object.fromEntries(profileFields.map(key=>[key,deviceBefore?.[key]??null])),profileAfter=Object.fromEntries(profileFields.map(key=>[key,deviceAfter?.[key]??null]));if(JSON.stringify(profileBefore)!==JSON.stringify(profileAfter))await createAuditLog(c,{actor:user,action:'DEVICE_PROFILE_UPDATED',targetType:'DEVICE',targetId:c.req.param('id'),before:profileBefore,after:profileAfter,reason:'设备资料已修改'});
   if (deviceBefore && (deviceBefore.status !== form.status || deviceBefore.agent_status !== form.agentStatus || deviceBefore.device_mode !== form.deviceMode)) {
     await createAuditLog(c, {
       actor: user, action: 'DEVICE_STATUS_CHANGED', targetType: 'DEVICE', targetId: c.req.param('id'),
@@ -5987,7 +5895,7 @@ app.post('/admin/settings/upload-image', async (c) => {
   const folder = kind === 'alipay' ? 'rent/rmb-payment-qr/alipay' : kind === 'wechat' ? 'rent/rmb-payment-qr/wechat' : kind === 'login' ? 'rent/brand/login' : ''
   if (!folder) return c.json({ success: false, error: '不支持的图片类型' }, 400)
   try {
-    const url = await uploadCloudinaryImage(form.imageFile, await getCloudinaryRuntimeConfig(c), folder)
+    const url = await uploadSiteImage(form.imageFile, c, folder)
     return c.json({ success: true, url })
   } catch (error: any) {
     return c.json({ success: false, error: error?.message || '图片上传失败' }, 400)
@@ -6795,6 +6703,7 @@ export default {
 
     const batches = scheduledBatches(event.cron, event.scheduledTime)
     if (batches.reminders) {
+      ctx.waitUntil(runScheduledJob(c,'assign_roster_tasks',()=>syncRosterAssignments(c)))
       ctx.waitUntil(runScheduledJob(c,'rental_payout_requests',()=>runRentalPayouts(c)))
       ctx.waitUntil(runScheduledJob(c,'deliver_c2c_emails',async()=>{await loadSystemSettingsFromDB(c);return deliverC2CEmails(c)}))
       ctx.waitUntil(runScheduledJob(c, 'send_pickup_reminders', async () => {
@@ -6805,6 +6714,8 @@ export default {
     }
 
     if (batches.quarterHourly) {
+      if (env.STORAGE_BACKUP) ctx.waitUntil(runScheduledJob(c, 'migrate_legacy_images', () => migrateLegacyImages(c)))
+      if (env.STORAGE_BACKUP && hasOciStorage(env)) ctx.waitUntil(runScheduledJob(c, 'archive_historical_data', () => archiveHistoricalData(c)))
       ctx.waitUntil((async () => {
         await runScheduledJob(c, 'expire_missed_pickups', () => expireMissedPickupOrders(c))
         await runScheduledJob(c, 'expire_rental_link_drafts', () => expireRentalLinkDrafts(c))
@@ -6814,6 +6725,7 @@ export default {
     }
 
     if (batches.hourly) {
+      if (env.STORAGE_BACKUP) ctx.waitUntil(runScheduledJob(c, 'repair_object_replicas', () => repairStorageReplicas(c)))
       ctx.waitUntil(runScheduledJob(c, 'cancel_expired_pending_payments', () => cancelExpiredPendingPaymentOrders(c)))
     }
 
@@ -6826,6 +6738,7 @@ export default {
         // every step queued after it in this tick from running (the previous
         // design wrapped the whole sequence in one try/catch).
         await runScheduledJob(c, 'ensure_device_command_tables', () => ensureDeviceCommandTables(env.RENT))
+        if (env.STORAGE_BACKUP) await runScheduledJob(c, 'purge_expired_identity_materials', () => purgeExpiredIdentityMaterials(c))
         await runScheduledJob(c, 'migrate_legacy_contract_secrets', () => migrateLegacyContractSecrets(c))
 
         await runScheduledJob(c, 'mark_overdue_handovers', async () => {

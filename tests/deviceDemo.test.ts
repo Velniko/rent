@@ -81,7 +81,7 @@ for (const area of ['admin', 'staff']) {
     assert.equal((await request(editPath, normalForm)).status, 302)
     assert.equal(sqlite.prepare('SELECT demo_available_from FROM devices WHERE id = ?').get(row.id)?.demo_available_from, null)
     assert.doesNotMatch(await (await request(editPath)).text(), /name="demoMode" value="1" checked/)
-    assert.equal((await request(editPath, form, 'staff')).status, area === 'admin' ? 302 : 403)
+    assert.equal((await request(editPath, form, 'staff')).status, 403)
     assert.equal(sqlite.prepare('SELECT demo_available_from FROM devices WHERE id = ?').get(row.id)?.demo_available_from, null)
     assert.equal((await request(editPath, form)).status, 302)
     assert.ok(sqlite.prepare('SELECT demo_available_from FROM devices WHERE id = ?').get(row.id)?.demo_available_from)

@@ -14,7 +14,7 @@ import worker from '../src/index'
 import { createAuthSession, MAINTENANCE_CHECK_TYPES, releaseDeviceIfUnbooked, updateOrderStatus } from '../src/site'
 import { renderAdminDevices } from '../src/pages/admin/devices'
 import { renderAdminDeviceCalendar } from '../src/pages/admin/deviceCalendar'
-import { extractInlineScripts } from './helpers'
+import { extractInlineScripts, testInspectionFiles } from './helpers'
 
 async function setup(t: any, depositStatus = 'HELD', mode = 'PAID') {
   const sqlite = new DatabaseSync(':memory:')
@@ -35,10 +35,10 @@ async function setup(t: any, depositStatus = 'HELD', mode = 'PAID') {
     },
     async batch(statements: any[]) { const result = []; for (const statement of statements) result.push(await statement.run()); return result },
   }
-  const context = { env: { RENT: db } } as any
+  const context = { env: { RENT: db,CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret' } } as any
   const session = await createAuthSession(context, 'release-admin')
-  const request = (path: string, form: Record<string, string>, method = 'POST') => worker.fetch(new Request(`https://rent.example.test${path}`, {
-    method, body: method === 'GET' ? undefined : new URLSearchParams(form), headers: { Cookie: `session=${session.token}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
+  const request = (path: string, form: Record<string, string|File>, method = 'POST') => worker.fetch(new Request(`https://rent.example.test${path}`, {
+    method, body: method === 'GET' ? undefined : (Object.values(form).some(v=>v instanceof File)?Object.entries(form).reduce((body,[key,value])=>{body.set(key,value);return body},new FormData()):new URLSearchParams(form as Record<string,string>)), headers: { Cookie: `session=${session.token}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), context.env, { waitUntil() {} } as any)
   return { sqlite, context, request }
 }
@@ -99,19 +99,21 @@ for (const legacy of [false, true]) test(`early completion frees the calendar af
 
 test('normal return inspection releases the device while the deposit is still held', async t => {
   const { sqlite, request } = await setup(t)
+  t.mock.method(globalThis,'fetch',async()=>Response.json({secure_url:'https://res.cloudinary.com/demo/image/upload/inspection.png'}))
+  assert.equal((await request('/staff/orders/release-order/receive-return',{received:'1'})).status,303)
   sqlite.exec("INSERT INTO contracts (id, orderId, contractNumber, content) VALUES ('release-contract', 'release-order', 'RELEASE-CONTRACT', '<p>合同</p>')")
-  assert.equal((await request('/staff/orders/release-order/inspection', {}, 'GET')).status, 200)
-  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'INSPECTION')
+  assert.equal((await request('/staff/orders/release-order/inspection?fragment=1', {}, 'GET')).status, 200)
+  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'RETURNED')
   assert.equal((await request('/staff/orders/release-order/inspection', { screenCondition: 'invalid' })).status, 400)
-  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'INSPECTION')
-  const response = await request('/staff/orders/release-order/inspection', {
+  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'RETURNED')
+  const response = await request('/staff/orders/release-order/inspection', {...testInspectionFiles(),
     screenCondition: '正常', keyboardCondition: '正常', trackpadCondition: '正常', bodyCondition: '正常', cameraCondition: '正常', wifiCondition: '正常', powerTest: '正常', replacementCost: '0',
   })
   assert.equal(response.status, 302)
   assert.equal(sqlite.prepare("SELECT deposit_status FROM orders WHERE id = 'release-order'").get()?.deposit_status, 'HELD')
   assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'release-device'").get()?.lifecycle_status, 'READY')
   assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id = 'release-device'").get()?.status, 'available')
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM device_lifecycle_events WHERE next_status = 'RETURNED'").get()?.count, 0)
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM device_lifecycle_events WHERE next_status = 'RETURNED'").get()?.count, 1)
   const event = sqlite.prepare("SELECT order_id, changed_by FROM device_lifecycle_events WHERE next_status = 'READY'").get()!
   assert.equal(event.order_id, 'release-order')
   assert.equal(event.changed_by, 'release-admin')
@@ -129,7 +131,7 @@ test('completion also clears a stale rented status when the lifecycle is already
 test('failed authorization settlement cannot prevent force completion from releasing the device', async t => {
   const { sqlite, request } = await setup(t, 'HELD', 'PREAUTH')
   t.mock.method(globalThis, 'fetch', async () => new Response('upstream unavailable', { status: 503 }))
-  const response = await request('/admin/orders/release-order/update', { status: 'completed', force: '1' })
+  const response = await request('/admin/orders/release-order/update', { status: 'completed', force: '1',deviceConfirmed:'1',reason:'设备已收回' })
   assert.ok(response.status >= 400)
   assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id = 'release-order'").get()?.status, 'completed')
   assert.equal(sqlite.prepare("SELECT deposit_status FROM orders WHERE id = 'release-order'").get()?.deposit_status, 'REFUND_PENDING')

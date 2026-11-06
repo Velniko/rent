@@ -1712,7 +1712,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
   const navIcons: Record<string, string> = {
     '/customer/dashboard': 'rental-console', '/customer/rentals': '▤', '/customer/orders': '▦',
     '/customer/profile': '◎', '/customer/security': '⚿', '/customer/referral': '✦', '/customer/devices': 'laptop', '/customer/rental-program': 'c2c-rental', '/admin/rental-program': 'c2c-rental', '/customer/balance': '◌', '/customer/guest': '▰', '/customer/guest/upgrade': '↥',
-    '/staff/dashboard': 'rental-console', '/staff/orders': '◓', '/staff/orders/ongoing': '◷', '/staff/customers': '♧', '/staff/contracts': 'rental-contract',
+    '/admin/roster':'◷','/staff/roster':'◷','/admin/returns':'↺','/staff/returns':'↺','/staff/dashboard': 'rental-console', '/staff/orders': '◓', '/staff/orders/ongoing': '◷', '/staff/customers': '♧', '/staff/contracts': 'rental-contract',
     '/staff/contracts/new': 'file-plus', '/staff/contracts?status=pending_sign': '✍', '/staff/inspections': 'device-inspection', '/staff/mobile/scan': 'scan', '/staff/rentals/tracking': '⌖', '/staff/devices': 'asset-register', '/manager/staff': 'people',
     '/staff/mobile': 'today', '/staff/mobile/pickup': 'pickup', '/staff/mobile/return': 'return',
     '/admin/rental-settlements': 'bank-transfer', '/admin/settings/client-features': 'client-controls', '/manager/email-events': 'mail-history',
@@ -1890,7 +1890,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
   const sidebar = currentUser
     ? `<aside class="sidebar ${currentUser.role === 'ADMIN' || currentUser.role === 'STAFF' ? 'sidebar--desktop' : ''}" id="${currentUser.role === 'ADMIN' || currentUser.role === 'STAFF' ? 'desktop-sidebar' : 'app-sidebar'}">
         <div class="sidebar-section">
-          <h3>导航</h3>
+          <div class="workspace-switch"><span class="workspace-switch__mark" aria-hidden="true">${navIconSvg(currentUser.role === 'CUSTOMER' ? 'laptop' : 'rental-console')}</span><div><small>PC RENTAL</small><strong>${mobileLabel}</strong></div></div>
           ${searchTrigger}
           ${currentUser.role === 'CUSTOMER' ? `
             ${currentUser.accountType === 'guest' ? renderNavGroup('合同中心', [['/customer/guest', '访客合同中心'], ['/customer/guest/upgrade', '升级账户']]) : `
@@ -1900,7 +1900,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
             `}
           ` : ''}
           ${currentUser.role === 'STAFF' ? `
-            ${renderNavLink('/staff/dashboard', '工作台')}
+            ${renderNavLink('/staff/dashboard', '工作台')}${renderNavLink('/staff/roster', '我的排班')}${renderNavLink('/staff/mobile/pickup', '今日自提')}${renderNavLink('/staff/mobile/return', '今日归还')}${renderNavLink('/staff/returns', '归还管理')}
             ${renderNavLink('/notifications', '通知中心')}
             ${renderNavGroup('租赁管理', [['/staff/orders', '租赁订单'], ['/staff/orders/ongoing', '进行中的租赁']])}
             ${renderNavGroup('合同管理', [['/staff/contracts', '合同列表'], ['/staff/contracts?status=pending_sign', '待签署合同']])}
@@ -1908,7 +1908,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
             ${getAccessLevel(currentUser) === 'MANAGER' ? renderNavGroup('人员管理', [['/manager/staff', 'Staff 员工']]) : ''}
           ` : ''}
           ${currentUser.role === 'ADMIN' ? `
-            ${renderNavLink('/admin/dashboard', '控制台')}
+            ${renderNavLink('/admin/dashboard', '控制台')}${renderNavLink('/admin/roster', '员工排班')}${renderNavLink('/admin/returns', '归还管理')}
             ${renderNavLink('/admin/users', '用户管理')}
             ${renderNavGroup('通知中心', [['/admin/notifications', '业务通知'], ['/notifications', '发布通知'], ['/manager/email-events', '邮件发送记录'], ['/admin/email-templates', '邮件通知模板'], ['/admin/in-app-notification-templates', '站内通知模板'], ['/admin/notifications/settings', '通知设置']])}
             ${renderNavGroup('租赁管理', [['/admin/order-review', '网站订单审核'], ['/admin/orders', '租赁订单'], ['/admin/delivery', '配送管理'], ['/admin/calendar', '租赁日历'], ['/admin/rental-rules', '租赁规则']])}
@@ -1931,7 +1931,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
   const mobileOperationsSidebar = currentUser && (currentUser.role === 'ADMIN' || currentUser.role === 'STAFF')
     ? `<aside class="sidebar sidebar--mobile" id="app-sidebar">
         <div class="sidebar-section">
-          <h3>租赁操作</h3>
+          <div class="workspace-switch"><span class="workspace-switch__mark" aria-hidden="true">${navIconSvg('rental-console')}</span><div><small>PC RENTAL</small><strong>租赁操作</strong></div></div>
           ${searchTrigger}
           ${mobileLinks.map(([href, text]) => renderNavLink(href, text)).join('')}
         </div>
@@ -1963,7 +1963,7 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
 
   const layoutHtml = renderLayoutTemplate({
     TITLE: normalizedTitle,
-    BODY_CLASS: isAuthPage ? 'auth-page' : currentUser ? 'app-page' : 'public-page',
+    BODY_CLASS: isAuthPage ? 'auth-page' : currentUser ? `app-page workspace workspace--${currentUser.role.toLowerCase()}` : 'public-page',
     TOP_NAV: topNav,
     USER_BLOCK: userBlockHtml,
     MOBILE_NAV: mobileNav,
