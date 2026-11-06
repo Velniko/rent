@@ -4035,7 +4035,12 @@ app.get('/admin/dashboard', async (c) => {
   const [data, opsCounts] = await Promise.all([
     getAdminDashboardData(c),
     Promise.all([
-      c.env.RENT.prepare("SELECT COUNT(*) AS count FROM payments WHERE status = 'failed' AND created_at > datetime('now', '-7 days')").first(),
+      c.env.RENT.prepare(`
+        SELECT COUNT(*) AS count FROM payments p
+        JOIN orders o ON o.id = p.rental_id
+        WHERE p.status = 'failed' AND p.created_at > datetime('now', '-7 days')
+          AND o.refund_ignored_at IS NULL AND o.deleted_at IS NULL
+      `).first(),
       c.env.RENT.prepare("SELECT COUNT(*) AS count FROM device_commands WHERE status = 'FAILED' AND created_at > datetime('now', '-7 days')").first(),
       c.env.RENT.prepare("SELECT COUNT(*) AS count FROM damage_cases WHERE status IN ('OPEN', 'PENDING', 'UNDER_REVIEW')").first(),
     ]).then(([failedPayments, failedCommands, pendingDamage]) => ({
