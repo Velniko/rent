@@ -122,7 +122,8 @@ export async function sendPickupReminderEmail(c: Context, notification: { recipi
 }
 
 // 给一条已创建的站内信补发邮件：找收件人邮箱、找兜底模板、套用变量、发信。
-// 尽力而为——任何一步失败都不影响站内信本身，调用方只需 catch 掉即可。
+// 尽力而为——任何一步失败都不影响站内信本身，调用方只需 catch 掉即可；
+// 但发送结果必须原样返回，否则失败会被悄悄吞掉，连日志都看不到。
 async function sendNotificationEmail(c: Context, notification: NotificationInput, notificationId: string): Promise<EmailSendResult | void> {
   if (notification.type === 'manual') return sendManualNotificationEmail(c, notification, notificationId)
   const { provider, apiKey, from } = await resolveEmailCredentials(c)
@@ -132,8 +133,7 @@ async function sendNotificationEmail(c: Context, notification: NotificationInput
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.endsWith('@invalid.local')) return
 
   if (['pickup_reminder', 'pickup_reminder_2h', 'pickup_reminder_30m'].includes(notification.type)) {
-    await sendPickupReminderEmail(c, { ...notification, reminderMinutes: notification.type === 'pickup_reminder_2h' ? 120 : notification.type === 'pickup_reminder_30m' ? 30 : undefined }, recipient, email)
-    return
+    return sendPickupReminderEmail(c, { ...notification, reminderMinutes: notification.type === 'pickup_reminder_2h' ? 120 : notification.type === 'pickup_reminder_30m' ? 30 : undefined }, recipient, email)
   }
 
   const templateId = BUSINESS_NOTIFICATION_TEMPLATE_IDS[notification.type]
@@ -145,11 +145,8 @@ async function sendNotificationEmail(c: Context, notification: NotificationInput
       c.env.RENT.prepare('SELECT contractNumber, signToken FROM contracts WHERE orderId = ? ORDER BY createdAt DESC LIMIT 1').bind(notification.orderId).first(),
     ]) as any[]
     if (!order) return
-    if (!template) {
-      await sendGenericNotificationEmail(c, notification, recipient, email)
-      return
-    }
-    if (template.enabled === 0) return
+    if (!template) return sendGenericNotificationEmail(c, notification, recipient, email)
+    if (template.enabled === 0) return { ok: false, id: null, error: '请先启用邮件模板：' + templateId }
 
     const [customer, device, refund] = await Promise.all([
       c.env.RENT.prepare('SELECT name, email FROM users WHERE id = ?').bind(order.userId).first(),
@@ -191,16 +188,14 @@ async function sendNotificationEmail(c: Context, notification: NotificationInput
     const fill = (value: string) => value.replace(/\{([a-z_]+)\}/g, (_: string, key: string) => vars[key] ?? '')
     const subject = fill(String(template.subject || notification.title))
     const html = renderEmailNotificationHtml(subject, fill(String(template.body || '')), vars.company_name, template.theme_color || '#f0a35b')
-    await sendTransactionalEmail(c, { to: email, subject, text: sanitizePlainText(notification.message, 2000), html })
-    return
+    return sendTransactionalEmail(c, { to: email, subject, text: sanitizePlainText(notification.message, 2000), html })
   }
 
   if (CUSTOMER_AUTOMATIC_EMAIL_TYPES.has(notification.type)) {
     if (String(recipient?.role || '').toUpperCase() !== 'CUSTOMER') return
-    await sendGenericNotificationEmail(c, notification, recipient, email)
-    return
+    return sendGenericNotificationEmail(c, notification, recipient, email)
   }
-  if (notification.delivery === 'email_only') await sendGenericNotificationEmail(c, notification, recipient, email)
+  if (notification.delivery === 'email_only') return sendGenericNotificationEmail(c, notification, recipient, email)
 }
 
 async function sendManualNotificationEmail(c: Context, notification: NotificationInput, notificationId: string): Promise<EmailSendResult> {
@@ -233,13 +228,13 @@ async function sendManualNotificationEmail(c: Context, notification: Notificatio
   return result
 }
 
-async function sendGenericNotificationEmail(c: Context, notification: { recipientId: string; title: string; message: string; orderId?: string }, recipient: any, email: string): Promise<void> {
+async function sendGenericNotificationEmail(c: Context, notification: { recipientId: string; title: string; message: string; orderId?: string }, recipient: any, email: string): Promise<EmailSendResult> {
   const companyDetails = getSystemSettings().companyDetails || ({} as any)
   const subject = sanitizePlainText(notification.title, 200)
   const detailUrl = notification.orderId ? buildNotificationOrderDetailUrl(c.req.url, notification.orderId, recipient?.role) : ''
   const detailLink = detailUrl ? `<p><a href="${escapeHtml(detailUrl)}">查看订单详情</a></p>` : ''
   const html = renderEmailNotificationHtml(subject, `<p>${notification.message}</p>${detailLink}`, String(companyDetails.name || ''))
-  await sendTransactionalEmail(c, { to: email, subject, text: sanitizePlainText(notification.message, 2000), html })
+  return sendTransactionalEmail(c, { to: email, subject, text: sanitizePlainText(notification.message, 2000), html })
 }
 
 // 判断某个收件人是不是员工/管理员（结果按请求缓存）。用于决定这条通知
@@ -463,6 +458,7 @@ export async function createNotificationWithDelivery(c: Context, notification: N
       console.error('sendNotificationEmail failed:', error?.message || error)
       email = { ok: false, id: null, error: '邮件发送失败，请查看发送记录' }
     }
+    if (email && !email.ok) console.error(`sendNotificationEmail failed (type=${notification.type}):`, email.error)
   }
   return { inserted, email }
 }
@@ -605,7 +601,8 @@ export async function sendPaymentCompletedEmail(c: Context, order: any, contract
   } catch (error: any) {
     console.error('Payment receipt PDF generation failed:', error?.message || error)
   }
-  await sendTransactionalEmail(c, { to: context.email, subject, text: sanitizePlainText(`您好 ${context.vars.customer_name}：您的订单 ${context.vars.order_number} 已完成付款。`, 2000), html, attachments })
+  const result = await sendTransactionalEmail(c, { to: context.email, subject, text: sanitizePlainText(`您好 ${context.vars.customer_name}：您的订单 ${context.vars.order_number} 已完成付款。`, 2000), html, attachments })
+  if (!result.ok) console.error('sendPaymentCompletedEmail failed:', result.error)
 }
 
 // 用户或管理员主动点击「邮件发送」时，使用独立的 tax_invoice_issued 模板发送 A4 PDF。
@@ -632,13 +629,14 @@ export async function sendTaxInvoiceEmail(c: Context, order: any, contract?: { c
   const subject = fill(String(template.subject || TAX_INVOICE_TEMPLATE_SUBJECT))
   const html = renderEmailNotificationHtml(subject, fill(String(template.body || TAX_INVOICE_TEMPLATE_BODY)), invoiceVars.company_name, template.theme_color || '#f0a35b')
   const text = `Hello ${invoiceVars.customer_name}: your tax invoice ${invoiceVars.invoice_number || invoiceVars.order_number} for order ${invoiceVars.order_number} is attached.`
-  await sendTransactionalEmail(c, {
+  const result = await sendTransactionalEmail(c, {
     to: context.email,
     subject,
     text: sanitizePlainText(text, 2000),
     html,
     attachments: [taxInvoiceAttachment(document)],
   })
+  if (!result.ok) console.error('sendTaxInvoiceEmail failed:', result.error)
 }
 
 export async function deleteRentalApplicationNotifications(c: Context, orderId: string): Promise<void> {
