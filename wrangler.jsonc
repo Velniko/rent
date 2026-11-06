@@ -18,7 +18,11 @@
 	"rules": [
 		{
 			"type": "Text",
-			"globs": ["**/*.html", "**/*.css", "**/*.txt"],
+			"globs": [
+				"**/*.html",
+				"**/*.css",
+				"**/*.txt"
+			],
 			"fallthrough": true
 		}
 	],
@@ -27,7 +31,11 @@
 	// ],
 	"vars": {
 		// 仅允许已部署的营销官网跨站提交购物车订单。
-		"PUBLIC_WEB_ORIGIN": "https://www.geekslope.de5.net"
+		"PUBLIC_WEB_ORIGIN": "https://geekslope.de5.net",
+		"STORAGE_PUBLIC_ORIGIN": "https://dashboard.geekslope.de5.net",
+		"OCI_REGION": "ap-melbourne-1",
+		"OCI_NAMESPACE": "axhjbzmoazyq",
+		"OCI_ARCHIVE_BUCKET": "bucket-20261011-2116"
 	},
 	"services": [
 		{
@@ -42,12 +50,16 @@
 	//     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 	//   }
 	// ],
-	// "r2_buckets": [
-	//   {
-	//     "binding": "MY_BUCKET",
-	//     "bucket_name": "my-bucket"
-	//   }
-	// ],
+	// 非归档文件默认 R2，归档文件使用 OCI Archive；详见 docs/object-storage.md。
+	"r2_buckets": [
+		{
+			"binding": "STORAGE_BACKUP",
+			"bucket_name": "rent-storage"
+		}
+	],
+	// 在 vars 中配置 OCI_NAMESPACE、OCI_REGION、OCI_MEDIA_BUCKET、
+	// OCI_PRIVATE_BUCKET、OCI_ARCHIVE_BUCKET、STORAGE_PUBLIC_ORIGIN。
+	// OCI_ACCESS_KEY_ID、OCI_SECRET_ACCESS_KEY、STORAGE_ENCRYPTION_KEY 使用 secrets。
 	"d1_databases": [
 		{
 			"binding": "RENT",
@@ -58,11 +70,11 @@
 	"triggers": {
 		// One trigger dispatches minute, 15-minute, hourly and daily batches
 		// using the event's scheduled UTC time (daily maintenance at 00:00).
-		"crons": ["* * * * *"]
+		"crons": [
+			"* * * * *"
+		]
 	},
-	// "ai": {
-	//   "binding": "AI"
-	// },
+	"ai": { "binding": "AI" },
 	// "observability": {
 	//   "enabled": true,
 	//   "head_sampling_rate": 1

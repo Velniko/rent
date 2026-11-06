@@ -15,6 +15,7 @@ import { handleSaveAdminSettings } from '../src/actions/admin/saveSettings'
 import { saveStripeConfig } from '../src/stripe'
 import { createAuthSession, formatMelbourneDateTime, getOrderById, releaseStripePendingPaymentIntents, reconcileOrderPayments, runDataConsistencyChecks } from '../src/site'
 import worker from '../src/index'
+import { testInspectionFiles } from './helpers'
 import { renderAdminOrderDetail } from '../src/pages/admin/orderDetail'
 import { renderCustomerOrderDetail } from '../src/pages/customer/orderDetail'
 import { renderStaffInspection } from '../src/pages/staff/inspection'
@@ -114,6 +115,7 @@ async function setup(t: any, options: { rental?: number; status?: string; mode?:
 }
 
 async function requestAsAdmin(context: any, path: string, form: Record<string, string | File>) {
+  if(path.endsWith('/inspection'))context.env.RENT.prepare("UPDATE orders SET return_received_at=COALESCE(return_received_at,CURRENT_TIMESTAMP)").run()
   const body = new FormData()
   for (const [key, value] of Object.entries(form)) body.set(key, value)
   const session = await createAuthSession(context, 'admin')
@@ -124,7 +126,7 @@ async function requestAsAdmin(context: any, path: string, form: Record<string, s
 }
 
 const inspectionForm = (damage = 0) => ({
-  screenCondition: '正常', keyboardCondition: '正常', trackpadCondition: '正常', bodyCondition: '正常',
+  ...testInspectionFiles(),screenCondition: '正常', keyboardCondition: '正常', trackpadCondition: '正常', bodyCondition: '正常',
   cameraCondition: '正常', wifiCondition: '正常', powerTest: '正常', replacementCost: String(damage),
   ...(damage ? { damageDescription: '设备损坏', damagePhotoFiles: new File(['image'], 'damage.png', { type: 'image/png' }) } : {}),
 })
@@ -228,6 +230,7 @@ for (const damage of [0, 25, 200]) {
   test(`completing return inspection captures rent, fee and ${damage} damage automatically`, async t => {
     const { sqlite, calls, context } = await setup(t, { status: 'active' })
     sqlite.exec("UPDATE orders SET refundMethod = 'original'; INSERT INTO contracts (id, orderId, contractNumber, content) VALUES ('contract', 'order', 'CONTRACT1', '<p>合同</p>')")
+    sqlite.exec("UPDATE orders SET return_received_at=CURRENT_TIMESTAMP")
     const html = await renderStaffInspection(context, { id: 'admin', role: 'ADMIN' }, 'order')
     assert.match(html, /保存验机并结算/)
     assert.match(html, /损坏扣款金额（AUD）/)
@@ -249,7 +252,7 @@ test('force completion settles the stored rent and fee without inventing a fee f
   const { sqlite, calls, context, setIntent } = await setup(t, { status: 'active' })
   sqlite.exec("UPDATE orders SET refundMethod = 'original'; UPDATE payments SET processing_fee = 0, amount = 300")
   setIntent({ amount: 30000, amount_capturable: 30000 })
-  const response = await requestAsAdmin(context, '/admin/orders/order/update', { status: 'completed', force: '1' })
+  const response = await requestAsAdmin(context, '/admin/orders/order/update', { status: 'completed', force: '1',deviceConfirmed:'1',reason:'设备已收回' })
   assert.equal(response.status, 302, await response.text())
   assert.equal(calls.find(c => c.path.endsWith('/capture'))?.params.get('amount_to_capture'), '10000')
   assert.equal(sqlite.prepare('SELECT settlement_status FROM orders').get()?.settlement_status, 'SETTLED')

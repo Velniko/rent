@@ -9,7 +9,7 @@ export function renderOrderStatusFeedback(): string {
       <div class="feedback-dialog-icon" aria-hidden="true">!</div>
       <h3 id="order-status-dialog-title">订单状态更新失败</h3>
       <p data-order-status-error>暂时无法更新订单状态，请稍后重试。</p>
-      <form method="dialog"><button class="button button-primary" type="submit">知道了</button></form>
+      <button class="button button-primary" type="button" data-close-dialog>知道了</button>
     </dialog>
     <script>
       (() => {
@@ -17,7 +17,7 @@ export function renderOrderStatusFeedback(): string {
         const errorText = dialog.querySelector('[data-order-status-error]');
         const showError = (message) => {
           errorText.textContent = message || '暂时无法更新订单状态，请稍后重试。';
-          if (typeof dialog.showModal === 'function') dialog.showModal();
+          if (typeof dialog.showModal === 'function') window.WorkspaceMotion.open(dialog);
           else if (window.siteToast) window.siteToast(errorText.textContent, 'error');
           else window.alert(errorText.textContent);
         };

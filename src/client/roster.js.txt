@@ -1,0 +1,201 @@
+/* Copyright (c) 2026 jiongjiong123441. All rights reserved.
+ * Licensed under PolyForm Noncommercial 1.0.0.
+ * Noncommercial use, modification, and distribution are permitted.
+ * Keep this notice and the LICENSE file with all copies and modified versions. */
+
+(function(){
+function init(){
+ const boot=document.getElementById('roster-data');if(!boot)return;
+ const rosterIsAdmin=document.body.classList.contains('workspace--admin'),rosterIsStaff=!rosterIsAdmin;
+ let rosterState=JSON.parse(boot.textContent);
+ const rosterRoot=document.getElementById('rosterRoot');
+ let ROSTER_TODAY=rosterState.today,ROSTER_NOW=rosterState.now;
+ let rosterSelectedDay=ROSTER_TODAY,rosterRequestFilter='PENDING',rosterLogSearch='';
+const rosterMinutes=time=>Number(time.slice(0,2))*60+Number(time.slice(3,5));
+const rosterTime=minutes=>`${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`;
+const rosterAddDays=(day,amount)=>new Date(Date.parse(day+'T12:00:00Z')+amount*86400000).toISOString().slice(0,10);
+const rosterDays=start=>Array.from({length:7},(_,i)=>rosterAddDays(start,i));
+const rosterOverlap=(a,b)=>a.start<b.end&&b.start<a.end;
+const rosterDateValid=day=>/^\d{4}-\d{2}-\d{2}$/.test(day)&&!Number.isNaN(Date.parse(day+'T12:00:00Z'))&&new Date(day+'T12:00:00Z').toISOString().slice(0,10)===day;
+
+function rosterAllowedWindows(day,ranges,business){
+  if(!rosterDateValid(day))return [];
+  let windows=ranges.map(r=>({start:rosterMinutes(r.start),end:rosterMinutes(r.end)})).filter(w=>w.end>w.start);
+  const weekday=new Date(day+'T12:00:00Z').getUTCDay();
+  const closed=(business.unavailablePickupHours||[]).filter(r=>Number(r.weekday)===weekday).map(r=>({start:rosterMinutes(r.start),end:rosterMinutes(r.end)}));
+  for(const range of business.unavailablePickupRanges||[]){
+    if(range.start.slice(0,10)>day||range.end.slice(0,10)<day)continue;
+    closed.push({start:range.start.slice(0,10)===day?rosterMinutes(range.start.slice(11,16)):0,end:range.end.slice(0,10)===day?rosterMinutes(range.end.slice(11,16)):1440});
+  }
+  for(const block of closed)windows=windows.flatMap(w=>!rosterOverlap(w,block)?[w]:[{start:w.start,end:Math.min(w.end,block.start)},{start:Math.max(w.start,block.end),end:w.end}].filter(w=>w.end>w.start));
+  return windows.sort((a,b)=>a.start-b.start);
+}
+const rosterOpenWindows=(day,business)=>rosterAllowedWindows(day,[business.businessHours],business);
+const rosterServiceWindows=(day,business)=>rosterAllowedWindows(day,business.serviceFeeHours||[],business);
+function rosterTaskMode(task,business){
+  const start=rosterMinutes(task.start),end=rosterMinutes(task.end);if(end<=start)return null;
+  if(rosterOpenWindows(task.day,business).some(w=>start>=w.start&&end<=w.end))return 'business';
+  if(rosterServiceWindows(task.day,business).some(w=>start>=w.start&&end<=w.end))return 'service';
+  return null;
+}
+function rosterCoverageWindows(day,tasks,business){
+  const normal=rosterOpenWindows(day,business).map(w=>({...w,service:false}));
+  const booked=tasks.filter(t=>t.day===day&&rosterTaskMode(t,business)==='service').map(t=>({start:rosterMinutes(t.start),end:rosterMinutes(t.end),service:true})).sort((a,b)=>a.start-b.start);
+  const merged=[];for(const window of booked){const last=merged.at(-1);if(last&&window.start<=last.end)last.end=Math.max(last.end,window.end);else merged.push({...window})}
+  return normal.concat(merged).sort((a,b)=>a.start-b.start);
+}
+const rosterShiftMinutes=shift=>rosterMinutes(shift.end)-rosterMinutes(shift.start);
+function rosterValidateShift(shift,business,tasks=[]){
+  if(!rosterDateValid(shift.day)||!/^([01]\d|2[0-3]):(00|30)$/.test(shift.start)||!/^([01]\d|2[0-3]):(00|30)$/.test(shift.end))return '请选择有效的日期与半小时时段';
+  const start=rosterMinutes(shift.start),end=rosterMinutes(shift.end);if(end<=start)return '结束时间必须晚于开始时间';
+  if(!rosterCoverageWindows(shift.day,tasks,business).some(w=>start>=w.start&&end<=w.end))return '营业时段外仅可安排已有预约的取还时间，且不能跨越休业时段';
+  return '';
+}
+function rosterCanOperate({employeeId,task,shifts,grants,business,now=ROSTER_NOW,role='STAFF'}){
+  if(role==='ADMIN')return {allowed:true,via:'管理员'};
+  if(!task)return {allowed:false,reason:'任务不存在'};
+  const day=now.slice(0,10),time=rosterMinutes(now.slice(11,16));if(day!==task.day)return {allowed:false,reason:'只可办理当天任务'};
+  const inBusiness=rosterOpenWindows(day,business).some(w=>time>=w.start&&time<w.end);
+  const inBookedService=rosterTaskMode(task,business)==='service'&&time>=rosterMinutes(task.start)&&time<rosterMinutes(task.end);
+  if(!inBusiness&&!inBookedService)return {allowed:false,reason:'当前不在营业或预约服务时段'};
+  const grant=(grants||[]).find(g=>g.employeeId===employeeId&&g.status==='APPROVED'&&g.day===day&&time>=rosterMinutes(g.start)&&time<rosterMinutes(g.end)&&(g.scope==='all'||g.taskId===task.id));
+  if(grant)return {allowed:true,via:'临时授权',grantId:grant.id};
+  if(!shifts.some(s=>s.employeeId===employeeId&&s.day===day&&time>=rosterMinutes(s.start)&&time<rosterMinutes(s.end)))return {allowed:false,reason:'当前未排班'};
+  if(task.employeeId!==employeeId)return {allowed:false,reason:'任务已分配给其他员工'};
+  return {allowed:true,via:'排班'};
+}
+function rosterPreferencePermission(employee,{role='STAFF',actorId=employee.id,now=new Date().toISOString().slice(0,16),policy='rolling30'}={}){
+  if(role==='ADMIN')return {allowed:true,nextAllowedAt:null};
+  if(actorId!==employee.id)return {allowed:false,nextAllowedAt:null,reason:'只能修改自己的偏好'};
+  const last=employee.lastSelfPreferenceChange;if(!last)return {allowed:true,nextAllowedAt:null};
+  const next=new Date(Date.parse(last)+30*86400000).toISOString();
+  return {allowed:Date.parse(now)>=Date.parse(next),nextAllowedAt:next,reason:Date.parse(now)>=Date.parse(next)?'':'尚未到下次修改日期'};
+}
+
+function assignRosterTasks(tasks,shifts,business,overrides={}){
+  const assigned=[];
+  for(const task of [...tasks].sort((a,b)=>a.day.localeCompare(b.day)||Number(Boolean(overrides[b.id]))-Number(Boolean(overrides[a.id]))||a.start.localeCompare(b.start)||a.id.localeCompare(b.id))){
+    const start=rosterMinutes(task.start),end=rosterMinutes(task.end),mode=rosterTaskMode(task,business);
+    if(!mode){assigned.push({...task,employeeId:null,assignmentReason:'不在可预约取还时段'});continue}
+    const eligible=[...new Set(shifts.filter(s=>s.day===task.day&&rosterMinutes(s.start)<=start&&rosterMinutes(s.end)>=end).map(s=>s.employeeId))].filter(id=>!assigned.some(t=>t.employeeId===id&&t.day===task.day&&rosterOverlap({start:rosterMinutes(t.start),end:rosterMinutes(t.end)},{start,end})));
+    eligible.sort((a,b)=>Number(b===overrides[task.id])-Number(a===overrides[task.id])||assigned.filter(t=>t.employeeId===a&&t.day===task.day).length-assigned.filter(t=>t.employeeId===b&&t.day===task.day).length||a.localeCompare(b));
+    assigned.push({...task,service:mode==='service',employeeId:eligible[0]||null,assignmentReason:eligible.length?'':'无可用当班员工'});
+  }
+  return assigned.sort((a,b)=>a.day.localeCompare(b.day)||a.start.localeCompare(b.start)||a.id.localeCompare(b.id));
+}
+const rosterEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const rosterDate=day=>`${Number(day.slice(5,7))}月${Number(day.slice(8,10))}日`;
+const rosterLocalDate=value=>new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Melbourne',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(value));
+const rosterShort=day=>`${Number(day.slice(5,7))}/${Number(day.slice(8,10))}`;
+const rosterWeekday=day=>['周日','周一','周二','周三','周四','周五','周六'][new Date(day+'T12:00:00Z').getUTCDay()];
+const rosterBadge=(text,tone='primary')=>`<span class="badge badge-${tone}">${rosterEscape(text)}</span>`;
+const rosterIcon=name=>{const p={calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18M7 14h3M14 14h3M7 18h3"/>',plus:'<path d="M12 5v14M5 12h14"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',check:'<path d="m5 12 4 4L19 6"/>',lock:'<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',arrow:'<path d="M4 12h16m-5-5 5 5-5 5"/>'};return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p[name]||p.calendar}</svg>`};
+function rosterEmployee(id){return rosterState.employees.find(e=>e.id===id)}
+function rosterDraft(){return rosterState.drafts[rosterState.selectedStart]||null}
+function rosterVisibleShifts(){return rosterDraft()?.shifts||rosterState.published.filter(s=>rosterDays(rosterState.selectedStart).includes(s.day))}
+function rosterEnsureTasks(){}
+function rosterAssignments(shifts=rosterState.published,days=null){return rosterState.tasks.filter(t=>!days||days.includes(t.day))}
+function rosterRequestStatus(request){return request.status==='APPROVED'&&`${request.day}T${request.end}`<=ROSTER_NOW?'EXPIRED':request.status}
+const rosterRequestLabels={PENDING:'待审批',APPROVED:'已通过',REJECTED:'已拒绝',EXPIRED:'已到期',REVOKED:'已撤销'};
+function rosterError(form,message){const box=form.querySelector('.roster-form-error');box.textContent=message;box.hidden=!message;if(message)window.WorkspaceMotion.feedback(box,'error')}
+function rosterOpenDialog(selector){const dialog=document.querySelector(selector);if(!dialog)return;dialog.querySelectorAll('.roster-form-error').forEach(e=>{e.hidden=true;e.textContent=''});window.WorkspaceMotion.open(dialog)}
+function rosterRangeLabel(){const days=rosterDays(rosterState.selectedStart);return `${rosterDate(days[0])}—${rosterDate(days[6])}`}
+function rosterRender(reason='update'){
+  if(!rosterRoot)return;
+  const before=window.WorkspaceMotion.capture(rosterRoot);
+  const view=rosterRoot.dataset.rosterView;
+  if(view==='calendar')rosterRenderCalendar();else if(view==='requests')rosterRenderRequests();else if(view==='logs')rosterRenderLogs();else rosterRenderMine();
+  document.querySelectorAll('[data-roster-pending-count]').forEach(e=>e.textContent=rosterState.requests.filter(r=>r.status==='PENDING').length);
+  document.querySelectorAll('[data-roster-publish]').forEach(b=>b.disabled=!rosterDraft());
+  window.WorkspaceMotion.refresh(rosterRoot,reason,before);
+}
+function rosterRenderCalendar(){
+  const days=rosterDays(rosterState.selectedStart);rosterEnsureTasks(days);
+  if(!days.includes(rosterSelectedDay))rosterSelectedDay=days[0];
+  const calendarEmployees=rosterDraft()?.employees||rosterState.employees;
+  const shifts=rosterVisibleShifts(),assignments=(rosterDraft()?assignRosterTasks(rosterState.tasks.filter(t=>days.includes(t.day)),shifts,rosterState.business,rosterState.overrides):rosterAssignments(shifts,days)),hours=shifts.reduce((n,s)=>n+rosterShiftMinutes(s)/60,0),missing=assignments.filter(t=>!t.employeeId);
+  const warnings=rosterDraft()?.warnings||[];
+  const activeDays=days.filter(d=>rosterOpenWindows(d,rosterState.business).length).length;
+  const header=`<div class="roster-period-bar"><div class="roster-period-picker"><button type="button" data-roster-period="-7" aria-label="前 7 天">‹</button><strong>${rosterRangeLabel()}</strong><button type="button" data-roster-period="7" aria-label="后 7 天">›</button><button type="button" data-roster-today>今天</button></div>${rosterBadge(rosterDraft()?'草案':'已发布',rosterDraft()?'warning':'success')}<button type="button" class="button button-sm button-secondary" data-roster-add>${rosterIcon('plus')}添加班次</button></div>`;
+  const readings=`<div class="roster-readings"><div><span>计划工时</span><strong>${hours.toFixed(1)}<small>小时</small></strong></div><div><span>取还任务</span><strong>${assignments.length}<small>项</small></strong></div><div><span>已分配</span><strong>${assignments.length-missing.length}<small>项</small></strong></div><div><span>营业日</span><strong>${activeDays}<small>天</small></strong></div></div>`;
+  const warning=missing.length||warnings.length?`<div class="roster-gap-notice">${rosterIcon('clock')}<div><strong>${missing.length?`${missing.length} 项任务未分配`:'部分营业时段人手不足'}</strong><span>${rosterEscape(warnings.slice(0,3).map(w=>`${rosterShort(w.day)} ${w.start}–${w.end}`).join(' · ')||missing.slice(0,3).map(t=>`${rosterShort(t.day)} ${t.start} ${t.assignmentReason}`).join(' · '))}</span></div></div>`:'';
+  const grid=`<div class="roster-grid-scroll"><div class="roster-week-grid" role="grid" aria-label="员工七日排班"><div class="roster-grid-row" role="row"><div class="roster-person-cell roster-grid-heading" role="columnheader">员工 / 日工时上限</div>${days.map(day=>{const open=rosterOpenWindows(day,rosterState.business);return `<button class="roster-grid-heading${day===rosterSelectedDay?' is-selected':''}${day===ROSTER_TODAY?' is-today':''}" type="button" role="columnheader" data-roster-day="${day}"><span>${rosterWeekday(day)}${day===ROSTER_TODAY?' · 今天':''}</span><strong>${rosterShort(day)}</strong><small>${open.length?open.map(w=>`${rosterTime(w.start)}–${rosterTime(w.end)}`).join(' / '):'不营业'}</small></button>`}).join('')}<div class="roster-grid-heading roster-total-heading" role="columnheader">总工时</div></div>${calendarEmployees.map((employee,index)=>{const own=shifts.filter(s=>s.employeeId===employee.id),defaultHours=rosterDraft()?.settings?.dailyHours??rosterState.settings.dailyHours;return `<div class="roster-grid-row" role="row"><div class="roster-person-cell" role="rowheader"><i class="roster-avatar roster-avatar--${index}">${rosterEscape(employee.name.slice(0,1))}</i><div><button class="roster-name-button" type="button" data-roster-preference="${employee.id}">${rosterEscape(employee.name)}</button><small>每日 ≤ ${employee.dailyHours??defaultHours} 小时${employee.dailyHours!=null?' · 独立':''}</small></div></div>${days.map(day=>{const dayShifts=own.filter(s=>s.day===day);const open=rosterCoverageWindows(day,rosterState.tasks,rosterState.business).length;return `<div class="roster-day-cell${day===rosterSelectedDay?' is-selected':''}${!open?' is-closed':''}" role="gridcell">${dayShifts.length?dayShifts.map(shift=>`<button type="button" class="roster-shift roster-shift--${index}${shift.service?' is-service':''}${shift.locked?' is-fixed':''}" data-roster-edit="${rosterEscape(shift.id)}"><strong>${shift.start}–${shift.end}</strong><span>${rosterShiftMinutes(shift)/60} 小时${shift.service?' · 加价取还':''}${shift.locked?' · 固定':''}</span></button>`).join(''):`<button type="button" class="roster-empty-shift" data-roster-add-day="${day}" data-roster-add-employee="${employee.id}" ${!open||day<ROSTER_TODAY?'disabled':''}>${!open?'不营业':employee.enabled===false?'不参与':'休息'}<span>${rosterIcon('plus')}</span></button>`}</div>`}).join('')}<div class="roster-row-total" role="gridcell"><strong>${own.reduce((n,s)=>n+rosterShiftMinutes(s)/60,0)}</strong><small>小时</small></div></div>`}).join('')}</div></div>`;
+  const mobile=`<div class="roster-mobile-week"><div class="roster-day-switch">${days.map(day=>`<button type="button" data-roster-day="${day}" class="${day===rosterSelectedDay?'is-selected':''}"><span>${rosterWeekday(day)}</span><strong>${rosterShort(day)}</strong></button>`).join('')}</div>${calendarEmployees.map((e,i)=>{const dayShifts=shifts.filter(s=>s.day===rosterSelectedDay&&s.employeeId===e.id);return `<div class="roster-mobile-shift"><i class="roster-avatar roster-avatar--${i}">${rosterEscape(e.name[0])}</i><div><button class="roster-name-button" type="button" data-roster-preference="${e.id}">${rosterEscape(e.name)}</button>${dayShifts.length?dayShifts.map(shift=>`<button class="roster-mobile-range${shift.service?' is-service':''}" type="button" data-roster-edit="${shift.id}">${shift.start}–${shift.end}<small>${shift.service?'加价取还 · ':''}${rosterShiftMinutes(shift)/60} 小时 · 编辑</small></button>`).join(''):'<span>休息</span>'}</div><button class="button button-sm button-secondary" type="button" data-roster-add-day="${rosterSelectedDay}" data-roster-add-employee="${e.id}"${!rosterCoverageWindows(rosterSelectedDay,rosterState.tasks,rosterState.business).length||rosterSelectedDay<ROSTER_TODAY?' disabled':''}>排班</button></div>`}).join('')}</div>`;
+  const taskRows=assignments.filter(t=>t.day===rosterSelectedDay).map(t=>`<tr><td class="mono" data-label="时间">${t.start}–${t.end}</td><td data-label="类型">${rosterBadge(t.kind==='pickup'?'自提':'归还',t.kind==='pickup'?'primary':'info')}${t.service?'<small class="roster-service-task">加价时段</small>':''}</td><td data-label="订单 / 设备"><a class="mono" href="/admin/orders/${encodeURIComponent(t.orderId)}">${rosterEscape(t.orderNo)}</a><small class="cell-sub">${rosterEscape(t.deviceName)}</small></td><td data-label="客户">${rosterEscape(t.customer)}</td><td data-label="负责员工">${t.employeeId?`<span class="roster-assignee"><i>${rosterEscape(rosterEmployee(t.employeeId)?.name[0])}</i>${rosterEscape(rosterEmployee(t.employeeId)?.name)}</span>`:rosterBadge('未分配','warning')}</td><td data-label="改派">${rosterDraft()?'<span class="roster-muted">待发布</span>':`<select class="roster-reassign" aria-label="改派 ${rosterEscape(t.orderNo)}" data-roster-reassign="${t.id}">${[...new Set(rosterState.published.filter(s=>s.day===t.day&&s.start<=t.start&&s.end>=t.end).map(s=>s.employeeId))].map(id=>`<option value="${id}"${id===t.employeeId?' selected':''}>${rosterEscape(rosterEmployee(id)?.name)}</option>`).join('')||'<option>暂无当班员工</option>'}</select>`}</td></tr>`).join('');
+  rosterRoot.innerHTML=header+readings+warning+`<section class="roster-calendar-panel">${grid}${mobile}<div class="roster-calendar-legend"><span><i></i>排班</span><span>加价取还 ${shifts.filter(s=>s.service).length} 班</span><span>固定班次 ${shifts.filter(s=>s.locked).length}</span><span>${rosterDraft()?'待发布草案':'已发布排班'}</span></div></section><section class="panel roster-task-panel"><div class="section-title"><h3>${rosterDate(rosterSelectedDay)} · 任务分配</h3><span class="section-code">AUTO ASSIGNMENT</span></div><div class="table-wrapper"><table class="roster-task-table"><thead><tr><th>时间</th><th>类型</th><th>订单 / 设备</th><th>客户</th><th>负责员工</th><th>改派</th></tr></thead><tbody>${taskRows||'<tr><td colspan="6">当天没有取还任务</td></tr>'}</tbody></table></div></section>`;
+}
+function rosterRenderRequests(){
+  const rows=rosterState.requests.filter(r=>rosterRequestFilter==='ALL'||rosterRequestStatus(r)===rosterRequestFilter).sort((a,b)=>b.requestedAt.localeCompare(a.requestedAt));
+  rosterRoot.innerHTML=`<div class="roster-request-toolbar"><nav class="filter-tabs">${[['PENDING','待审批'],['APPROVED','已通过'],['REJECTED','已拒绝'],['EXPIRED','已到期'],['ALL','全部']].map(([value,label])=>`<button type="button" class="button ${rosterRequestFilter===value?'button-primary':'button-secondary'}" data-roster-request-filter="${value}">${label}<span>${rosterState.requests.filter(r=>value==='ALL'||rosterRequestStatus(r)===value).length}</span></button>`).join('')}</nav></div><div class="roster-request-list">${rows.map(r=>{const task=rosterState.tasks.find(t=>t.id===r.taskId),status=rosterRequestStatus(r);return `<article class="panel roster-request-card"><div class="roster-request-heading"><i class="roster-avatar">${rosterEscape(rosterEmployee(r.employeeId)?.name[0])}</i><div><h3>${rosterEscape(rosterEmployee(r.employeeId)?.name)}</h3><span>申请于 ${r.requestedAt.replace('T',' ')}</span></div>${rosterBadge(rosterRequestLabels[status],status==='PENDING'?'warning':status==='APPROVED'?'success':'info')}</div><div class="roster-request-detail"><div><span>申请时间</span><strong>${rosterDate(r.day)} · ${r.start}–${r.end}</strong></div><div><span>操作范围</span><strong>${r.scope==='all'?'当天全部取还任务':`${task?.kind==='pickup'?'自提':'归还'} · ${rosterEscape(task?.orderNo||'指定订单')}`}</strong></div></div><blockquote>${rosterEscape(r.reason)}</blockquote>${r.reviewReason?`<p class="roster-review-reason">审批备注：${rosterEscape(r.reviewReason)}</p>`:''}<div class="roster-request-actions">${status==='PENDING'?`<button type="button" class="button button-secondary" data-roster-decide="REJECTED" data-roster-request-id="${r.id}">拒绝</button><button type="button" class="button button-primary" data-roster-decide="APPROVED" data-roster-request-id="${r.id}">批准临时操作</button>`:`<span>${r.reviewedBy?'审批人：'+rosterEscape(r.reviewedBy):''}</span>${status==='APPROVED'?`<button type="button" class="button button-sm button-secondary" data-roster-revoke="${r.id}">撤销授权</button>`:''}`}</div></article>`}).join('')||'<div class="empty-state">暂无此类申请</div>'}</div>`;
+}
+function rosterRenderLogs(){
+  const logs=[...rosterState.logs].reverse().filter(l=>!rosterLogSearch||`${l.actor} ${l.action} ${l.target} ${l.detail}`.toLowerCase().includes(rosterLogSearch.toLowerCase()));
+  rosterRoot.innerHTML=`<section class="panel"><div class="roster-log-toolbar"><h3>排班与临时操作记录</h3><label class="roster-log-search"><input class="form-control" type="search" data-roster-log-search value="${rosterEscape(rosterLogSearch)}" placeholder="搜索员工、操作或订单" aria-label="搜索排班操作记录"></label></div><div class="roster-log-list">${logs.map(l=>`<article><span class="roster-log-dot"></span><div class="roster-log-when mono">${l.at.replace('T',' ')}</div><div class="roster-log-content"><strong>${rosterEscape(l.action)}</strong><p>${rosterEscape(l.target)}</p><span>${rosterEscape(l.detail)}</span></div><span class="roster-log-actor">${rosterEscape(l.actor)}</span></article>`).join('')||'<div class="empty-state">没有找到记录</div>'}</div></section>`;
+}
+function rosterRenderMine(){
+  const employee=rosterEmployee(rosterState.currentEmployeeId),own=rosterState.published.filter(s=>s.employeeId===employee.id),todayShift=own.find(s=>s.day===ROSTER_TODAY&&s.start<=ROSTER_NOW.slice(11,16)&&s.end>ROSTER_NOW.slice(11,16));
+  const granted=rosterState.requests.find(r=>r.employeeId===employee.id&&rosterRequestStatus(r)==='APPROVED'&&r.day===ROSTER_TODAY&&r.start<=ROSTER_NOW.slice(11,16)&&r.end>ROSTER_NOW.slice(11,16));
+  const tasks=rosterAssignments().filter(t=>t.day===ROSTER_TODAY),myTasks=tasks.filter(t=>t.employeeId===employee.id||rosterState.requests.some(r=>r.employeeId===employee.id&&rosterRequestStatus(r)==='APPROVED'&&(r.scope==='all'||r.taskId===t.id)));
+  const days=rosterDays(rosterState.selectedStart),myWeek=own.filter(s=>days.includes(s.day));
+  const preferencePermission=rosterPreferencePermission(employee,{now:rosterState.instant,actorId:employee.id,policy:rosterState.preferencePolicy});
+  rosterRoot.innerHTML=`<section class="roster-my-status${todayShift?' is-on-duty':granted?' is-temporary':''}"><div class="roster-my-status-icon">${rosterIcon(todayShift?'check':granted?'clock':'lock')}</div><div><span>今天 · ${rosterDate(ROSTER_TODAY)}</span><h2>${todayShift?`当班中 · ${todayShift.start}–${todayShift.end}`:granted?`临时授权 · 至 ${granted.end}`:'今天未排班'}</h2><p>${rosterEscape(employee.name)} · ${todayShift?'自提 / 归还 / 验机':granted?'指定订单可操作':'取还与验机操作已锁定'}</p></div><button class="button button-secondary" type="button" data-roster-request>申请临时操作</button></section><section class="roster-my-preference"><div class="roster-preference-label">${rosterIcon('clock')}<span>上班时间偏好</span></div><div><strong>${employee.preferredStart?`${employee.preferredStart}–${employee.preferredEnd}`:'不限时段'}</strong><span>${preferencePermission.allowed?'本次可修改':`下次可修改：${rosterLocalDate(preferencePermission.nextAllowedAt).replaceAll('-','.')}`}${employee.preferenceUpdatedBy?' · 上次修改：'+rosterEscape(employee.preferenceUpdatedBy):''}</span></div><button class="button button-secondary" type="button" data-roster-preference="${employee.id}"${preferencePermission.allowed?'':' disabled'}>修改偏好</button></section><div class="roster-mine-week-heading"><h3>我的 7 日排班</h3><span>${rosterRangeLabel()} · ${myWeek.reduce((n,s)=>n+rosterShiftMinutes(s)/60,0)} 小时</span></div><div class="roster-mine-week">${days.map(day=>{const dayShifts=own.filter(s=>s.day===day);return `<article class="${day===ROSTER_TODAY?'is-today':''}"><span>${rosterWeekday(day)}</span><strong>${rosterShort(day)}</strong><div>${dayShifts.length?dayShifts.map(shift=>`<b class="${shift.service?'is-service':''}">${shift.start}–${shift.end}</b>${shift.service?'<small>加价取还</small>':''}`).join('')+`<small>${dayShifts.reduce((n,s)=>n+rosterShiftMinutes(s)/60,0)} 小时</small>`:'<span class="roster-rest">休息</span>'}</div></article>`}).join('')}</div><section class="panel"><div class="section-title"><h3>今天的取还任务</h3><span class="section-note">分配给我 ${myTasks.length} 项</span></div><div class="roster-my-tasks">${tasks.map(t=>{const permission=rosterCanOperate({employeeId:employee.id,task:t,shifts:rosterState.published,grants:rosterState.requests,business:rosterState.business});return `<article><span class="roster-task-time mono">${t.start}</span><div><strong>${t.kind==='pickup'?'自提':'归还'} · ${rosterEscape(t.deviceName)}</strong><p class="mono">${rosterEscape(t.orderNo)}</p><span>${rosterEscape(t.customer)} · ${rosterEscape(t.employeeId?rosterEmployee(t.employeeId)?.name:'未分配')}</span></div>${permission.allowed?`<button type="button" class="button button-primary" data-roster-start-task="${t.id}">开始办理</button>`:`<button type="button" class="button button-secondary" disabled>${permission.reason}</button>`}</article>`}).join('')}</div></section><section class="panel"><div class="section-title"><h3>我的临时操作申请</h3><button class="button button-sm button-secondary" type="button" data-roster-request>新申请</button></div><div class="roster-my-requests">${rosterState.requests.filter(r=>r.employeeId===employee.id).map(r=>`<article><div><strong>${rosterDate(r.day)} · ${r.start}–${r.end}</strong><p>${rosterEscape(r.reason)}</p></div>${rosterBadge(rosterRequestLabels[rosterRequestStatus(r)],rosterRequestStatus(r)==='PENDING'?'warning':rosterRequestStatus(r)==='APPROVED'?'success':'info')}</article>`).join('')||'<p class="roster-muted">还没有临时操作申请。</p>'}</div></section>`;
+}
+function rosterOpenAuto(){const form=document.getElementById('rosterAutoForm');const settings=rosterDraft()?.settings||rosterState.settings;for(const key of ['dailyHours','maxDays','maxConsecutive','minStaff'])form.elements[key].value=settings[key];form.elements.start.value=rosterAddDays(ROSTER_TODAY,1);form.querySelector('[data-roster-employee-hours]').innerHTML=rosterState.employees.map((e,i)=>`<div class="roster-hour-row"><label class="roster-hour-employee"><input type="checkbox" name="enabled_${e.id}"${e.enabled!==false?' checked':''}><i class="roster-avatar roster-avatar--${i}">${rosterEscape(e.name[0])}</i><span>${rosterEscape(e.name)}${''}</span></label><div class="roster-hour-controls"><label class="roster-hour-input"><input class="form-control" type="number" min="1" max="12" step="0.5" name="hours_${e.id}" value="${e.dailyHours??''}" placeholder="默认 ${settings.dailyHours}" aria-label="${rosterEscape(e.name)}每日工时"><span>小时 / 天</span></label><div class="roster-preference-inputs"><label>偏好开始<input class="form-control" type="time" step="1800" name="prefStart_${e.id}" value="${e.preferredStart||''}" aria-label="${rosterEscape(e.name)}偏好开始"></label><label>偏好结束<input class="form-control" type="time" step="1800" name="prefEnd_${e.id}" value="${e.preferredEnd||''}" aria-label="${rosterEscape(e.name)}偏好结束"></label></div></div></div>`).join('');const b=rosterState.business.businessHours;form.querySelector('[data-roster-business-note]').textContent=`营业 ${b.start}–${b.end} · 加价时段按预约安排`;rosterOpenDialog('.roster-dialog--auto')}
+function rosterOpenShift({id='',day=rosterSelectedDay,employeeId=rosterState.employees[0].id}={}){const form=document.getElementById('rosterShiftForm');form.reset();const shift=rosterVisibleShifts().find(s=>s.id===id);form.querySelector('[data-roster-employee-select]').innerHTML=rosterState.employees.map(e=>`<option value="${e.id}">${rosterEscape(e.name)}</option>`).join('');form.elements.shiftId.value=id;form.elements.employeeId.value=shift?.employeeId||employeeId;form.elements.day.value=shift?.day||day;form.elements.start.value=shift?.start||'09:00';form.elements.end.value=shift?.end||'17:00';form.elements.locked.checked=shift?.locked??true;form.querySelector('[data-roster-remove-shift]').hidden=!shift;rosterOpenDialog('.roster-dialog--shift')}
+function rosterOpenRequest(taskId=''){const form=document.getElementById('rosterRequestForm');form.reset();form.querySelector('[data-roster-request-tasks]').innerHTML=rosterAssignments().filter(t=>t.day===ROSTER_TODAY).map(t=>`<option value="${t.id}">${t.kind==='pickup'?'自提':'归还'} · ${rosterEscape(t.orderNo)} · ${t.start}</option>`).join('');if(taskId)form.elements.taskId.value=taskId;rosterOpenDialog('.roster-dialog--request')}
+function rosterOpenDecision(id,decision){const request=rosterState.requests.find(r=>r.id===id);if(!request||request.status!=='PENDING')return;const form=document.getElementById('rosterDecisionForm');form.reset();form.elements.requestId.value=id;form.elements.decision.value=decision;form.elements.start.value=request.start;form.elements.end.value=request.end;form.querySelector('[data-roster-decision-summary]').innerHTML=`<div class="roster-decision-person"><i class="roster-avatar">${rosterEscape(rosterEmployee(request.employeeId)?.name[0])}</i><div><strong>${rosterEscape(rosterEmployee(request.employeeId)?.name)}</strong><span>${rosterDate(request.day)} · ${request.start}–${request.end}</span></div></div><blockquote>${rosterEscape(request.reason)}</blockquote>`;form.querySelector('[data-roster-decision-times]').hidden=decision==='REJECTED';form.elements.start.required=decision==='APPROVED';form.elements.end.required=decision==='APPROVED';form.elements.reason.required=decision==='REJECTED';form.querySelector('[data-roster-decision-label]').textContent=decision==='REJECTED'?'拒绝原因':'审批备注（选填）';form.querySelector('button[type="submit"]').textContent=decision==='REJECTED'?'确认拒绝':'确认批准';rosterOpenDialog('.roster-dialog--decision')}
+function rosterOpenPublish(){const draft=rosterDraft();if(!draft)return;const form=document.getElementById('rosterPublishForm');form.querySelector('[data-roster-publish-summary]').innerHTML=`<div class="roster-publish-summary"><span>${rosterRangeLabel()}</span><strong>${draft.shifts.length}<small>个班次</small></strong><p>${rosterAssignments(draft.shifts,rosterDays(draft.start)).filter(t=>t.employeeId).length} 项取还任务已分配</p></div>`;rosterOpenDialog('.roster-dialog--publish')}
+function rosterOpenPreference(employeeId){
+  const employee=rosterEmployee(employeeId);if(!employee)return;
+  const permission=rosterPreferencePermission(employee,{role:rosterIsAdmin?'ADMIN':'STAFF',actorId:rosterState.currentEmployeeId,now:rosterState.instant,policy:rosterState.preferencePolicy});
+  const form=document.getElementById('rosterPreferenceForm');form.reset();form.elements.employeeId.value=employeeId;form.elements.start.value=employee.preferredStart||'';form.elements.end.value=employee.preferredEnd||'';
+  form.querySelector('[data-roster-preference-person]').innerHTML=`<div class="roster-decision-person"><i class="roster-avatar">${rosterEscape(employee.name[0])}</i><div><strong>${rosterEscape(employee.name)}</strong><span>当前偏好：${employee.preferredStart?employee.preferredStart+'–'+employee.preferredEnd:'不限时段'}</span></div></div>`;
+  form.querySelector('[data-roster-preference-rule]').textContent=rosterIsAdmin?'管理员可随时修改':permission.allowed?'每30天可修改一次。':`下次可修改：${rosterLocalDate(permission.nextAllowedAt).replaceAll('-','.')}`;
+  form.querySelector('button[type="submit"]').disabled=!permission.allowed;form.elements.start.disabled=!permission.allowed;form.elements.end.disabled=!permission.allowed;rosterOpenDialog('.roster-dialog--preference');
+}
+
+function rosterNotify(message){window.workspaceNotify(message)}
+async function rosterCommand(operation,fields={},reason='update'){
+ const response=await fetch((rosterIsAdmin?'/admin':'/staff')+'/roster/action',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({operation,revision:rosterState.revision,startDate:rosterState.selectedStart,...fields})});
+ const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败，请重试');
+ rosterState=result.data;ROSTER_TODAY=rosterState.today;ROSTER_NOW=rosterState.now;rosterRender(reason);return result;
+}
+async function rosterPeriod(start){const response=await fetch((rosterIsAdmin?'/admin':'/staff')+'/roster/data?start='+encodeURIComponent(start),{headers:{Accept:'application/json'}});const result=await response.json();if(!response.ok)throw new Error(result.error||'加载失败');rosterState=result.data;ROSTER_TODAY=rosterState.today;ROSTER_NOW=rosterState.now;rosterRender('week')}
+function rosterBindForm(id,operation,fields,reason='update'){
+ const form=document.getElementById(id);if(!form)return;
+ form.addEventListener('submit',async event=>{event.preventDefault();if(form.dataset.motionBusy||form.closest('dialog').classList.contains('motion-closing'))return;rosterError(form,'');if(!form.reportValidity())return;const data=new FormData(form);form.dataset.motionBusy='true';try{await window.WorkspaceMotion.task(event.submitter,async()=>{await rosterCommand(operation,fields(data),reason);await window.WorkspaceMotion.close(form.closest('dialog'));rosterNotify('已保存')})}catch(error){rosterError(form,error.message)}finally{delete form.dataset.motionBusy}});
+}
+const text=(data,key)=>String(data.get(key)||'');
+rosterBindForm('rosterAutoForm','auto',data=>({start:text(data,'start'),dailyHours:Number(data.get('dailyHours')),maxDays:Number(data.get('maxDays')),maxConsecutive:Number(data.get('maxConsecutive')),minStaff:Number(data.get('minStaff')),keepLocked:data.has('keepLocked'),employees:rosterState.employees.map(e=>({id:e.id,enabled:data.has('enabled_'+e.id),dailyHours:text(data,'hours_'+e.id)?Number(data.get('hours_'+e.id)):null,preferredStart:text(data,'prefStart_'+e.id),preferredEnd:text(data,'prefEnd_'+e.id)}))}),'draft');
+rosterBindForm('rosterShiftForm','shift',data=>({shiftId:text(data,'shiftId'),employeeId:text(data,'employeeId'),day:text(data,'day'),start:text(data,'start'),end:text(data,'end'),locked:data.has('locked'),reason:text(data,'reason')}));
+rosterBindForm('rosterPublishForm','publish',()=>({}),'publish');
+rosterBindForm('rosterPreferenceForm','preference',data=>({employeeId:text(data,'employeeId'),start:text(data,'start'),end:text(data,'end')}),'preference');
+rosterBindForm('rosterRequestForm','request',data=>({taskId:text(data,'taskId'),start:text(data,'start'),end:text(data,'end'),reason:text(data,'reason')}),'request');
+rosterBindForm('rosterDecisionForm','decision',data=>({requestId:text(data,'requestId'),decision:text(data,'decision'),start:text(data,'start'),end:text(data,'end'),reason:text(data,'reason')}),'decision');
+document.addEventListener('click',async event=>{
+ const b=event.target.closest('button,a');if(!b)return;
+ try{
+ if(b.hasAttribute('data-roster-auto'))rosterOpenAuto();
+ if(b.hasAttribute('data-roster-preference'))rosterOpenPreference(b.dataset.rosterPreference);
+ if(b.hasAttribute('data-roster-publish'))rosterOpenPublish();
+ if(b.hasAttribute('data-roster-request'))rosterOpenRequest();
+ if(b.hasAttribute('data-roster-period'))await rosterPeriod(rosterAddDays(rosterState.selectedStart,Number(b.dataset.rosterPeriod)));
+ if(b.hasAttribute('data-roster-today'))await rosterPeriod(ROSTER_TODAY);
+ if(b.hasAttribute('data-roster-day')){rosterSelectedDay=b.dataset.rosterDay;rosterRender('day')}
+ if(b.hasAttribute('data-roster-add'))rosterOpenShift();
+ if(b.hasAttribute('data-roster-edit'))rosterOpenShift({id:b.dataset.rosterEdit});
+ if(b.hasAttribute('data-roster-add-day'))rosterOpenShift({day:b.dataset.rosterAddDay,employeeId:b.dataset.rosterAddEmployee});
+ if(b.hasAttribute('data-roster-request-filter')){rosterRequestFilter=b.dataset.rosterRequestFilter;rosterRender('filter')}
+ if(b.hasAttribute('data-roster-decide'))rosterOpenDecision(b.dataset.rosterRequestId,b.dataset.rosterDecide);
+ if(b.hasAttribute('data-roster-revoke'))await window.WorkspaceMotion.task(b,()=>rosterCommand('revoke',{requestId:b.dataset.rosterRevoke},'decision'));
+ if(b.hasAttribute('data-roster-remove-shift')){const form=b.closest('form');await window.WorkspaceMotion.task(b,()=>rosterCommand('removeShift',{shiftId:form.elements.shiftId.value}));await window.WorkspaceMotion.close(form.closest('dialog'))}
+ if(b.hasAttribute('data-roster-start-task')){const task=rosterState.tasks.find(t=>t.id===b.dataset.rosterStartTask);if(task)location.href=task.kind==='pickup'?'/staff/orders/'+encodeURIComponent(task.orderId)+'/handover':'/staff/orders/'+encodeURIComponent(task.orderId)}
+ }catch(error){rosterNotify(error.message)}
+});
+document.addEventListener('change',async event=>{const select=event.target.closest('[data-roster-reassign]');if(!select)return;try{await rosterCommand('reassign',{taskId:select.dataset.rosterReassign,employeeId:select.value})}catch(error){rosterNotify(error.message);rosterRender()}});
+document.addEventListener('input',event=>{if(!event.target.matches('[data-roster-log-search]'))return;rosterLogSearch=event.target.value;const position=event.target.selectionStart;rosterRenderLogs();const input=rosterRoot.querySelector('[data-roster-log-search]');input.focus();if(input.type!=='search')input.setSelectionRange(position,position)});
+rosterRender('page');
+const refreshTimer=setInterval(()=>{if(document.hidden||document.querySelector('dialog[open]')||document.activeElement?.matches('input,textarea,select'))return;rosterPeriod(rosterState.selectedStart).catch(()=>{})},60000);window.addEventListener('pagehide',()=>clearInterval(refreshTimer),{once:true});
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+})();

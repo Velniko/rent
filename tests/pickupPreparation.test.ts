@@ -9,7 +9,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { URL } from 'node:url'
 import { readFileSync, readdirSync } from 'node:fs'
 import worker from '../src/index'
-import { createAuthSession, getOrderById } from '../src/site'
+import { seedTestRoster, testInspectionFiles } from './helpers'
+import { createAuthSession, getOrderById, invalidateSystemSettingsCache } from '../src/site'
 import { createDueDateNotifications, sendScheduledPickupReminders } from '../src/services/notifications'
 import { pickupAppointmentAt } from '../src/domain/pickupPreparation'
 import { MANUAL_INSPECTION_CHECKS } from '../src/lib/inspection'
@@ -26,6 +27,8 @@ async function setup(t: any) {
     ('admin', '管理员', 'admin@example.test', 'ADMIN', NULL), ('customer', '客户<img src=x>', 'customer@example.test', 'CUSTOMER', 'staff');
     INSERT INTO devices (id, name, model, pricePerDay, depositAmount, serialNumber, status, lifecycle_status) VALUES ('device', '电脑', 'Test', 20, 100, 'PICKUP-SN', 'available', 'READY'), ('replacement', '替换设备', 'Test', 20, 100, 'PICKUP-SN-2', 'available', 'READY');
     INSERT INTO orders (id, orderNo, userId, deviceId, startDate, endDate, rentalPeriod, totalAmount, depositAmount, status, paymentMethod, deliveryMethod, pickupLocation, pickupTimeSlot) VALUES ('pickup-order', 'OD-PICKUP', 'customer', 'device', '2090-01-01', '2090-01-07', 6, 220, 100, 'paid', 'card', 'Pickup', '墨尔本门店', '09:30');`)
+  seedTestRoster(sqlite,'staff')
+  sqlite.prepare("INSERT OR REPLACE INTO systemSettings(key,value) VALUES ('rentalRules',?)").run(JSON.stringify({businessHours:{start:'07:00',end:'20:00'},serviceFeeHours:[{start:'21:00',end:'23:00'}]}))
   const db = {
     prepare(sql: string) {
       let values: any[] = []
@@ -39,15 +42,17 @@ async function setup(t: any) {
     },
     async batch(statements: any[]) { return Promise.all(statements.map(statement => statement.run())) },
   }
-  const env = { RENT: db, RESEND_API_KEY: 'pickup-test-key', EMAIL_FROM: 'sender@example.test' }
+  invalidateSystemSettingsCache()
+  const env = { RENT: db, CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret',RESEND_API_KEY: 'pickup-test-key', EMAIL_FROM: 'sender@example.test' }
   const sessions = new Map<string, string>()
   for (const id of ['staff', 'other-staff', 'admin', 'customer', 'other-customer']) sessions.set(id, (await createAuthSession({ env } as any, id)).token)
-  const request = (actor = 'staff', path = '/staff/orders/pickup-order/prepare-pickup', method = 'POST', form?: Record<string, string>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
-    method, body: form ? new URLSearchParams(form) : undefined, headers: { Cookie: `session=${sessions.get(actor) || ''}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
+  const request = (actor = 'staff', path = '/staff/orders/pickup-order/prepare-pickup', method = 'POST', form?: Record<string, string|File>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
+    method, body: form ? (Object.values(form).some(v=>v instanceof File)?Object.entries(form).reduce((body,[key,value])=>{body.set(key,value);return body},new FormData()):new URLSearchParams(form as Record<string,string>)) : undefined, headers: { Cookie: `session=${sessions.get(actor) || ''}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), env, { waitUntil() {} } as any)
   const sent: any[] = []
   let emailOk = true, beforeSend: (() => Promise<void>) | undefined
   t.mock.method(globalThis, 'fetch', async (url: any, init: any) => {
+    if(String(url).startsWith('https://api.cloudinary.com/'))return Response.json({secure_url:'https://res.cloudinary.com/demo/image/upload/inspection.png'})
     assert.equal(String(url), 'https://api.resend.com/emails')
     sent.push(JSON.parse(init.body))
     await beforeSend?.()
@@ -324,7 +329,7 @@ test('ready notice is immediate, with one additional email and site notification
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduled_job_runs WHERE job_name = 'cleanup_expired_contracts'").get()!.n, 0)
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduled_job_runs WHERE job_name = 'deliver_c2c_emails' AND status = 'SUCCESS'").get()!.n, 2)
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduled_job_runs WHERE job_name = 'rental_payout_requests' AND status = 'SUCCESS'").get()!.n, 2)
-  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM scheduled_job_runs').get()!.n, 15)
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM scheduled_job_runs').get()!.n, 17)
 })
 
 test('concurrent ticks send once and retry failed email without duplicating the site notification', async t => {
@@ -414,7 +419,7 @@ test('midnight pickup reminders are sent on the preceding Melbourne date', async
 
 
 const pickupForm = () => ({
-  deviceSerialNumber: 'PICKUP-SN', accessories: '电源适配器，充电线', conditionNotes: '外观和功能已核对',
+  ...testInspectionFiles(),deviceSerialNumber: 'PICKUP-SN', accessories: '电源适配器，充电线', conditionNotes: '外观和功能已核对',
   customerConfirmed: '1', customerConfirmationName: '取货客户', batteryCycles: '120', batteryHealth: '95%', inspectionNotes: '取货前检查完成',
   ...Object.fromEntries(MANUAL_INSPECTION_CHECKS.map(([field]) => [field, '正常'])),
 })
@@ -449,7 +454,7 @@ test('email QR follows the staff scan and handover flow and completes pickup exa
   assert.equal(f.sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id = 'device'").get()!.lifecycle_status, 'RENTED')
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM order_fulfillment_records WHERE order_id = 'pickup-order' AND record_type = 'HANDOVER'").get()!.n, 1)
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM device_inspections WHERE rental_id = 'pickup-order' AND inspection_type = 'before_rental'").get()!.n, 1)
-  assert.equal((await f.request('staff', path, 'POST', pickupForm())).status, 409)
+  assert.equal((await f.request('staff', path, 'POST', pickupForm())).status, 403)
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM order_fulfillment_records WHERE order_id = 'pickup-order' AND record_type = 'HANDOVER'").get()!.n, 1)
   assert.equal(await f.reminders(), 0)
 })
@@ -509,7 +514,7 @@ test('manual lookup accepts the last six characters, lowercase and full order nu
   }
   f.sqlite.exec("UPDATE orders SET status = 'active'")
   const returning = await f.request('staff', '/staff/mobile/scan?code=ab12cd', 'GET')
-  assert.equal(returning.headers.get('location'), '/staff/orders/pickup-order/inspection')
+  assert.equal(returning.headers.get('location'), '/staff/orders/pickup-order')
 })
 
 test('duplicate last-six codes require the full number and deleted orders do not cause ambiguity', async t => {

@@ -11,6 +11,7 @@ import { createHmac } from 'node:crypto'
 import { URL } from 'node:url'
 import { Hono } from 'hono'
 import worker from '../src/index'
+import { seedTestRoster, testInspectionFiles } from './helpers'
 import { createAuthSession, getOrderById, getUserById, invalidateSystemSettingsCache } from '../src/site'
 import { chargeOverdueReturns, handleStripeWebhook } from '../src/actions/stripePayments'
 import { saveStripeConfig } from '../src/stripe'
@@ -35,6 +36,7 @@ async function setup(t: any) {
       VALUES ('order','OD-RETURN','customer','device','2029-12-27','2030-01-01',5,120,20,'active','bank_transfer','HELD',20,'09:00');
     INSERT INTO contracts (id,orderId,contractNumber,content,status) VALUES ('contract','order','CONTRACT-RETURN','合同','signed');
     UPDATE systemSettings SET value='{"stripe":true,"bankTransfer":true,"balancePayment":true,"alipay":true,"wechat":true,"processingFeeRate":0.025}' WHERE key='paymentMethods';`)
+  seedTestRoster(sqlite,'staff')
   const db = {
     prepare(sql: string) {
       let values: any[] = []
@@ -52,16 +54,17 @@ async function setup(t: any) {
       catch (error) { sqlite.exec('ROLLBACK'); throw error }
     },
   }
-  const env = { RENT: db, SETTINGS_ENCRYPTION_KEY: 'return-test-encryption-key' }
+  const env = { RENT: db,CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret', SETTINGS_ENCRYPTION_KEY: 'return-test-encryption-key' }
   const c = { env, req: { url: 'https://rent.example.test/', header: () => undefined } } as any
   await saveStripeConfig(c, { publishableKey: 'pk_test_return', secretKey: 'sk_test_return', webhookSecret: 'whsec_return' })
   const sessions = new Map<string, string>()
   for (const actor of ['staff','other','admin','customer']) sessions.set(actor, (await createAuthSession(c, actor)).token)
-  const request = (path: string, actor = 'staff', form?: Record<string, string>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
-    method: form ? 'POST' : 'GET', body: form ? new URLSearchParams(form) : undefined,
+  const request = (path: string, actor = 'staff', form?: Record<string, string|File>) => worker.fetch(new Request(`https://rent.example.test${path}`, {
+    method: form ? 'POST' : 'GET', body: form ? (Object.values(form).some(v=>v instanceof File)?Object.entries(form).reduce((body,[key,value])=>{body.set(key,value);return body},new FormData()):new URLSearchParams(form as Record<string,string>)) : undefined,
     headers: { Cookie: `session=${sessions.get(actor) || ''}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' },
   }), env, { waitUntil() {} } as any)
   t.mock.method(globalThis, 'fetch', async (url: any) => {
+    if(String(url).startsWith('https://api.cloudinary.com/'))return Response.json({secure_url:'https://res.cloudinary.com/demo/image/upload/inspection.png'})
     const target = new URL(String(url))
     assert.equal(target.origin, 'https://api.stripe.com')
     assert.ok(target.pathname === '/v1/customers' || target.pathname.startsWith('/v1/customers/'))
@@ -199,7 +202,8 @@ test('a completed return freezes fees and allows outstanding cash collection to 
 
 test('return inspection persists the current fee and keeps an unpaid completed return visible',async t=>{
   const f=await setup(t)
-  const response=await f.request('/staff/orders/order/inspection','staff',{
+  assert.equal((await f.request('/staff/orders/order/receive-return','staff',{received:'1'})).status,303)
+  const response=await f.request('/staff/orders/order/inspection','staff',{...testInspectionFiles(),
     screenCondition:'正常',keyboardCondition:'正常',trackpadCondition:'正常',bodyCondition:'正常',cameraCondition:'正常',wifiCondition:'正常',powerTest:'正常',replacementCost:'0',
   })
   assert.equal(response.status,302,await response.text())
@@ -226,7 +230,7 @@ test('a price change preserves accrued late charges when quoting and collecting 
 
 test('staff and admin have separate pickup and return lists, overdue returns, and stage-specific scanning',async t=>{
   const f=await setup(t)
-  f.sqlite.exec("INSERT INTO orders (id,orderNo,userId,deviceId,startDate,endDate,rentalPeriod,totalAmount,depositAmount,status,paymentMethod) VALUES ('pickup','OD-PICKUP','customer','device','2030-01-03','2030-01-05',2,60,20,'paid','bank_transfer')")
+  f.sqlite.exec("INSERT INTO orders (id,orderNo,userId,deviceId,startDate,endDate,rentalPeriod,totalAmount,depositAmount,status,paymentMethod) VALUES ('pickup','OD-PICKUP','customer','device','2030-01-03','2030-01-05',2,60,20,'paid','bank_transfer'); UPDATE orders SET pickupTimeSlot='13:00' WHERE id='pickup'")
   for(const actor of ['staff','admin']) {
     const pickup=await (await f.request('/staff/mobile/pickup',actor)).text()
     const returns=await (await f.request('/staff/mobile/return',actor)).text()
@@ -236,14 +240,15 @@ test('staff and admin have separate pickup and return lists, overdue returns, an
     assert.equal((nav.match(/aria-current="page"/g)||[]).length,1)
     assert.match(nav,/href="\/staff\/mobile\/return" class="active"/)
     assert.equal((await f.request('/staff/mobile/scan?stage=return&code=OD-PICKUP',actor)).status,409)
-    assert.match((await f.request('/staff/mobile/scan?stage=return&code=OD-RETURN',actor)).headers.get('location')!,/\/inspection$/)
+    assert.match((await f.request('/staff/mobile/scan?stage=return&code=OD-RETURN',actor)).headers.get('location')!,/\/orders\/order$/)
     const scanner=await (await f.request('/staff/mobile/scan?stage=return',actor)).text()
     assert.match(scanner,/name="stage" value="return"/)
     for(const script of extractInlineScripts(scanner)) new Function(script)
   }
   const other=await (await f.request('/staff/mobile/return','other')).text()
   assert.doesNotMatch(other,/OD-RETURN/)
-  const html=await (await f.request('/staff/orders/order/inspection')).text()
+  await f.request('/staff/orders/order/receive-return','staff',{received:'1'})
+  const html=await (await f.request('/staff/orders/order/inspection?fragment=1')).text()
   assert.match(html,/归还费用/);assert.match(html,/45\.00/)
   for(const script of extractInlineScripts(html)) new Function(script)
   assert.equal((await f.request('/staff/orders/order/inspection','other')).status,403)

@@ -1,0 +1,139 @@
+/* Copyright (c) 2026 jiongjiong123441. All rights reserved.
+ * Licensed under PolyForm Noncommercial 1.0.0.
+ * Noncommercial use, modification, and distribution are permitted.
+ * Keep this notice and the LICENSE file with all copies and modified versions. */
+(function(){
+  const reduced=()=>window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const running=new WeakMap(),dialogs=new WeakMap(),tabStates=new WeakMap(),tabOrigins=new Map();
+  const ease='cubic-bezier(.22,1,.36,1)';
+  function play(element,frames,options={}){
+    if(!element||reduced()||typeof element.animate!=='function')return null;
+    running.get(element)?.cancel();
+    const animation=element.animate(frames,{duration:220,easing:ease,...options});
+    running.set(element,animation);animation.finished.catch(()=>{}).then(()=>{if(running.get(element)===animation)running.delete(element)});
+    return animation;
+  }
+  function baseTransform(element){const value=getComputedStyle(element).transform;return value==='none'?'':value}
+  function reveal(element,{delay=0,distance=6,duration=220}={}){
+    if(!element||element.hidden||reduced()||(element.getClientRects&&!element.getClientRects().length))return;
+    running.get(element)?.cancel();const base=baseTransform(element);
+    play(element,[{opacity:0,transform:`${base} translateY(${distance}px)`},{opacity:1,transform:base||'none'}],{duration,delay});
+  }
+  function open(dialog){
+    if(!dialog)return;
+    const wasOpen=dialog.open,visible=wasOpen?getComputedStyle(dialog):null;const fromOpacity=visible?.opacity,fromTransform=visible?.transform;
+    const previous=dialogs.get(dialog);previous?.animation?.cancel();
+    dialog.classList.remove('motion-closing');dialog.classList.add('motion-opening');
+    const state={};dialogs.set(dialog,state);
+    if(!dialog.open)dialog.showModal();
+    const base=baseTransform(dialog);
+    state.animation=play(dialog,[{opacity:wasOpen?fromOpacity:0,transform:wasOpen?fromTransform:`${base} translateY(8px) scale(.985)`},{opacity:1,transform:base||'none'}],{duration:240});
+    const finish=()=>{if(dialogs.get(dialog)===state)dialog.classList.remove('motion-opening')};
+    if(state.animation)state.animation.finished.catch(()=>{}).then(finish);else finish();
+  }
+  function close(dialog,value){
+    if(!dialog||!dialog.open)return Promise.resolve();
+    const previous=dialogs.get(dialog);if(previous?.closing)return previous.promise;
+    const visual=getComputedStyle(dialog),fromOpacity=visual.opacity,fromTransform=visual.transform;
+    previous?.animation?.cancel();dialog.classList.remove('motion-opening');
+    if(reduced()||typeof dialog.animate!=='function'){dialog.close(value);dialog.classList.remove('motion-closing');dialogs.delete(dialog);return Promise.resolve()}
+    dialog.classList.add('motion-closing');const state={closing:true};dialogs.set(dialog,state);
+    const base=baseTransform(dialog);
+    state.animation=play(dialog,[{opacity:fromOpacity,transform:fromTransform},{opacity:0,transform:`${base} translateY(5px) scale(.99)`}],{duration:140,easing:'cubic-bezier(.4,0,1,1)'});
+    state.promise=(state.animation?.finished||Promise.resolve()).catch(()=>{}).then(()=>{
+      if(dialogs.get(dialog)!==state)return;
+      dialog.close(value);dialog.classList.remove('motion-closing');dialogs.delete(dialog);
+    });return state.promise;
+  }
+  function feedback(element,kind='saved'){
+    if(!element)return;
+    if(kind==='error')play(element,[{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:180,easing:'ease-out'});
+    else play(element,[{boxShadow:'0 0 0 3px rgb(80 123 155 / .18)'},{boxShadow:'0 0 0 0 rgb(80 123 155 / 0)'}],{duration:540});
+  }
+  function show(element){if(!element)return;element.hidden=false;reveal(element,{distance:8,duration:200})}
+  function hide(element){
+    if(!element)return Promise.resolve();
+    if(reduced()){element.hidden=true;return Promise.resolve()}
+    const base=baseTransform(element),animation=play(element,[{opacity:1,transform:base||'none'},{opacity:0,transform:`${base} translateY(4px)`}],{duration:130});
+    return (animation?.finished||Promise.resolve()).then(()=>{if(!running.has(element)||running.get(element)===animation)element.hidden=true}).catch(()=>{});
+  }
+  async function task(button,work){
+    if(!button)return work();if(button.getAttribute('aria-busy')==='true')return;
+    const wasDisabled=button.disabled;button.disabled=true;button.setAttribute('aria-busy','true');
+    if(!reduced())button.classList.add('motion-busy');
+    try{
+      if(!reduced())await new Promise(resolve=>{let finished=false;const ready=()=>{if(!finished){finished=true;resolve()}};requestAnimationFrame(ready);setTimeout(ready,48)});
+      return await work();
+    }finally{button.disabled=wasDisabled;button.removeAttribute('aria-busy');button.classList.remove('motion-busy')}
+  }
+  function tabKey(group){return group.getAttribute('aria-label')||`${group.closest('#rosterRoot')?'roster':'page'}:${Array.from(document.querySelectorAll('.inner-tabs,.filter-tabs')).indexOf(group)}`}
+  function activeTab(group){return group.querySelector('[aria-current="page"],[aria-selected="true"],.button-primary')}
+  function syncTabs(root=document){
+    const groups=Array.from(root.querySelectorAll('.inner-tabs,.filter-tabs'));if(root.matches?.('.inner-tabs,.filter-tabs'))groups.unshift(root);
+    for(const group of groups){
+      const active=activeTab(group);if(!active||!group.getBoundingClientRect().width)continue;
+      const bounds=group.getBoundingClientRect(),rect=active.getBoundingClientRect(),pill=group.classList.contains('filter-tabs');
+      const next={x:rect.left-bounds.left+group.scrollLeft,y:pill?rect.top-bounds.top+group.scrollTop:bounds.height-2,width:rect.width,height:pill?rect.height:2};
+      let state=tabStates.get(group);const origin=state?.rect||tabOrigins.get(tabKey(group));
+      if(!state){const indicator=document.createElement('span');indicator.className=`motion-tab-indicator ${pill?'is-pill':'is-line'}`;indicator.setAttribute('aria-hidden','true');group.append(indicator);group.classList.add('motion-tabs');state={indicator};tabStates.set(group,state)}
+      Object.assign(state.indicator.style,{left:next.x+'px',top:next.y+'px',width:next.width+'px',height:next.height+'px'});
+      if(origin&&Math.abs(origin.x-next.x)+Math.abs(origin.y-next.y)+Math.abs(origin.width-next.width)>.5)play(state.indicator,[{transform:`translate(${origin.x-next.x}px,${origin.y-next.y}px) scale(${origin.width/next.width},${origin.height/next.height})`},{transform:'none'}],{duration:260});
+      state.rect=next;tabOrigins.delete(tabKey(group));
+    }
+  }
+  function capture(root){
+    const before=new Map();root?.querySelectorAll('[data-roster-edit]').forEach(e=>{if(!e.getClientRects||e.getClientRects().length)before.set(e.dataset.rosterEdit,e.textContent)});return before;
+  }
+  function refresh(root,reason='update',before=new Map()){
+    if(!root)return;syncTabs(root);
+    if(reason==='draft')root.querySelectorAll('.roster-grid-scroll .roster-shift,.roster-mobile-range').forEach((e,i)=>reveal(e,{distance:5,duration:240,delay:Math.min(i*12,180)}));
+    else if(reason==='week')reveal(root.querySelector('.roster-calendar-panel'),{distance:5,duration:220});
+    else if(reason==='day')reveal(root.querySelector('.roster-task-panel'),{distance:4,duration:190});
+    else if(reason==='filter'||reason==='request'||reason==='decision')root.querySelectorAll('.roster-request-card,.roster-my-requests>article').forEach((e,i)=>reveal(e,{delay:Math.min(i*25,100),distance:4,duration:200}));
+    else if(reason==='page')Array.from(root.children).slice(0,7).forEach((e,i)=>reveal(e,{delay:i*20,distance:5,duration:240}));
+    else root.querySelectorAll('[data-roster-edit]').forEach(e=>{if((!e.getClientRects||e.getClientRects().length)&&before.get(e.dataset.rosterEdit)!==e.textContent){reveal(e,{distance:3,duration:210});feedback(e)}});
+    if(reason==='publish'){feedback(document.querySelector('.roster-period-bar .badge'));reveal(root.querySelector('.roster-task-panel'),{distance:3});}
+    if(reason==='preference')feedback(root.querySelector('.roster-my-preference'));
+  }
+  function pane(element){reveal(element,{distance:4,duration:190});syncTabs(document)}
+  window.WorkspaceMotion={open,close,task,feedback,show,hide,reveal,pane,capture,refresh,syncTabs};
+  document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('cancel',event=>{event.preventDefault();close(dialog)}));
+  document.addEventListener('click',event=>{
+    const group=event.target.closest?.('.inner-tabs,.filter-tabs');if(!group)return;
+    const state=tabStates.get(group);if(state?.rect)tabOrigins.set(tabKey(group),state.rect);
+    requestAnimationFrame(()=>syncTabs(document));
+  },true);
+  let resizeFrame;window.addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>syncTabs(document))},{passive:true});
+  syncTabs(document);
+  Array.from(document.querySelector('.content')?.children||[]).filter(e=>e.id!=='rosterRoot'&&getComputedStyle(e).display!=='none').slice(0,7).forEach((e,i)=>reveal(e,{delay:Math.min(i*20,100),distance:5,duration:240}));
+})();
+(function(){
+ function init(){
+  const motion=window.WorkspaceMotion;
+  let toastTimer;
+  window.workspaceNotify=function(message){let toast=document.querySelector('.workspace-toast');if(!toast){toast=document.createElement('div');toast.className='workspace-toast';toast.setAttribute('role','status');document.body.append(toast)}toast.textContent=message;clearTimeout(toastTimer);motion.show(toast);toastTimer=setTimeout(()=>motion.hide(toast),3500)};
+  document.addEventListener('click',async event=>{
+   const close=event.target.closest('[data-close-dialog]');if(close){event.preventDefault();await motion.close(close.closest('dialog'));return}
+   const open=event.target.closest('[data-workspace-modal]');if(!open)return;event.preventDefault();
+   if(open.getAttribute('aria-busy')==='true')return;
+   try{await motion.task(open,async()=>{const response=await fetch(open.href,{credentials:'same-origin',headers:{Accept:'text/html'}});if(!response.ok)throw new Error(await response.text());const body=await response.text(),dialog=document.createElement('dialog');dialog.className='workspace-dialog workspace-remote-dialog';const container=document.createElement('div');container.innerHTML=body;dialog.append(container);document.body.append(dialog);dialog.addEventListener('cancel',e=>{e.preventDefault();motion.close(dialog)});dialog.addEventListener('close',()=>dialog.remove(),{once:true});motion.open(dialog)})}catch(error){window.workspaceNotify(error.message||'加载失败')}
+  });
+  document.addEventListener('submit',async event=>{
+   const form=event.target;if(!form.closest('.workspace-remote-dialog'))return;event.preventDefault();event.stopImmediatePropagation();if(form.dataset.saving)return;form.dataset.saving='1';
+   let error=form.querySelector('.workspace-form-error');if(!error){error=document.createElement('p');error.className='workspace-form-error';error.setAttribute('role','alert');form.append(error)}error.hidden=true;
+   try{await motion.task(event.submitter,async()=>{const response=await fetch(form.action,{method:'POST',credentials:'same-origin',body:new FormData(form)});if(!response.ok)throw new Error(await response.text());await motion.close(form.closest('dialog'));location.href=response.redirected?response.url:location.href})}catch(failure){error.textContent=failure.message||'保存失败';error.hidden=false;motion.feedback(error,'error')}finally{delete form.dataset.saving}
+  },true);
+  const previews=new WeakMap();document.addEventListener('change',event=>{const input=event.target;if(!input.matches('[data-inspection-photo]'))return;const img=input.closest('label').querySelector('img'),old=previews.get(input);if(old)URL.revokeObjectURL(old);if(!input.files[0]){img.hidden=true;return}const url=URL.createObjectURL(input.files[0]);previews.set(input,url);img.src=url;img.hidden=false;motion.reveal(img)});
+  // Preserve native form submission and validation across tabbed sections.
+  document.querySelectorAll('.asset-editor').forEach(form=>{
+   const sections=Array.from(form.querySelectorAll(':scope>.form-section'));if(sections.length<3)return;
+   const nav=document.createElement('nav');nav.className='inner-tabs';nav.setAttribute('aria-label','设备编辑');nav.setAttribute('role','tablist');
+   const groups=[{label:'基本资料',sections:sections.filter(s=>/设备身份|硬件配置/.test(s.querySelector('h3')?.textContent||''))},{label:'租赁设置',sections:sections.filter(s=>/租赁价格/.test(s.querySelector('h3')?.textContent||''))},{label:'设备代理',sections:sections.filter(s=>/设备代理/.test(s.querySelector('h3')?.textContent||''))},{label:'变更记录',sections:sections.filter(s=>/变更记录/.test(s.querySelector('h3')?.textContent||''))}].filter(g=>g.sections.length);
+   const select=index=>{groups.forEach((g,i)=>{g.button.setAttribute('aria-selected',String(index===i));g.button.tabIndex=index===i?0:-1;g.sections.forEach(s=>s.hidden=index!==i)});groups[index].sections.forEach(s=>motion.reveal(s));motion.syncTabs(document)};
+   groups.forEach((g,i)=>{const b=document.createElement('button');b.type='button';b.textContent=g.label;b.setAttribute('role','tab');g.button=b;g.sections.forEach(s=>s.setAttribute('data-workspace-panel',''));b.addEventListener('click',()=>select(i));b.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?groups.length-1:(i+(event.key==='ArrowRight'?1:-1)+groups.length)%groups.length;select(next);groups[next].button.focus()});nav.append(b)});form.prepend(nav);select(0);form.addEventListener('invalid',event=>{const index=groups.findIndex(g=>g.sections.some(s=>s.contains(event.target)));if(index>=0)select(index)},true);
+  });
+  document.querySelectorAll('.form-section-title>span.mono').forEach(span=>{span.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 13h10M7 17h5"/></svg>'});
+  motion.syncTabs(document);
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+})();

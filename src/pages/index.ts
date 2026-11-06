@@ -117,3 +117,11 @@ export * from './customer/rentalSettlements'
 export * from './customer/rentalPickup'
 
 export * from './admin/websiteAdvertisements'
+
+export * from './customer/identity'
+export * from './admin/identity'
+export * from './admin/storage'
+
+export * from './staff/roster'
+
+export * from './staff/returnQueue'

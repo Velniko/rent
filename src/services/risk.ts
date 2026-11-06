@@ -21,7 +21,7 @@ import type {
 
 export async function getCustomerRiskAssessment(c: Context, customerId: string): Promise<CustomerRiskAssessment> {
   const [account, orderStats, paymentStats, refundStats, damageStats, flags] = await Promise.all([
-    c.env.RENT.prepare("SELECT balance, identity_status FROM users WHERE id = ? AND role = 'CUSTOMER'").bind(customerId).first() as Promise<any>,
+    c.env.RENT.prepare("SELECT balance, identity_status, EXISTS (SELECT 1 FROM identity_documents d WHERE d.customer_id = users.id AND d.status = 'VERIFIED' AND d.rowid = (SELECT MAX(latest.rowid) FROM identity_documents latest WHERE latest.customer_id = users.id)) AS identity_approved FROM users WHERE id = ? AND role = 'CUSTOMER'").bind(customerId).first() as Promise<any>,
     c.env.RENT.prepare(`SELECT
       SUM(CASE WHEN status = 'completed' AND payment_status = 'PAID' AND COALESCE(handover_overdue, 0) = 0 AND COALESCE(deposit_deduction_amount, 0) = 0 THEN 1 ELSE 0 END) AS completed_orders,
       SUM(CASE WHEN status = 'overdue' OR handover_overdue = 1 THEN 1 ELSE 0 END) AS overdue_orders,
@@ -52,7 +52,7 @@ export async function getCustomerRiskAssessment(c: Context, customerId: string):
   const facts: CustomerRiskFacts = {
     completedOrderCount: Number(orderStats?.completed_orders || 0),
     balance: Number(account.balance || 0),
-    identityStatus: account.identity_status,
+    identityStatus: account.identity_status === 'VERIFIED' && !account.identity_approved ? 'PENDING' : account.identity_status,
     failedPaymentCount: Number(paymentStats?.failed_payments || 0),
     overdueOrderCount: Number(orderStats?.overdue_orders || 0),
     notReturnedOrderCount: Number(orderStats?.not_returned_orders || 0),
@@ -80,7 +80,7 @@ export async function getCustomerRiskLevels(c: Context, customerIds: string[]): 
   const placeholders = ids.map(() => '?').join(', ')
 
   const [accounts, orderStats, paymentStats, refundStats, damageStats, flags] = await Promise.all([
-    c.env.RENT.prepare(`SELECT id, balance, identity_status FROM users WHERE role = 'CUSTOMER' AND id IN (${placeholders})`).bind(...ids).all() as Promise<any>,
+    c.env.RENT.prepare(`SELECT id, balance, identity_status, EXISTS (SELECT 1 FROM identity_documents d WHERE d.customer_id = users.id AND d.status = 'VERIFIED' AND d.rowid = (SELECT MAX(latest.rowid) FROM identity_documents latest WHERE latest.customer_id = users.id)) AS identity_approved FROM users WHERE role = 'CUSTOMER' AND id IN (${placeholders})`).bind(...ids).all() as Promise<any>,
     c.env.RENT.prepare(`SELECT userId AS customer_id,
       SUM(CASE WHEN status = 'completed' AND payment_status = 'PAID' AND COALESCE(handover_overdue, 0) = 0 AND COALESCE(deposit_deduction_amount, 0) = 0 THEN 1 ELSE 0 END) AS completed_orders,
       SUM(CASE WHEN status = 'overdue' OR handover_overdue = 1 THEN 1 ELSE 0 END) AS overdue_orders,
@@ -119,7 +119,7 @@ export async function getCustomerRiskLevels(c: Context, customerIds: string[]): 
     const facts: CustomerRiskFacts = {
       completedOrderCount: Number(order.completed_orders || 0),
       balance: Number(account?.balance || 0),
-      identityStatus: account?.identity_status,
+      identityStatus: account?.identity_status === 'VERIFIED' && !account?.identity_approved ? 'PENDING' : account?.identity_status,
       failedPaymentCount: Number(payment.failed_payments || 0),
       overdueOrderCount: Number(order.overdue_orders || 0),
       notReturnedOrderCount: Number(order.not_returned_orders || 0),

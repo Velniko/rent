@@ -63,12 +63,13 @@ export const UPLOAD_BODY_LIMIT_BYTES = 6 * 1024 * 1024
 export const DEFAULT_BODY_LIMIT_BYTES = 128 * 1024
 
 const UPLOAD_PATH_PATTERNS: RegExp[] = [
+  /^\/customer\/identity(?:\/(?:visa|driver-licence|passport|other))?$/,
   /^\/customer\/(?:c2c|rental-program)\/photos$/,
   /^\/contract\/sign$/,
   /^\/customer\/balance\/top-up\/transfer$/,
   /^\/admin\/settings\/upload-image$/,
   /^\/customer\/orders\/[^/]+\/bank-transfer-proof$/,
-  /^\/staff\/orders\/[^/]+\/inspection$/,
+  /^\/staff\/orders\/[^/]+\/(?:inspection|pickup)$/,
   /^\/admin\/inventory\/[^/]+\/(?:damage|inspection)$/,
   /^\/staff\/inventory\/[^/]+\/(?:damage|inspection)$/,
 ]

@@ -1,0 +1,152 @@
+/* Copyright (c) 2026 jiongjiong123441. All rights reserved.
+ * Licensed under PolyForm Noncommercial 1.0.0.
+ * Noncommercial use, modification, and distribution are permitted.
+ * Keep this notice and the LICENSE file with all copies and modified versions. */
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {URL} from 'node:url'
+import {DatabaseSync} from 'node:sqlite'
+import {readFileSync,readdirSync} from 'node:fs'
+import worker from '../src/index'
+import {createAuthSession,invalidateSystemSettingsCache} from '../src/site'
+import {loadRoster,mutateRoster,rosterPermission,rosterClientData,rosterClock} from '../src/services/roster'
+import {extractInlineScripts} from './helpers'
+
+async function setup(t:any) {
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-06T00:00:00Z')})
+ const sql=new DatabaseSync(':memory:');t.after(()=>sql.close());invalidateSystemSettingsCache()
+ for(const name of readdirSync(new URL('../migrations/',import.meta.url)).filter(n=>n.endsWith('.sql')).sort())sql.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'))
+ sql.exec(`INSERT INTO users(id,name,email,role,status,staff_id) VALUES ('admin','管理员','admin@roster.test','ADMIN','active',NULL),('a','员工 A','a@roster.test','STAFF','active',NULL),('b','员工 B','b@roster.test','STAFF','active',NULL),('c','客户','c@roster.test','CUSTOMER','active','b');
+ INSERT INTO devices(id,name,model,serialNumber,pricePerDay,depositAmount,status,lifecycle_status) VALUES ('d','电脑','T','ROSTER',20,100,'rented','RENTED');
+ INSERT INTO orders(id,orderNo,userId,deviceId,startDate,endDate,pickupTimeSlot,returnTimeSlot,rentalPeriod,totalAmount,depositAmount,status) VALUES ('o','OD-20261106-ROSTER','c','d','2026-11-01','2026-11-06','10:00','12:00',5,200,100,'active');`)
+ const db={prepare(text:string){let values:any[]=[];const statement={bind(...items:any[]){values=items;return statement},async first(){return sql.prepare(text).get(...values)||null},async all(){return {results:sql.prepare(text).all(...values)}},async run(){return {success:true,meta:{changes:Number(sql.prepare(text).run(...values).changes)}}}};return statement},async batch(statements:any[]){sql.exec('BEGIN');try{const rows=[];for(const statement of statements)rows.push(await statement.run());sql.exec('COMMIT');return rows}catch(error){sql.exec('ROLLBACK');throw error}}}
+ const objects=new Map();const env={RENT:db,STORAGE_ENCRYPTION_KEY:'roster-test-storage-encryption-key-32-chars',STORAGE_BACKUP:{async put(key:string,bytes:any){objects.set(key,bytes)},async get(){return null}}}
+ const ctx={waitUntil() {}} as any
+ const c={env,req:{url:'https://rent.test/admin/roster',query(){return undefined},header(){return undefined}},get(){return null}} as any
+ const actors:any={admin:{id:'admin',name:'管理员',role:'ADMIN'},a:{id:'a',name:'员工 A',role:'STAFF'},b:{id:'b',name:'员工 B',role:'STAFF'},c:{id:'c',name:'客户',role:'CUSTOMER'}}
+ const sessions:any={};for(const id of Object.keys(actors))sessions[id]=(await createAuthSession(c,id)).token
+ const request=(path:string,id='admin',body?:any,json=false)=>worker.fetch(new Request('https://rent.test'+path,{method:body?'POST':'GET',body:body?(json?JSON.stringify(body):body instanceof FormData?body:new URLSearchParams(body)):undefined,headers:{Cookie:'session='+sessions[id],Origin:'https://rent.test','Sec-Fetch-Site':'same-origin',...(json?{'Content-Type':'application/json','Accept':'application/json'}:{})}}),env,ctx)
+ const state=JSON.parse(String(sql.prepare('SELECT state_json FROM staff_roster').get()!.state_json));state.published=[{id:'shift-a',employeeId:'a',day:'2026-11-06',start:'09:00',end:'17:00'}];sql.prepare('UPDATE staff_roster SET state_json=?').run(JSON.stringify(state))
+ return {sql,db,c,actors,request,objects,env}
+}
+test('real worker roster pages render without demo state, script syntax is valid, staff receives only own schedules',async t=>{
+ const {request,c,actors}=await setup(t)
+ const response=await request('/admin/roster');assert.equal(response.status,200);const html=await response.text();assert.match(html,/rosterRoot/);assert.doesNotMatch(html,/rent-preview|演示时间|admin-roster\.html/)
+ for(const body of extractInlineScripts(html))if(!body.trim().startsWith('{'))new Function(body)
+ const data=await loadRoster(c,actors.a),safe=rosterClientData(data,actors.a);assert.equal(safe.tasks[0].employeeId,'a');assert.equal(safe.drafts&&Object.keys(safe.drafts).length,0)
+ assert.equal((await request('/admin/roster','a')).status,403)
+ assert.equal((await request('/staff/roster','a')).status,200)
+})
+test('non-rostered staff direct writes and all staff approvals are rejected and audited',async t=>{
+ const {request,sql}=await setup(t)
+ assert.equal((await request('/staff/orders/o/receive-return','b',{received:'1'})).status,403)
+ assert.equal((await request('/staff/orders/o/approve','a',{})).status,403)
+ assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action='STAFF_OPERATION_BLOCKED'").get()!.n,2)
+ assert.equal(sql.prepare("SELECT status FROM orders WHERE id='o'").get()!.status,'active')
+})
+test('scheduled assignee can receive another CRM owner’s device; receipt and inspection are separate',async t=>{
+ const {request,sql}=await setup(t)
+ const response=await request('/staff/orders/o/receive-return','a',{received:'1',notes:'已收回设备'});assert.equal(response.status,303)
+ assert.equal(sql.prepare("SELECT status FROM orders WHERE id='o'").get()!.status,'pending_return')
+ assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM device_inspections WHERE inspection_type='after_return'").get()!.n,0)
+ const page=await request('/staff/orders/o/inspection?fragment=1','a');assert.equal(page.status,200);const html=await page.text();assert.match(html,/inspectionPhoto_a/);assert.doesNotMatch(html,/<!DOCTYPE|desktop-sidebar/i)
+ assert.equal((await request('/staff/orders/o/inspection','a',{})).status,400)
+ const records=await request('/staff/orders/o','a');assert.equal(records.status,200);assert.match(await records.text(),/登记归还/)
+})
+test('preference changes enforce an exact 30-day server cooldown; admin changes preserve that timestamp and stale writes fail',async t=>{
+ const {c,actors,sql}=await setup(t)
+ let data=await loadRoster(c,actors.a)
+ data=await mutateRoster(c,actors.a,{operation:'preference',revision:data.revision,employeeId:'a',start:'10:00',end:'18:00'})
+ const last=data.employees.find(e=>e.id==='a')!.lastSelfPreferenceChange
+ await assert.rejects(()=>mutateRoster(c,actors.a,{operation:'preference',revision:data.revision,employeeId:'a',start:'11:00',end:'19:00'}),/下次修改/)
+ data=await mutateRoster(c,actors.admin,{operation:'preference',revision:data.revision,employeeId:'a',start:'09:00',end:'17:00'})
+ assert.equal(data.employees.find(e=>e.id==='a')!.lastSelfPreferenceChange,last)
+ await assert.rejects(()=>mutateRoster(c,actors.admin,{operation:'preference',revision:0,employeeId:'a',start:'08:00',end:'16:00'}),/刷新/)
+ assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action LIKE '%修改%偏好'").get()!.n,2)
+ t.mock.timers.tick(30*86400000);data=await loadRoster(c,actors.a)
+ assert.equal((await mutateRoster(c,actors.a,{operation:'preference',revision:data.revision,employeeId:'a',start:'10:00',end:'18:00'})).employees.find(e=>e.id==='a')!.preferredStart,'10:00')
+})
+test('temporary operation requests require admin review, are task-scoped, expire, and revocation is immediate',async t=>{
+ const {c,actors}=await setup(t)
+ let data=await loadRoster(c,actors.b)
+ data=await mutateRoster(c,actors.b,{operation:'request',revision:data.revision,taskId:'o:return',start:'11:00',end:'13:00',reason:'现场协助归还'})
+ const id=data.requests[0].id
+ assert.equal((await rosterPermission(c,actors.b,'o','return')).allowed,false)
+ await assert.rejects(()=>mutateRoster(c,actors.b,{operation:'decision',revision:data.revision,requestId:id,decision:'APPROVED',start:'11:00',end:'13:00'}),/管理员/)
+ data=await mutateRoster(c,actors.admin,{operation:'decision',revision:data.revision,requestId:id,decision:'APPROVED',start:'11:00',end:'13:00'})
+ assert.equal((await rosterPermission(c,actors.b,'o','return')).allowed,true)
+ assert.equal((await rosterPermission(c,actors.b,'o','pickup')).allowed,false)
+ await mutateRoster(c,actors.admin,{operation:'revoke',revision:data.revision,requestId:id})
+ assert.equal((await rosterPermission(c,actors.b,'o','return')).allowed,false)
+})
+test('auto drafts use real employees, publish atomically, and never schedule unbooked paid service windows',async t=>{
+ const {c,actors,sql}=await setup(t)
+ let data=await loadRoster(c,actors.admin)
+ data=await mutateRoster(c,actors.admin,{operation:'auto',revision:data.revision,start:'2026-11-07',dailyHours:8,minStaff:1,maxDays:7,maxConsecutive:7,employees:data.employees.map(e=>({...e,dailyHours:8,enabled:true}))})
+ assert.equal(data.published.length,1);assert.ok(data.drafts['2026-11-07'].shifts.length>0)
+ assert.ok(data.drafts['2026-11-07'].shifts.every(s=>s.start>='09:00'&&s.end<='20:00'))
+ const published=await mutateRoster(c,actors.admin,{operation:'publish',revision:data.revision,startDate:'2026-11-07'})
+ assert.equal(Object.keys(published.drafts).length,0)
+ assert.ok(sql.prepare("SELECT id FROM audit_logs WHERE action='发布排班'").get())
+})
+test('roster clock uses Melbourne date at UTC midnight and DST transitions',()=>{
+ assert.equal(rosterClock(new Date('2026-11-05T14:30Z')).now,'2026-11-06T01:30')
+ assert.equal(rosterClock(new Date('2026-10-03T16:30Z')).now,'2026-10-04T03:30')
+})
+
+test('a complete return inspection stores five encrypted R2 photos and separate order activity',async t=>{
+ const {request,sql,env,objects}=await setup(t)
+ Object.assign(env,{CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret'})
+ const png=new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0,0,0,0,0])
+ t.mock.method(globalThis,'fetch',async(input:any)=>String(input).startsWith('https://api.cloudinary.com/')?Response.json({secure_url:'https://res.cloudinary.com/demo/image/upload/inspection.png'}):new Response(png,{headers:{'Content-Type':'image/png'}}))
+ sql.exec("INSERT INTO contracts(id,orderId,contractNumber,content,status) VALUES ('ct','o','CT-ROSTER','合同','signed')")
+ assert.equal((await request('/staff/orders/o/receive-return','a',{received:'1'})).status,303)
+ const form=new FormData();for(const key of ['screenCondition','keyboardCondition','trackpadCondition','bodyCondition','cameraCondition','wifiCondition','powerTest'])form.set(key,'正常');form.set('replacementCost','0')
+ for(const key of ['a','b','c','d','power'])form.set('inspectionPhoto_'+key,new File([png],key+'.png',{type:'image/png'}))
+ const response=await request('/staff/orders/o/inspection','a',form);assert.equal(response.status,302,await response.text())
+ assert.equal(sql.prepare("SELECT status FROM orders WHERE id='o'").get()!.status,'completed')
+ assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM stored_objects WHERE category='inspections' AND encrypted=1 AND r2_ready=1").get()!.n,5)
+ assert.equal(objects.size,5)
+ const snapshot=JSON.parse(String(sql.prepare("SELECT snapshot_json FROM device_inspections WHERE rental_id='o' AND inspection_type='after_return'").get()!.snapshot_json));assert.deepEqual(Object.keys(snapshot.inspectionPhotos),['a','b','c','d','power'])
+ assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE target_type='ORDER' AND target_id='o' AND action IN ('RETURN_RECEIVED','RETURN_INSPECTION_COMPLETED')").get()!.n,2)
+})
+
+test('staff browser action state uses the server’s Melbourne clock rather than UTC',async()=>{
+ const {runInNewContext}=await import('node:vm')
+ const {rosterMinutes,rosterOpenWindows,rosterTaskMode}=await import('../src/domain/roster.mjs')
+ const source=readFileSync(new URL('../src/client/roster.js.txt',import.meta.url),'utf8')
+ const start=source.indexOf('function rosterCanOperate('),end=source.indexOf('function rosterPreferencePermission(',start)
+ const args={employeeId:'a',task:{id:'t',employeeId:'a',day:'2026-11-06',start:'12:00',end:'12:30'},shifts:[{employeeId:'a',day:'2026-11-06',start:'09:00',end:'17:00'}],grants:[],business:{businessHours:{start:'09:00',end:'20:00'},serviceFeeHours:[],unavailablePickupHours:[],unavailablePickupRanges:[]}}
+ class UTCDate extends Date{constructor(){super('2026-11-06T00:00:00Z')}}
+ const result=runInNewContext(source.slice(start,end)+';rosterCanOperate(args)',{args,ROSTER_NOW:'2026-11-06T11:00',rosterMinutes,rosterOpenWindows,rosterTaskMode,Date:UTCDate})
+ assert.equal(result.allowed,true)
+})
+
+test('a staff member can be re-enabled in a new draft and the roster still publishes',async t=>{
+ const {c,actors,sql}=await setup(t)
+ const state=JSON.parse(String(sql.prepare('SELECT state_json FROM staff_roster').get()!.state_json))
+ state.employees=[{id:'a',name:'员工 A',enabled:false,dailyHours:8,preferredStart:'',preferredEnd:'',unavailableDates:[]}]
+ sql.prepare('UPDATE staff_roster SET state_json=?').run(JSON.stringify(state))
+ const current=await loadRoster(c,actors.admin)
+ const draft=await mutateRoster(c,actors.admin,{operation:'auto',revision:current.revision,start:'2026-11-07',dailyHours:8,minStaff:1,maxDays:7,maxConsecutive:7,employees:current.employees.map(e=>({...e,enabled:true,dailyHours:8}))})
+ const published=await mutateRoster(c,actors.admin,{operation:'publish',revision:draft.revision,startDate:'2026-11-07'})
+ assert.equal(published.employees.find(e=>e.id==='a')!.enabled,true)
+ assert.ok(published.published.some(s=>s.employeeId==='a'&&s.day>='2026-11-07'))
+})
+test('malformed roster commands return a client error without changing the revision',async t=>{
+ const {request,sql}=await setup(t)
+ const response=await request('/admin/roster/action','admin',[],true)
+ assert.equal(response.status,400)
+ assert.equal(sql.prepare('SELECT revision FROM staff_roster').get()!.revision,0)
+})
+test('staff task cards escape other staff names and order labels before assigning innerHTML',async()=>{
+ const {runInNewContext}=await import('node:vm')
+ const {escapeHtml}=await import('../src/lib/html')
+ const source=readFileSync(new URL('../src/client/roster.js.txt',import.meta.url),'utf8')
+ const start=source.indexOf('function rosterRenderMine('),end=source.indexOf('function rosterOpenAuto(',start)
+ const employee={id:'a',name:'Employee A'},other={id:'b',name:'<img src=x onerror=alert(1)>'},task={id:'t',employeeId:'b',day:'2026-11-06',kind:'return',start:'12:00',end:'12:30',deviceName:'电脑',customer:'客户',orderNo:'<script>alert(1)</script>'}
+ const root={innerHTML:''};runInNewContext(source.slice(start,end)+';rosterRenderMine()',{rosterRoot:root,rosterState:{currentEmployeeId:'a',published:[],requests:[],selectedStart:'2026-11-06'},ROSTER_TODAY:'2026-11-06',ROSTER_NOW:'2026-11-06T11:00',rosterEscape:escapeHtml,rosterEmployee:(id:string)=>id==='a'?employee:other,rosterAssignments:()=>[task],rosterDays:()=>['2026-11-06'],rosterDate:()=>'',rosterShort:()=>'',rosterWeekday:()=>'',rosterRangeLabel:()=>'',rosterPreferencePermission:()=>({allowed:true}),rosterIcon:()=>'',rosterCanOperate:()=>({allowed:true})})
+ assert.doesNotMatch(root.innerHTML,/<img|<script/)
+ assert.match(root.innerHTML,/&lt;img/)
+ assert.match(root.innerHTML,/&lt;script/)
+})
