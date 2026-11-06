@@ -10,7 +10,7 @@ import { handleTranslation } from './services/translation'
 import { ensureBankTransferReference, listBankTransferPayments } from './services/bankTransferReferences'
 import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
-import { loadRoster, canStaffReadRosterOrder, syncRosterAssignments } from './services/roster'
+import { loadRoster, canStaffReadRosterOrder, syncRosterAssignments, rosterTaskVisibleTo } from './services/roster'
 import { registerStorageRoutes } from './routes/storage'
 import { registerIdentityRoutes } from './routes/identity'
 import { registerRosterRoutes } from './routes/roster'
@@ -738,7 +738,7 @@ function applySecurityHeaders(c: any): void {
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('X-Frame-Options', 'DENY')
   c.header('Referrer-Policy', 'no-referrer')
-  c.header('Permissions-Policy', `${c.req.path === '/staff/mobile/scan' ? 'camera=(self)' : 'camera=()'}, microphone=(), geolocation=()`)
+  c.header('Permissions-Policy', `${['/staff/mobile','/staff/mobile/today','/staff/mobile/pickup','/staff/mobile/return','/staff/mobile/scan'].includes(c.req.path) ? 'camera=(self)' : 'camera=()'}, microphone=(), geolocation=()`)
   c.header('Cross-Origin-Opener-Policy', 'same-origin')
   c.header('Cross-Origin-Resource-Policy', 'same-origin')
   c.header('X-Permitted-Cross-Domain-Policies', 'none')
@@ -2743,7 +2743,7 @@ app.get('/staff/mobile', async (c) => {
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
   const stage = c.req.query('stage')
   if (['pickup', 'return'].includes(stage)) return c.redirect(`/staff/mobile/${stage}`, 302)
-  return c.html(pages.renderStaffDashboard(user,{stats:{},recentOrders:[],recentDevices:[],roster:await loadRoster(c,user)}))
+  return c.html(await pages.renderStaffMobileOperations(c, user))
 })
 
 for (const stage of ['pickup', 'return'] as const) {
@@ -2767,16 +2767,19 @@ app.get('/staff/mobile/scan', async (c) => {
   const stage = ['pickup', 'return'].includes(String(c.req.query('stage') || '')) ? c.req.query('stage') : ''
   const code = String(c.req.query('code') || '').trim().slice(0, 300)
   if (code) {
+    const scanRoster = user.role === 'STAFF' ? await loadRoster(c, user) : null
+    const assignedOrders = new Set(scanRoster ? scanRoster.tasks.filter(task => task.day === scanRoster.today && rosterTaskVisibleTo(scanRoster, user, task)).map(task => task.orderId) : [])
     const payloadOrderId = parsePickupQrPayload(code)
     let row = payloadOrderId
-      ? await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE id = ?').bind(payloadOrderId).first()
+      ? await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE id = ? AND deleted_at IS NULL').bind(payloadOrderId).first()
       : await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE deleted_at IS NULL AND (id = ? OR UPPER(orderNo) = UPPER(?)) LIMIT 1').bind(code, code).first()
     if (!row && !payloadOrderId && /^[A-Za-z0-9]{6}$/.test(code)) {
-      const matches = ((await c.env.RENT.prepare(`SELECT o.id, o.orderNo, o.status, o.userId
+      let matches = ((await c.env.RENT.prepare(`SELECT o.id, o.orderNo, o.status, o.userId
         FROM orders o JOIN users u ON u.id = o.userId
         WHERE o.deleted_at IS NULL AND UPPER(SUBSTR(o.orderNo, -6)) = ?${user.role === 'ADMIN' ? '' : ' AND u.staff_id = ?'}
         ORDER BY o.id LIMIT 2`).bind(code.toUpperCase(), ...(user.role === 'ADMIN' ? [] : [user.id])).all()).results || []) as any[]
-      if (matches.length > 1) return c.html(pages.renderStaffMobileScan(c, user, '匹配到多个订单，请输入完整订单号'), 409)
+      if (scanRoster) matches = [...new Map([...matches, ...scanRoster.tasks.filter(task => assignedOrders.has(task.orderId) && task.orderNo.slice(-6).toUpperCase() === code.toUpperCase()).map(task => ({ id: task.orderId }))].map(row => [row.id, row])).values()]
+      if (matches.length > 1) return c.html(await pages.renderStaffMobileOperations(c, user, stage || undefined, '匹配到多个订单，请输入完整订单号'), 409)
       row = matches[0] || null
     }
     const order = row ? await getOrderById(c, String(row.id)) : null
@@ -2784,12 +2787,12 @@ app.get('/staff/mobile/scan', async (c) => {
     const signedPickup = order?.status === 'approved' && await getContractByOrderId(c, order.id).then(contract => contract?.status === 'signed')
     const pickupReady = stage !== 'return' && order && (['paid', 'pending_pickup'].includes(String(order.status)) || signedPickup)
     const returnReady = stage !== 'pickup' && order && (['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) || (order.status === 'completed' && Number(order.overdue_outstanding_amount || 0) > 0))
-    if ((pickupReady || returnReady) && (user.role === 'ADMIN' || customer?.staffId === user.id)) {
+    if ((pickupReady || returnReady) && (user.role === 'ADMIN' || customer?.staffId === user.id || assignedOrders.has(order.id))) {
       return c.redirect(pickupReady?`/staff/orders/${encodeURIComponent(order.id)}/handover`:`/staff/orders/${encodeURIComponent(order.id)}`)
     }
-    return c.html(await pages.renderStaffMobileScan(c, user, !order ? '请核实输入信息是否正确' : !pickupReady && !returnReady ? '该订单当前没有待处理的取货或归还任务。' : '你没有权限处理该客户的订单。'), 409)
+    return c.html(await pages.renderStaffMobileOperations(c, user, stage || undefined, !order ? '请核实输入信息是否正确' : !pickupReady && !returnReady ? '该订单当前没有待处理的取货或归还任务。' : '你没有权限处理该客户的订单。'), 409)
   }
-  return c.html(pages.renderStaffMobileScan(c, user))
+  return c.redirect('/staff/mobile' + (stage ? '/' + stage : '') + '#scan')
 })
 
 app.get('/staff/profile', async (c) => {

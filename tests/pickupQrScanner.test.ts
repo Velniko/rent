@@ -6,12 +6,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runInNewContext } from 'node:vm'
-import { renderStaffMobileScan } from '../src/pages/staff/mobileScan'
+import { renderMobileOrderScanner } from '../src/pages/staff/mobileScan'
 import { extractInlineScripts } from './helpers'
 
-function scannerHarness(mode: 'library' | 'native' | 'denied' = 'library') {
+function scannerHarness(mode: 'library' | 'native' | 'denied' = 'library', pending = false) {
+  const permission = Promise.withResolvers<void>()
   const elements = new Map<string, any>()
-  for (const id of ['qr-reader', 'start-camera', 'stop-camera', 'scan-status']) elements.set(id, {
+  for (const id of ['qr-reader', 'start-camera', 'stop-camera', 'scan-status', 'mobile-order-scanner', 'open-mobile-scanner']) elements.set(id, {
     hidden: id === 'stop-camera', textContent: '', events: {} as Record<string, () => Promise<void>>,
     addEventListener(name: string, handler: () => Promise<void>) { this.events[name] = handler },
     replaceChildren() {}, appendChild() {}, querySelector() { return { readyState: 2 } },
@@ -22,6 +23,7 @@ function scannerHarness(mode: 'library' | 'native' | 'denied' = 'library') {
   class Scanner {
     async start(_camera: unknown, _options: unknown, onSuccess: (value: string) => Promise<void>) {
       if (mode === 'denied') throw new Error('Permission denied')
+      if (pending) await permission.promise
       running = true; success = onSuccess
     }
     async stop() { stopCalls++; await Promise.resolve(); running = false }
@@ -32,16 +34,17 @@ function scannerHarness(mode: 'library' | 'native' | 'denied' = 'library') {
   const context = {
     window, location,
     document: { getElementById: (id: string) => elements.get(id), createElement: () => ({}) },
-    navigator: { mediaDevices: { async getUserMedia() { return { getTracks: () => [{ stop() { trackStops++ } }] } } } },
+    navigator: { mediaDevices: { async getUserMedia() { if (pending) await permission.promise; return { getTracks: () => [{ stop() { trackStops++ } }] } } } },
     BarcodeDetector: class { async detect() { return [{ rawValue: 'https://rent.example.test/pickup/pickup-order' }] } },
     requestAnimationFrame() { return 1 }, cancelAnimationFrame() {},
   }
-  const html = renderStaffMobileScan({} as any, { id: 'staff', role: 'STAFF', name: '员工' })
+  const html = renderMobileOrderScanner()
   const script = extractInlineScripts(html).find(value => value.includes('const nativeScan='))!
   runInNewContext(script, context)
   return {
     elements, location,
     start: () => elements.get('start-camera').events.click(), stop: () => elements.get('stop-camera').events.click(),
+    close: () => elements.get('mobile-order-scanner').events.close(), finishPermission: () => permission.resolve(),
     decode: (value: string) => success!(value),
     counts: () => ({ stopCalls, clearCalls, trackStops }),
   }
@@ -77,4 +80,23 @@ test('native scanner fallback releases camera tracks and navigates to the decode
   await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
   assert.equal(h.counts().trackStops, 1)
   assert.match(h.location.href, /pickup-order/)
+})
+
+test('closing the integrated scanner releases the camera even if startup is still pending', async () => {
+  for (const mode of ['library', 'native'] as const) {
+    const h = scannerHarness(mode, true)
+    const starting = h.start()
+    await h.close()
+    h.finishPermission()
+    await starting
+    assert.equal(h.location.href, '')
+    assert.equal(h.elements.get('start-camera').hidden, false)
+    assert.equal(h.elements.get('stop-camera').hidden, true)
+    assert.deepEqual(h.counts(), mode === 'library' ? { stopCalls: 1, clearCalls: 1, trackStops: 0 } : { stopCalls: 0, clearCalls: 0, trackStops: 1 })
+  }
+  const active = scannerHarness()
+  await active.start()
+  await active.close()
+  assert.equal(active.counts().stopCalls, 1)
+  assert.equal(active.counts().clearCalls, 1)
 })

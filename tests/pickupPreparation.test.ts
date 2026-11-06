@@ -507,7 +507,9 @@ test('manual lookup accepts the last six characters, lowercase and full order nu
       assert.equal(response.headers.get('location'), '/staff/orders/pickup-order/handover')
     }
   }
-  const page = await f.request('staff', '/staff/mobile/scan', 'GET')
+  const legacy = await f.request('staff', '/staff/mobile/scan', 'GET')
+  assert.equal(legacy.headers.get('location'), '/staff/mobile#scan')
+  const page = await f.request('staff', '/staff/mobile', 'GET')
   assert.match(await page.text(), /输入订单号或后 6 位/)
   for (const code of ['AB12C', 'AB12CDE', 'AB%2CD', 'AB_2CD']) {
     assert.equal((await f.request('staff', '/staff/mobile/scan?code=' + encodeURIComponent(code), 'GET')).status, 409)
@@ -539,6 +541,9 @@ test('short-code lookup is scoped to assigned customers; admins detect collision
   assert.equal((await f.request('other-staff', '/staff/mobile/scan?code=AB12CD', 'GET')).status, 409)
   f.sqlite.exec(`INSERT INTO orders (id, orderNo, userId, deviceId, startDate, endDate, rentalPeriod, totalAmount, depositAmount, status, paymentMethod)
     SELECT 'other-order', 'OD-20900102-AB12CD', 'other-customer', 'replacement', startDate, endDate, rentalPeriod, totalAmount, depositAmount, status, paymentMethod FROM orders WHERE id = 'pickup-order';`)
+  const roster = JSON.parse(String(f.sqlite.prepare('SELECT state_json FROM staff_roster').get()!.state_json))
+  roster.published = []
+  f.sqlite.prepare('UPDATE staff_roster SET state_json=?').run(JSON.stringify(roster))
   for (const [actor, id] of [['staff', 'pickup-order'], ['other-staff', 'other-order']]) {
     const response = await f.request(actor, '/staff/mobile/scan?code=ab12cd', 'GET')
     assert.equal(response.status, 302)

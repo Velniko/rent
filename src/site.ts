@@ -1827,7 +1827,6 @@ export function buildLayout(title: string, body: string, currentUser?: (User & {
         ['/staff/mobile', '今日订单', '◉', ['/staff/mobile/today']],
         ['/staff/mobile/pickup', '取货', '◷', ['/staff/mobile/pickup']],
         ['/staff/mobile/return', '归还', '↺', ['/staff/mobile/return']],
-        ['/staff/mobile/scan', '扫码', '▦', ['/staff/mobile/scan']],
         ['/staff/inspections', '验机', '◈', ['/staff/inspections']],
       ]
       : currentUser?.accountType === 'guest'

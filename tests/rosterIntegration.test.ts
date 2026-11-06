@@ -112,6 +112,30 @@ test('active administrators can be scheduled manually, automatically and receive
  assert.ok((await rosterPermission(c,actors.admin,'o','return')).allowed)
 })
 
+test('mobile orders embeds scanning and scan lookup accepts roster assignments across customer ownership', async t => {
+ const {request,sql}=await setup(t)
+ sql.exec("UPDATE orders SET id='scan-order' WHERE id='o'")
+ const inbox=await request('/staff/mobile','a')
+ assert.equal(inbox.status,200)
+ assert.match(inbox.headers.get('Permissions-Policy')||'',/camera=\(self\)/)
+ const html=await inbox.text()
+ assert.match(html,/<h1>今日订单<\/h1>/)
+ assert.match(html,/id="open-mobile-scanner"/)
+ assert.match(html,/id="mobile-order-scanner"/)
+ for(const script of extractInlineScripts(html))new Function(script)
+ assert.equal((await request('/staff/mobile/scan','a')).headers.get('location'),'/staff/mobile#scan')
+ for(const code of ['scan-order','OD-20261106-ROSTER','ROSTER','RENT-PICKUP:scan-order']) {
+   const response=await request('/staff/mobile/scan?code='+encodeURIComponent(code),'a')
+   assert.equal(response.status,302,code)
+   assert.equal(response.headers.get('location'),'/staff/orders/scan-order')
+ }
+ const missing=await request('/staff/mobile/scan?code=missing','a')
+ assert.equal(missing.status,409)
+ const failed=await missing.text();assert.match(failed,/id="mobile-order-scanner"/);assert.match(failed,/请核实输入信息是否正确/)
+ sql.exec("UPDATE orders SET deleted_at=CURRENT_TIMESTAMP WHERE id='scan-order'")
+ assert.equal((await request('/staff/mobile/scan?code=RENT-PICKUP:scan-order','a')).status,409)
+})
+
 test('a complete return inspection stores five encrypted R2 photos and separate order activity',async t=>{
  const {request,sql,env,objects}=await setup(t)
  Object.assign(env,{CLOUDINARY_CLOUD_NAME:'demo',CLOUDINARY_API_KEY:'key',CLOUDINARY_API_SECRET:'secret'})

@@ -241,7 +241,8 @@ test('staff and admin have separate pickup and return lists, overdue returns, an
     assert.match(nav,/href="\/staff\/mobile\/return" class="active"/)
     assert.equal((await f.request('/staff/mobile/scan?stage=return&code=OD-PICKUP',actor)).status,409)
     assert.match((await f.request('/staff/mobile/scan?stage=return&code=OD-RETURN',actor)).headers.get('location')!,/\/orders\/order$/)
-    const scanner=await (await f.request('/staff/mobile/scan?stage=return',actor)).text()
+    assert.equal((await f.request('/staff/mobile/scan?stage=return',actor)).headers.get('location'),'/staff/mobile/return#scan')
+    const scanner=await (await f.request('/staff/mobile/return',actor)).text()
     assert.match(scanner,/name="stage" value="return"/)
     for(const script of extractInlineScripts(scanner)) new Function(script)
   }
