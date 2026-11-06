@@ -260,6 +260,24 @@
       input.value = String(options.value || '');
       input.maxLength = Math.max(1, Number(options.maxLength) || 300);
       input.placeholder = options.placeholder || '';
+      if (options.presets && options.presets.length) {
+        const select = document.createElement('select');
+        select.className = 'form-control reason-preset-select';
+        select.setAttribute('data-reason-preset-for', input.id);
+        select.setAttribute('aria-label', '选择常见原因');
+        select.style.marginBottom = '8px';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '选择常见原因…';
+        select.appendChild(placeholder);
+        options.presets.forEach(function (preset) {
+          const opt = document.createElement('option');
+          opt.value = preset;
+          opt.textContent = preset;
+          select.appendChild(opt);
+        });
+        input.insertAdjacentElement('beforebegin', select);
+      }
       const required = options.required !== false;
       const sync = function () { modal.confirm.disabled = required && !input.value.trim(); };
       input.addEventListener('input', sync);
@@ -275,6 +293,19 @@
 
     // 授权只对确认后同步触发的这一次提交生效；取消、校验失败或重试都会重新确认。
     const confirmedForms = new WeakSet();
+    // 「选择常见原因」下拉框：选中即把值填进目标字段，仍可继续手动编辑。
+    document.addEventListener('change', function (event) {
+      const select = event.target.closest && event.target.closest('[data-reason-preset-for]');
+      if (!select) return;
+      const target = document.getElementById(select.dataset.reasonPresetFor);
+      if (target && select.value) {
+        target.value = select.value;
+        target.dispatchEvent(new Event('input', { bubbles: true }));
+        target.focus();
+      }
+      select.value = '';
+    });
+
     function replayAuthorizedSubmit(form, submitter) {
       if (!form.isConnected) return;
       confirmedForms.add(form);
@@ -310,6 +341,7 @@
           multiline: form.dataset.promptMultiline !== 'false',
           required: form.dataset.promptRequired !== 'false',
           maxLength: form.dataset.promptMaxlength,
+          presets: form.dataset.promptPresets ? JSON.parse(form.dataset.promptPresets) : undefined,
         });
         return;
       }
