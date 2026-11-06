@@ -30,7 +30,7 @@ export function renderAdminApiSettings(user: any, stripe: any = {}, notify: any 
   const dc = delivery || {}
   const tr = { provider: 'deepl', deeplPlan: 'free', dailyByteLimit: 100000, ...translation }
   const paymentMethods = getSystemSettings().paymentMethods
-  const body = `<div class="api-settings-page"><div class="page-header"><div><p class="section-code">SYSTEM / INTEGRATIONS</p><h2>API 设置</h2><p>集中填写所有第三方 API、密钥和 Webhook 配置。敏感密钥会加密保存，输入框留空表示保留原值。</p></div><div class="record-actions"><a class="button button-secondary" href="/admin/settings">系统设置</a><a class="button button-secondary" href="/admin/delivery">配送管理</a></div></div>
+  const body = `<div class="api-settings-page"><div class="page-header"><div><p class="section-code">SYSTEM / INTEGRATIONS</p><h2>API 设置</h2><p>集中填写所有第三方 API、密钥和 Webhook 配置。敏感密钥会加密保存，输入框留空表示保留原值。</p></div><div class="record-actions"><a class="button button-secondary" href="/admin/storage">对象存储</a><a class="button button-secondary" href="/admin/settings">系统设置</a><a class="button button-secondary" href="/admin/delivery">配送管理</a></div></div>
     <form id="apiSettingsForm" class="asset-editor api-settings-form">
       <section class="form-section"><div class="form-section-title"><span class="mono">TRANSLATION</span><div><h3>翻译 API</h3></div></div>
         <div class="checkbox-group"><input type="checkbox" id="translationEnabled" ${tr.enabled ? 'checked' : ''}><label for="translationEnabled">启用 API 翻译</label></div>

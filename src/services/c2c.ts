@@ -9,7 +9,7 @@ import { shippingAddressFromForm,formatShippingAddress } from '../domain/rentalP
 import { nanoid } from 'nanoid'
 import { sanitizePlainText } from '../lib/html'
 import { createAuditLog } from './audit'
-import { getCloudinaryRuntimeConfig, uploadCloudinaryImage } from '../lib/cloudinary'
+import { uploadSiteImage } from './objectStorage'
 import { validateHostedImageUrls } from '../lib/hostedImages'
 import { C2C_PHOTO_SLOTS, hasRequiredC2CPhotos } from '../domain/c2cPhotos'
 import type { C2CPhotos } from '../domain/c2cPhotos'
@@ -67,7 +67,7 @@ export async function uploadC2CPhoto(c: Context,ownerId: string,form: Record<str
   if (!await isC2CMember(c,ownerId)) throw new Error('请先加入出租计划')
   const slot=String(form.slot || '')
   if (!C2C_PHOTO_SLOTS.some(item=>item.key===slot)) throw new Error('请选择照片部位')
-  const url=validateHostedImageUrls(await uploadCloudinaryImage(form.file,await getCloudinaryRuntimeConfig(c),'rent/c2c'),1)[0]
+  const url=validateHostedImageUrls(await uploadSiteImage(form.file,c,'rent/c2c'),1)[0]
   const id=`c2cp-${nanoid(16)}`
   await c.env.RENT.prepare('INSERT INTO c2c_photos (id,owner_id,slot,url) VALUES (?,?,?,?)').bind(id,ownerId,slot,url).run()
   return {id,url}

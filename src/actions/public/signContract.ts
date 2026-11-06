@@ -8,7 +8,7 @@ import {
   getContractBySignToken, insertUser, updateOrderInDB, Order, User,
   updateContractStatusInDB, hashPassword, logError, getOrCreateSignSession,
   updateSignSession, deleteSignSession, getUserById, getSystemSettings, getOrderById, getDeviceById,
-  getContractVariableData, renderContractVariables, ensureOrderNumber, issueInvoice, findUserBySession, uploadCloudinaryImage, validateHostedImageUrls, isStrongPassword, loadSystemSettingsFromDB, generateTemporaryPassword, generateUniqueUserId, updateUser, buildLayout, canUseAccountBalance, createNotification, enqueueRentalUserCreation, recordBalanceTransaction, generateContractNumber, generateReferenceNumber, lockReferralRelationship, createAuthSession, getCustomerSigningUser, getDeviceRentalRules, getContractCustomerSnapshot, getCustomerRiskAssessment
+  getContractVariableData, renderContractVariables, ensureOrderNumber, issueInvoice, findUserBySession, validateHostedImageUrls, isStrongPassword, loadSystemSettingsFromDB, generateTemporaryPassword, generateUniqueUserId, updateUser, buildLayout, canUseAccountBalance, createNotification, enqueueRentalUserCreation, recordBalanceTransaction, generateContractNumber, generateReferenceNumber, lockReferralRelationship, createAuthSession, getCustomerSigningUser, getDeviceRentalRules, getContractCustomerSnapshot, getCustomerRiskAssessment
 } from '../../site';
 import { applyOrderRiskDeposit } from '../../services/riskDeposit';
 import { nanoid } from 'nanoid';
@@ -20,7 +20,7 @@ import { getSquareRuntimeConfig } from '../../square';
 import { findEligibleCoupon, calculateCouponDiscount, checkCustomerCouponEligibility, reserveCouponForOrder, clearPreviewCouponFromOrder } from '../coupons';
 import { calculateRentalFee } from '../../domain/rentalPricing';
 import { generateWindowsPassword } from '../../lib/password';
-import { getCloudinaryRuntimeConfig } from '../../lib/cloudinary';
+import { uploadSiteImage } from '../../services/objectStorage';
 import { escapeHtml } from '../../lib/html';
 import { encryptSecret } from '../../lib/secretBox';
 import { isUnavailablePickupTime, legacyPickupSlot, pickupTimeMode, serviceFeeRate } from '../../domain/pickupTimeSlots';
@@ -399,7 +399,7 @@ export async function handleSignContractStep(c: Context, identifier: string, ste
           if (!transferReference) throw new Error('请填写付款 Reference')
           try {
             transferProofUrl = body.transferProofFile
-              ? await uploadCloudinaryImage(body.transferProofFile, await getCloudinaryRuntimeConfig(c), 'rent/payment-proofs', { watermark: true })
+              ? await uploadSiteImage(body.transferProofFile, c, 'rent/payment-proofs', { watermark: true })
               : validateHostedImageUrls(body.transferProofUrl, 1)[0]
           } catch (error: any) { throw new Error(error.message || '请上传有效的付款凭证图片') }
         }
