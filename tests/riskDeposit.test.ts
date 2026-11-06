@@ -14,6 +14,8 @@ function setup(t: any) {
   t.after(() => db.close())
   db.exec(`CREATE TABLE users (id TEXT, role TEXT, balance REAL, identity_status TEXT);
     INSERT INTO users VALUES ('customer', 'CUSTOMER', 0, 'VERIFIED');
+    CREATE TABLE identity_documents (id TEXT,customer_id TEXT,status TEXT);
+    INSERT INTO identity_documents VALUES ('approved','customer','VERIFIED');
     CREATE TABLE orders (id TEXT PRIMARY KEY, userId TEXT, status TEXT, payment_status TEXT, handover_overdue INTEGER DEFAULT 0, deposit_deduction_amount REAL DEFAULT 0, depositAmount REAL, totalAmount REAL, rental_pricing_json TEXT, deposit_status TEXT, discount_amount REAL DEFAULT 0, contractSigned INTEGER DEFAULT 0, updatedAt TEXT);
     CREATE TABLE payments (id TEXT, rental_id TEXT, customer_id TEXT, status TEXT, amount REAL);
     CREATE TABLE payment_refunds (order_id TEXT, status TEXT, refund_amount REAL, type TEXT);
@@ -95,4 +97,14 @@ test('deposit-scoped coupons are repriced before the customer confirms the depos
   assert.equal(order.depositAmount, 150)
   assert.equal(order.discount_amount, 75)
   assert.equal(order.totalAmount, 215)
+})
+
+test('a legacy verified status cannot earn a tier reduction without approved evidence', async t => {
+  const { db, c, completed } = setup(t)
+  completed(5)
+  db.exec('DELETE FROM identity_documents')
+  assert.equal((await getCustomerRiskAssessment(c, 'customer')).level, 'NORMAL')
+  assert.equal((await getCustomerRiskLevels(c, ['customer'])).get('customer')?.level, 'NORMAL')
+  const order = { id:'unsigned',status:'draft',rental_pricing_json:JSON.stringify({depositMultiplier:0.5,depositRiskLevel:'LOW'}) }
+  await assert.rejects(()=>applyOrderRiskDeposit(c,order,'customer'), /身份验证/)
 })

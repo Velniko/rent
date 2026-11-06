@@ -6,6 +6,7 @@
 import type { Context } from 'hono'
 import { calculateCustomerRiskAssessment, riskDepositSnapshot } from '../domain/riskFlags'
 import { getCustomerRiskAssessment } from './risk'
+import { approvedIdentityDocument } from './identityVerification'
 import { getDeviceById } from '../site'
 import { findEligibleCoupon, calculateCouponDiscount } from '../actions/coupons'
 import { calculateRentalFee } from '../domain/rentalPricing'
@@ -14,9 +15,11 @@ import { calculateRentalFee } from '../domain/rentalPricing'
 // Existing order snapshots keep their quoted deposit even when the rating changes.
 export async function applyOrderRiskDeposit(c: Context, order: any, customerId?: string): Promise<void> {
   const pricing = JSON.parse(order.rental_pricing_json || '{}')
-  if (pricing.depositRiskLevel || !['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment'].includes(order.status)) return
+  if (order.contractSigned || !['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment'].includes(order.status)) return
   const paid = await c.env.RENT.prepare("SELECT id FROM payments WHERE rental_id = ? AND status IN ('paid', 'refunded') LIMIT 1").bind(order.id).first()
   if (paid) return
+  if (Number(pricing.depositMultiplier ?? 1) < 1 && !(customerId && await approvedIdentityDocument(c, customerId))) throw new Error('请先完成身份验证，再申请等级押金减免')
+  if (pricing.depositRiskLevel) return
   const risk = customerId ? await getCustomerRiskAssessment(c, customerId) : calculateCustomerRiskAssessment({})
   const base = Number(pricing.baseDepositAmount ?? pricing.depositAmountBeforeWaiver ?? order.depositAmount ?? 0)
   const snapshot = { ...pricing, ...riskDepositSnapshot(base, risk) }
