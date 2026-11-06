@@ -22,7 +22,14 @@ export function parseManualOrder(form: Record<string, unknown>, currentStatus = 
   for (const date of [startDate, endDate]) {
     if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date)) return { error: '日期格式无效' } as const
   }
-  if (startDate && endDate && endDate <= startDate) return { error: '归还日期必须晚于起租日期' } as const
+  const startPeriod = form.startPeriod === 'PM' ? 'PM' : form.startPeriod === 'AM' ? 'AM' : ''
+  const endPeriod = form.endPeriod === 'PM' ? 'PM' : form.endPeriod === 'AM' ? 'AM' : ''
+  if (startDate && endDate) {
+    if (!startPeriod) return { error: '请选择取货时段' } as const
+    if (!endPeriod) return { error: '请选择归还时段' } as const
+    const halfDays = Math.round((Date.parse(endDate) - Date.parse(startDate)) / 86400000) * 2 + (endPeriod === 'PM' ? 1 : 0) - (startPeriod === 'PM' ? 1 : 0)
+    if (halfDays <= 0) return { error: '归还时段必须晚于取货时段' } as const
+  }
   const amount = (name: string) => String(form[name] ?? '').trim() === '' ? 0 : Number(form[name])
   const rentalAmount = amount('rentalAmount'), depositAmount = amount('depositAmount')
   if ([rentalAmount, depositAmount].some(value => !Number.isFinite(value) || value < 0 || value > 99999999.99 || Math.abs(value * 100 - Math.round(value * 100)) > 0.000001)) return { error: '金额必须为非负数，最多保留两位小数' } as const
@@ -33,6 +40,7 @@ export function parseManualOrder(form: Record<string, unknown>, currentStatus = 
   return { data: {
     deviceId, userId: String(form.userId || '').trim() || null,
     startDate: startDate || null, endDate: endDate || null,
+    startPeriod: startDate && endDate ? startPeriod : 'AM', endPeriod: startDate && endDate ? endPeriod : 'AM',
     rentalPeriod: startDate && endDate ? Math.round((Date.parse(endDate) - Date.parse(startDate)) / 86400000) : 0,
     totalAmount: Math.round((rentalAmount + depositAmount) * 100) / 100, depositAmount, paymentMethod: paymentMethod || null,
     pickupLocation: sanitizePlainText(form.pickupLocation, 300), returnLocation: sanitizePlainText(form.returnLocation, 300),
