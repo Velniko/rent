@@ -3,6 +3,7 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { canStaffReadRosterOrder } from '../../services/roster'
 import type { Context } from 'hono'
 import { getOrderById, getUserById, getContractByOrderId, createNotification, createAuditLog, staffOrderPath, loadSystemSettingsFromDB } from '../../site'
 import { canPreparePickup } from '../../domain/pickupPreparation'
@@ -13,7 +14,7 @@ export async function prepareOrderPickup(c: Context, user: any, orderId: string)
   const order = await getOrderById(c, orderId)
   if (!order) return c.text('订单不存在', 404)
   const customer = await getUserById(c, order.userId)
-  if (user.role === 'STAFF' && customer?.staffId !== user.id) return c.text('无权操作', 403)
+  if (user.role === 'STAFF' && customer?.staffId !== user.id && !await canStaffReadRosterOrder(c,user,order.id)) return c.text('无权操作', 403)
   const contract = await getContractByOrderId(c, order.id)
   if (!canPreparePickup(order, contract)) return c.text('当前订单不能准备取货', 409)
   await loadSystemSettingsFromDB(c)
