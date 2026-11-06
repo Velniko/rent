@@ -70,3 +70,35 @@ test('publishing, editing and reading a bilingual announcement preserve complete
   assert.equal((await request(`/admin/announcements/${rows[0].id}`, { ...changed, message: 'x'.repeat(50001) })).status, 400)
   assert.equal((sqlite.prepare('SELECT message FROM notifications WHERE id = ?').get(rows[0].id) as any).message, changed.message)
 })
+
+test('publishing an announcement with no customer or staff accounts still records it for the public site and the archive', async t => {
+  const sqlite = new DatabaseSync(':memory:')
+  t.after(() => sqlite.close())
+  for (const file of readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()) sqlite.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'))
+  // 生产环境早已清理掉 0001 初始化迁移里的示例账号，这里模拟「只有一个管理员」的真实情况。
+  sqlite.exec("DELETE FROM users")
+  sqlite.exec("INSERT INTO users (id, name, email, role) VALUES ('admin', '管理员', 'admin@example.test', 'ADMIN')")
+  const db = { prepare(sql: string) {
+    let values: any[] = []
+    const statement = { bind(...input: any[]) { values = input; return statement }, async first() { return sqlite.prepare(sql).get(...values) || null }, async all() { return { results: sqlite.prepare(sql).all(...values) } }, async run() { return { success: true, meta: { changes: Number(sqlite.prepare(sql).run(...values).changes) } } } }
+    return statement
+  }, async batch(statements: any[]) { return Promise.all(statements.map(statement => statement.run())) } }
+  const env = { RENT: db }, context = { env } as any
+  const adminSession = await createAuthSession(context, 'admin')
+  const request = (path: string, fields?: Record<string, string>) => {
+    const body = fields ? new FormData() : undefined
+    for (const [key, value] of Object.entries(fields || {})) body!.set(key, value)
+    return worker.fetch(new Request(`https://rent.example.test${path}`, { method: fields ? 'POST' : 'GET', ...(body ? { body } : {}), headers: { Cookie: `session=${adminSession.token}`, Origin: 'https://rent.example.test', 'Sec-Fetch-Site': 'same-origin' } }), env, { waitUntil() {} } as any)
+  }
+  const fields = { title: '假期通知', message: '<p>门店假期休业</p>', titleEn: 'Holiday', messageEn: '<p>Closed for the holiday</p>' }
+  const published = await request('/notifications/announcement', fields)
+  assert.equal(published.status, 302, await published.text())
+  const rows = sqlite.prepare("SELECT * FROM notifications WHERE type = 'announcement'").all() as any[]
+  // 没有任何客户/员工账号时也不能让发布变成空操作：公开官网和「历史通告」都靠这条记录。
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].sender_id, 'admin')
+  assert.equal(rows[0].message, fields.message)
+  const archive = await (await request('/admin/announcements')).text()
+  assert.ok(archive.includes(fields.title))
+  assert.doesNotMatch(archive, /暂无历史公告/)
+})
