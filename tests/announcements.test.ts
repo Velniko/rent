@@ -98,6 +98,13 @@ test('publishing an announcement with no customer or staff accounts still record
   assert.equal(rows.length, 1)
   assert.equal(rows[0].sender_id, 'admin')
   assert.equal(rows[0].message, fields.message)
+  // 这条记录只是为了让官网能读到，不应该在 rent 自己的站内信或弹窗里出现给发布者。
+  assert.equal(rows[0].in_app, 0)
+  assert.ok(rows[0].read_at)
+  const unread = await (await request('/notifications/unread')).json() as any
+  assert.deepEqual(unread.notifications, [])
+  const pendingAnnouncements = await (await request('/notifications/announcements')).json() as any
+  assert.deepEqual(pendingAnnouncements.announcements, [])
   const archive = await (await request('/admin/announcements')).text()
   assert.ok(archive.includes(fields.title))
   assert.doesNotMatch(archive, /暂无历史公告/)
