@@ -42,5 +42,3 @@ lerna-debug.log*
 .claude/
 # local verification artifacts (screenshots, temp reports)
 tmp/
-tests/
-docs/
