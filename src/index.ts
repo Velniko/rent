@@ -2480,7 +2480,9 @@ app.post('/notifications/announcement', async (c) => {
   if (!title || !message) return c.text('通告标题和内容不能为空', 400)
   if (expiresAt && !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(expiresAt)) return c.text('下架日期和时间格式无效', 400)
   const recipients = (await getUsers(c)).filter((account: any) => ['CUSTOMER', 'STAFF'].includes(account.role) && account.status !== 'inactive')
-  await Promise.all(recipients.map((recipient: any) => createNotification(c, { recipientId: recipient.id, senderId: user.id, type: 'announcement', title, message, titleEn, messageEn, expiresAt })))
+  // 没有客户/员工账号时也要留一条记录：官网弹窗和「历史通告」都靠 notifications
+  // 表里至少存在一条该通告，否则发布会悄悄变成空操作。
+  await Promise.all((recipients.length ? recipients : [user]).map((recipient: any) => createNotification(c, { recipientId: recipient.id, senderId: user.id, type: 'announcement', title, message, titleEn, messageEn, expiresAt })))
   return c.redirect('/notifications/compose?mode=announcement&published=1')
 })
 
