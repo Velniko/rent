@@ -15,6 +15,7 @@ import type { EmailSendResult, EmailAttachment } from '../notifyChannels'
 import { pickupAppointmentAt } from '../domain/pickupPreparation'
 import { formatMelbourneDate } from '../lib/format'
 import { buildPickupQrPayload } from '../lib/pickupQr'
+import { getOrderVerificationCode } from './orderVerificationCodes'
 import { buildReceiptPdf, bytesToBase64, DEFAULT_RECEIPT_PDF_TEMPLATE } from './receiptPdf'
 import { AGREEMENT_UPDATE_SUBJECT, AGREEMENT_UPDATE_EMAIL_BODY, AGREEMENT_UPDATE_SITE_BODY } from './agreementUpdateTemplate'
 
@@ -97,6 +98,7 @@ export async function sendPickupReminderEmail(c: Context, notification: { recipi
   const vars: Record<string, string> = {
     customer_name: normalizeCustomerName(recipient?.name), customer_email: email,
     order_number: String(order.orderNo || order.id), device_name: String(order.device_name || ''),
+    order_verification_code: await getOrderVerificationCode(c, order.id),
     pickup_date: String(order.startDate || ''), pickup_location: String(order.pickupLocation || '到店自取'),
     pickup_time: orderTimeSlot(order, 'pickup'), return_time: orderTimeSlot(order, 'return'),
     delivery_fee: orderDeliveryFee(order),
@@ -115,7 +117,7 @@ export async function sendPickupReminderEmail(c: Context, notification: { recipi
   // Keep the template sanitizer's remote-image restriction; insert only our generated QR afterwards.
   const html = renderEmailNotificationHtml(subject, fill(String(template.body || ''), true), vars.company_name, template.theme_color || '#f0a35b').replaceAll(qrPlaceholder, qrImage)
   const timing = notification.reminderMinutes === 120 ? '距离预约取货还有 2 小时。' : notification.reminderMinutes === 30 ? '距离预约取货还有 30 分钟。' : ''
-  const text = `您好 ${vars.customer_name}：您的订单 ${vars.order_number} 已准备取货。${timing}取货日期：${vars.pickup_date}，时间：${vars.pickup_time}，地点：${vars.pickup_location}。取货链接：${payload}。请到店后出示取货二维码。`
+  const text = `您好 ${vars.customer_name}：您的订单 ${vars.order_number} 已准备取货。${timing}取货日期：${vars.pickup_date}，时间：${vars.pickup_time}，地点：${vars.pickup_location}。取还校验码：${vars.order_verification_code}。取货链接：${payload}。请到店后出示取货二维码。`
   return sendTransactionalEmail(c, { to: email, subject, text: sanitizePlainText(text, 2000), html })
 }
 
@@ -164,6 +166,7 @@ async function sendNotificationEmail(c: Context, notification: NotificationInput
       message: notification.message,
       customer_name: normalizeCustomerName(customer?.name),
       customer_email: String(customer?.email || ''),
+      order_verification_code: String(template.subject||'').includes('{order_verification_code}')||String(template.body||'').includes('{order_verification_code}')?await getOrderVerificationCode(c, order.id):'',
       order_number: String(order.orderNo || order.id),
       contract_number: String(contract?.contractNumber || ''),
       device_name: String(device?.name || ''),

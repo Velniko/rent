@@ -330,4 +330,11 @@
 .mobile-order-scan-dialog .mobile-scan-manual__row{display:flex;gap:8px}
 .mobile-order-scan-dialog .mobile-scan-manual__row input{min-width:0;flex:1;margin:0}
 .mobile-order-scan-dialog .mobile-scan-manual__row .button{flex:none;min-height:44px}
+.mobile-order-scan-dialog [hidden]{display:none!important}
+.mobile-scan-result{border-top:1px solid var(--c-line);margin-top:20px;padding-top:18px}
+.mobile-scan-result h3{font-size:16px;margin:0 0 16px}
+.mobile-scan-result dl{display:grid;grid-template-columns:60px minmax(0,1fr);gap:12px 10px;font-size:13px;margin:0 0 24px}
+.mobile-scan-result dt{color:var(--c-text-3)}
+.mobile-scan-result dd{margin:0;overflow-wrap:anywhere;color:var(--c-text)}
+.mobile-scan-result .record-actions{display:flex;justify-content:flex-end;gap:8px}
 @media(max-width:640px){.mobile-orders-heading{margin-bottom:20px}.mobile-orders-heading h1{font-size:25px}.mobile-orders-tools{gap:8px;margin-bottom:18px}.mobile-orders-tools .button{padding:11px;font-size:12px}.mobile-orders-search{gap:6px}.mobile-orders-search .form-control{padding:11px 10px;font-size:12px}.mobile-orders-scan{gap:5px}.mobile-orders-scan svg{width:19px;height:19px}.mobile-orders-list{grid-template-columns:minmax(0,1fr);gap:12px}.mobile-order-card{padding:17px}.mobile-order-card__top{margin-bottom:14px}.mobile-order-card__device{font-size:16px}.mobile-order-scan-dialog__head{padding:18px}.mobile-order-scan-dialog__body{padding:18px}.mobile-order-scan-dialog .mobile-qr-reader{min-height:220px}}

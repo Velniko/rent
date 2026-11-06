@@ -252,7 +252,7 @@ test('mobile staff operations page renders scheduled tasks with separate return 
   const state={settings:{dailyHours:8,maxDays:5,maxConsecutive:5,minStaff:1},employees:[],published:[{id:'s',employeeId:'staff-1',day:today,start:'09:00',end:'20:00'}],drafts:{},requests:[],overrides:{},assignments:{}}
   const db={prepare(sql:string){return {bind(){return this},async first(){return sql.includes('staff_roster')?{revision:0,state_json:JSON.stringify(state)}:null},async all(){return {results:sql.includes('FROM users')?[{id:'staff-1',name:'Staff'}]:sql.includes('FROM orders')?[{id:'pickup-1',orderNo:'OD-PICKUP',status:'pending_pickup',customer:'张三',deviceName:'Laptop A',startDate:today,endDate:today,pickupTimeSlot:'10:00'},{id:'return-1',orderNo:'OD-RETURN',status:'active',customer:'李四',deviceName:'Laptop B',startDate:today,endDate:today,returnTimeSlot:'14:00'}]:[]}}}}}
   const html=await renderStaffMobileOperations({req:{query:()=>''},env:{RENT:db}} as any,{id:'staff-1',name:'Staff',role:'STAFF'})
-  assert.match(html,/今日订单/);assert.match(html,/OD-PICKUP/);assert.match(html,/OD-RETURN/);assert.match(html,/name="q"/);assert.match(html,/data-workspace-modal/);assert.doesNotMatch(html,/去验机/)
+  assert.match(html,/今日订单/);assert.match(html,/OD-PICKUP/);assert.match(html,/OD-RETURN/);assert.match(html,/name="q"/);assert.match(html,/扫码归还/);assert.doesNotMatch(html,/去验机/)
 })
 
 test('mobile scan page uses the camera and routes pickup QR payloads', () => {
@@ -260,7 +260,9 @@ test('mobile scan page uses the camera and routes pickup QR payloads', () => {
   assert.match(html, /<dialog[^>]+id="mobile-order-scanner"/)
   assert.match(html, /getUserMedia/)
   assert.match(html, /Html5Qrcode/)
-  assert.match(html, /\/staff\/mobile\/scan\?code=/)
+  assert.match(html, /\/staff\/mobile\/scan\/verify/)
+  assert.match(html, /6 位取还校验码/)
+  assert.doesNotMatch(html, /输入订单号或后 6 位/)
   assertInlineScriptsParse(html)
   const payload = buildPickupQrPayload('o-abc_123')
   assert.equal(parsePickupQrPayload(payload), 'o-abc_123')

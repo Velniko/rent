@@ -13,7 +13,7 @@ import type { RosterEmployee, RosterTask, RosterShift, RosterGrant, RosterSettin
 export type RosterDraft = {start:string;shifts:RosterShift[];warnings:RosterWarning[];settings?:RosterSettings;employees?:RosterEmployee[];preferenceBaseline?:RosterEmployee[]}
 export type RosterState = {settings:RosterSettings;employees:RosterEmployee[];published:RosterShift[];drafts:Record<string,RosterDraft>;requests:RosterGrant[];overrides:Record<string,string>;assignments:Record<string,string|null>}
 export type RosterData = RosterState & {revision:number;now:string;today:string;instant:string;selectedStart:string;currentEmployeeId:string;actorName:string;business:RosterBusiness;tasks:RosterTask[];logs:any[];preferencePolicy:'rolling30';_previousAssignments?:Record<string,string|null>}
-export class RosterError extends Error { constructor(message:string,public status:400|403|409=400){super(message)} }
+export class RosterError extends Error { constructor(message:string,public status:400|403|404|409|429=400){super(message)} }
 export function rosterClock(date=new Date()) {
   const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Melbourne',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date)
   const get=(type:string)=>parts.find(p=>p.type===type)!.value

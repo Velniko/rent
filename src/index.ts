@@ -10,11 +10,13 @@ import { handleTranslation } from './services/translation'
 import { ensureBankTransferReference, listBankTransferPayments } from './services/bankTransferReferences'
 import { TRANSLATION_CLIENT_SCRIPT } from './lib/translationClient'
 import { Hono } from 'hono'
-import { loadRoster, canStaffReadRosterOrder, syncRosterAssignments, rosterTaskVisibleTo } from './services/roster'
+import { loadRoster, canStaffReadRosterOrder, syncRosterAssignments } from './services/roster'
 import { registerStorageRoutes } from './routes/storage'
 import { registerIdentityRoutes } from './routes/identity'
 import { registerRosterRoutes } from './routes/roster'
 import { registerReturnRoutes } from './routes/returns'
+import { registerOrderScanningRoutes } from './routes/orderScanning'
+import { hasReturnScan } from './services/orderScanning'
 import { readInspectionPhotos, renderInspectionPhotos } from './lib/inspectionPhotos'
 import { createNotificationWithDelivery } from './services/notifications'
 import { runRentalPayouts } from './services/rentalPayouts'
@@ -193,7 +195,6 @@ import {
 import { escapeHtml } from './lib/html'
 import { createTallyFeedbackToken } from './lib/tally'
 import { renderPickupPreparation } from './pages/partials/pickupPreparation'
-import { parsePickupQrPayload } from './lib/pickupQr'
 import { pickupTimeSlotEndMinutes } from './domain/pickupTimeSlots'
 import { readManualInspectionFields, renderManualInspectionFields, inspectionText } from './lib/inspection'
 import { decryptSecret } from './lib/secretBox'
@@ -944,6 +945,7 @@ app.use('*', async (c, next) => {
 })
 
 registerRosterRoutes(app)
+registerOrderScanningRoutes(app)
 registerReturnRoutes(app)
 
 // 搜索需要先经过会话、访客限制与限流中间件。
@@ -1633,7 +1635,7 @@ app.get('/pickup/:orderId', async (c) => {
   if (!order) return c.html(renderNotFound(), 404)
   const user = c.get('user')
   if (!user) return c.redirect(`/login?redirect=${encodeURIComponent(c.req.path)}`)
-  if (['STAFF', 'ADMIN'].includes(user.role)) return c.redirect(`/staff/mobile/scan?code=${encodeURIComponent(c.req.url)}`)
+  if (['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/staff/mobile#scan')
   if (user.role === 'CUSTOMER' && order.userId === user.id) return c.redirect(`/customer/orders/${encodeURIComponent(order.id)}`)
   return c.html(renderForbidden(), 403)
 })
@@ -2764,34 +2766,8 @@ app.get('/staff/mobile/today', async (c) => {
 app.get('/staff/mobile/scan', async (c) => {
   const user = c.get('user')
   if (!user || !['STAFF', 'ADMIN'].includes(user.role)) return c.redirect('/login')
+  if (c.req.query('code')) return c.text('请使用相机扫描客户邮件中的二维码', 403)
   const stage = ['pickup', 'return'].includes(String(c.req.query('stage') || '')) ? c.req.query('stage') : ''
-  const code = String(c.req.query('code') || '').trim().slice(0, 300)
-  if (code) {
-    const scanRoster = user.role === 'STAFF' ? await loadRoster(c, user) : null
-    const assignedOrders = new Set(scanRoster ? scanRoster.tasks.filter(task => task.day === scanRoster.today && rosterTaskVisibleTo(scanRoster, user, task)).map(task => task.orderId) : [])
-    const payloadOrderId = parsePickupQrPayload(code)
-    let row = payloadOrderId
-      ? await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE id = ? AND deleted_at IS NULL').bind(payloadOrderId).first()
-      : await c.env.RENT.prepare('SELECT id, orderNo, status, userId FROM orders WHERE deleted_at IS NULL AND (id = ? OR UPPER(orderNo) = UPPER(?)) LIMIT 1').bind(code, code).first()
-    if (!row && !payloadOrderId && /^[A-Za-z0-9]{6}$/.test(code)) {
-      let matches = ((await c.env.RENT.prepare(`SELECT o.id, o.orderNo, o.status, o.userId
-        FROM orders o JOIN users u ON u.id = o.userId
-        WHERE o.deleted_at IS NULL AND UPPER(SUBSTR(o.orderNo, -6)) = ?${user.role === 'ADMIN' ? '' : ' AND u.staff_id = ?'}
-        ORDER BY o.id LIMIT 2`).bind(code.toUpperCase(), ...(user.role === 'ADMIN' ? [] : [user.id])).all()).results || []) as any[]
-      if (scanRoster) matches = [...new Map([...matches, ...scanRoster.tasks.filter(task => assignedOrders.has(task.orderId) && task.orderNo.slice(-6).toUpperCase() === code.toUpperCase()).map(task => ({ id: task.orderId }))].map(row => [row.id, row])).values()]
-      if (matches.length > 1) return c.html(await pages.renderStaffMobileOperations(c, user, stage || undefined, '匹配到多个订单，请输入完整订单号'), 409)
-      row = matches[0] || null
-    }
-    const order = row ? await getOrderById(c, String(row.id)) : null
-    const customer = order ? await getUserById(c, order.userId) : null
-    const signedPickup = order?.status === 'approved' && await getContractByOrderId(c, order.id).then(contract => contract?.status === 'signed')
-    const pickupReady = stage !== 'return' && order && (['paid', 'pending_pickup'].includes(String(order.status)) || signedPickup)
-    const returnReady = stage !== 'pickup' && order && (['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) || (order.status === 'completed' && Number(order.overdue_outstanding_amount || 0) > 0))
-    if ((pickupReady || returnReady) && (user.role === 'ADMIN' || customer?.staffId === user.id || assignedOrders.has(order.id))) {
-      return c.redirect(pickupReady?`/staff/orders/${encodeURIComponent(order.id)}/handover`:`/staff/orders/${encodeURIComponent(order.id)}`)
-    }
-    return c.html(await pages.renderStaffMobileOperations(c, user, stage || undefined, !order ? '请核实输入信息是否正确' : !pickupReady && !returnReady ? '该订单当前没有待处理的取货或归还任务。' : '你没有权限处理该客户的订单。'), 409)
-  }
   return c.redirect('/staff/mobile' + (stage ? '/' + stage : '') + '#scan')
 })
 
@@ -2943,7 +2919,7 @@ app.get('/staff/orders/:orderId/handover', async (c) => {
   let beforeSnapshot: Record<string, any> = {}
   try { beforeSnapshot = JSON.parse(beforeInspection?.snapshot_json || '{}') } catch (_) { }
   const inspectionFields = renderManualInspectionFields(beforeSnapshot)
-  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>扫码或打开订单后，先填写出租前验机报告，再完成取货交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form enctype="multipart/form-data" class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}</div>${renderInspectionPhotos()}<div class="grid grid-2"><div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
+  const body = `<div class="page-header"><div><p class="section-code">HANDOVER RECORD</p><h2>交付设备</h2><p>填写出租前验机报告并确认交付。</p></div><a class="button button-secondary" href="${staffOrderPath(order)}">返回订单</a></div>${renderPickupPreparation(order, handoverContract, c.req.query('pickupReady'))}<form enctype="multipart/form-data" class="panel" method="post" action="/staff/orders/${encodeURIComponent(order.id)}/pickup" data-site-confirm="确认出租前验机和交付记录无误，并开始租赁？"><div class="grid grid-2"><div><label class="form-label">设备</label><input class="form-control" value="${sanitizePlainText(device?.name || order.deviceId, 160)}" readonly></div><div><label class="form-label" for="deviceSerialNumber">设备序列号</label><input class="form-control" id="deviceSerialNumber" name="deviceSerialNumber" value="${sanitizePlainText(device?.serialNumber || '', 160)}" required></div></div><section class="handover-inspection panel"><div class="section-title"><div><h3>出租前验机报告</h3><p class="section-note">交给客户前逐项确认设备状态。</p></div></div><div class="grid grid-2">${inspectionFields}</div>${renderInspectionPhotos()}<div class="grid grid-2"><div class="form-group"><label class="form-label" for="batteryCycles">电池循环次数</label><input class="form-control" id="batteryCycles" type="number" min="0" name="batteryCycles" value="${inspectionText(beforeSnapshot.batteryCycles, 20)}"></div><div class="form-group"><label class="form-label" for="batteryHealth">电池健康</label><input class="form-control" id="batteryHealth" name="batteryHealth" value="${inspectionText(beforeSnapshot.batteryHealth, 100)}" placeholder="例如 92%"></div></div><div class="form-group"><label class="form-label" for="inspectionNotes">验机备注</label><textarea class="form-control" id="inspectionNotes" name="inspectionNotes" maxlength="2000" placeholder="记录外观、配件或其他异常">${inspectionText(beforeSnapshot.inspectionNotes, 2000)}</textarea></div></section><div class="form-group"><label class="form-label" for="accessories">交付配件</label><textarea class="form-control" id="accessories" name="accessories" maxlength="1000" required placeholder="例如：电源适配器、充电线、电脑包"></textarea></div><div class="form-group"><label class="form-label" for="conditionNotes">交付状态与备注</label><textarea class="form-control" id="conditionNotes" name="conditionNotes" maxlength="2000" required placeholder="例如：客户现场核对无误"></textarea></div><label class="form-check"><input type="checkbox" name="customerConfirmed" value="1" required> 客户已当场确认设备序列号、配件及状态</label><div class="form-group"><label class="form-label" for="customerConfirmationName">客户确认姓名</label><input class="form-control" id="customerConfirmationName" name="customerConfirmationName" maxlength="120" value="${sanitizePlainText(customer?.name || '', 120)}" required></div><button class="button button-primary" type="submit">保存验机报告并完成取货</button></form>`
   return c.html(buildLayout('出租前验机与交付 - 电脑租赁管理系统', body, user, { compactStaffNav: true }))
 })
 
@@ -4770,6 +4746,7 @@ app.post('/admin/orders/:id/update', async (c) => {
   }
   if (status==='completed' && force && (!reason || String(form.deviceConfirmed||'')!=='1'))return wantsJson?c.json({ok:false,error:'请填写原因并确认设备已收回'},400):c.text('请填写原因并确认设备已收回',400)
   if (status === 'completed') {
+    if (!order.return_received_at || !await hasReturnScan(c, order)) return wantsJson ? c.json({ok:false,error:'请先扫码并确认归还'},403) : c.text('请先扫码并确认归还',403)
     const contract = await c.env.RENT.prepare('SELECT contract_data FROM contracts WHERE orderId = ? AND deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1').bind(order.id).first() as any
     if (!JSON.parse(contract?.contract_data || '{}').inspection_date && !force) return wantsJson ? c.json({ ok: false, error: '完成订单前必须提交归还验机' }, 409) : c.text('完成订单前必须提交归还验机', 409)
   }
