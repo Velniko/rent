@@ -52,7 +52,7 @@ test('scheduled assignee can receive another CRM owner’s device; receipt and i
  assert.equal(sql.prepare("SELECT status FROM orders WHERE id='o'").get()!.status,'pending_return')
  assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM device_inspections WHERE inspection_type='after_return'").get()!.n,0)
  const page=await request('/staff/orders/o/inspection?fragment=1','a');assert.equal(page.status,200);const html=await page.text();assert.match(html,/inspectionPhoto_a/);assert.doesNotMatch(html,/<!DOCTYPE|desktop-sidebar/i)
- assert.equal((await request('/staff/orders/o/inspection','a',{})).status,400)
+ assert.equal((await request('/staff/orders/o/inspection','a',{})).status,409)
  const records=await request('/staff/orders/o','a');assert.equal(records.status,200);assert.match(await records.text(),/登记归还/)
 })
 test('preference changes enforce an exact 30-day server cooldown; admin changes preserve that timestamp and stale writes fail',async t=>{
@@ -168,14 +168,14 @@ test('a complete return inspection stores five encrypted R2 photos and separate 
  t.mock.method(globalThis,'fetch',async(input:any)=>String(input).startsWith('https://api.cloudinary.com/')?Response.json({secure_url:'https://res.cloudinary.com/demo/image/upload/inspection.png'}):new Response(png,{headers:{'Content-Type':'image/png'}}))
  sql.exec("INSERT INTO contracts(id,orderId,contractNumber,content,status) VALUES ('ct','o','CT-ROSTER','合同','signed')")
  assert.equal((await request('/staff/orders/o/receive-return','a',{received:'1'})).status,303)
- const form=new FormData();for(const key of ['screenCondition','keyboardCondition','trackpadCondition','bodyCondition','cameraCondition','wifiCondition','powerTest'])form.set(key,'正常');form.set('replacementCost','0')
+ const form=new FormData();form.set('damageFound','yes');for(const key of ['screenCondition','keyboardCondition','trackpadCondition','bodyCondition','cameraCondition','wifiCondition','powerTest'])form.set(key,'正常');form.set('replacementCost','0');form.set('damageDescription','轻微划痕');form.set('damagePhotoFiles',new File([png],'damage.png',{type:'image/png'}))
  for(const key of ['a','b','c','d','power'])form.set('inspectionPhoto_'+key,new File([png],key+'.png',{type:'image/png'}))
  const response=await request('/staff/orders/o/inspection','a',form);assert.equal(response.status,302,await response.text())
  assert.equal(sql.prepare("SELECT status FROM orders WHERE id='o'").get()!.status,'completed')
- assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM stored_objects WHERE category='inspections' AND encrypted=1 AND r2_ready=1").get()!.n,5)
- assert.equal(objects.size,5)
+ assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM stored_objects WHERE category='inspections' AND encrypted=1 AND r2_ready=1").get()!.n,6)
+ assert.equal(objects.size,6)
  const snapshot=JSON.parse(String(sql.prepare("SELECT snapshot_json FROM device_inspections WHERE rental_id='o' AND inspection_type='after_return'").get()!.snapshot_json));assert.deepEqual(Object.keys(snapshot.inspectionPhotos),['a','b','c','d','power'])
- assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE target_type='ORDER' AND target_id='o' AND action IN ('RETURN_RECEIVED','RETURN_INSPECTION_COMPLETED')").get()!.n,2)
+ assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE target_type='ORDER' AND target_id='o' AND action IN ('RETURN_RECEIVED','RETURN_INSPECTION_COMPLETED_WITH_DAMAGE')").get()!.n,2)
 })
 
 test('staff browser action state uses the server’s Melbourne clock rather than UTC',async()=>{

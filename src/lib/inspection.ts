@@ -17,22 +17,28 @@ export const MANUAL_INSPECTION_CHECKS = [
 
 const allowed = new Set(['正常', '异常', '未测试'])
 
-export function renderManualInspectionFields(snapshot: Record<string, any> = {}): string {
+export function renderManualInspectionFields(snapshot: Record<string, any> = {}, required = true): string {
   return MANUAL_INSPECTION_CHECKS.map(([input, label, storedKey, shortKey]) => {
     const selected = String(snapshot[storedKey] || snapshot[shortKey] || '未测试')
-    return `<div class="form-group"><label class="form-label" for="${input}">${label}</label><select class="form-control" id="${input}" name="${input}" required>${['正常', '异常', '未测试'].map(value => `<option value="${value}"${value === selected ? ' selected' : ''}>${value}</option>`).join('')}</select></div>`
+    return `<div class="form-group"><label class="form-label" for="${input}">${label}</label><select class="form-control" id="${input}" name="${input}"${required ? ' required' : ''}>${['正常', '异常', '未测试'].map(value => `<option value="${value}"${value === selected ? ' selected' : ''}>${value}</option>`).join('')}</select></div>`
   }).join('')
 }
 
-export function readManualInspectionFields(form: Record<string, any>): { checks: Record<string, string>; missing: string[] } {
+export function readManualInspectionFields(form: Record<string, any>, required = true): { checks: Record<string, string>; missing: string[] } {
   const checks: Record<string, string> = {}
   const missing: string[] = []
   for (const [input, label, storedKey, shortKey] of MANUAL_INSPECTION_CHECKS) {
     const value = String(form[input] || '')
-    if (!allowed.has(value)) missing.push(label)
+    if (!allowed.has(value)) { if (required) missing.push(label); else { checks[storedKey] = '未测试'; checks[shortKey] = '未测试' } }
     else { checks[storedKey] = value; checks[shortKey] = value }
   }
   return { checks, missing }
+}
+
+export const PRE_INSPECTION_SOURCE = 'pre_inspection_manual'
+
+export function isPreInspectionComplete(snapshot: Record<string, any> = {}): boolean {
+  return snapshot.source === PRE_INSPECTION_SOURCE
 }
 
 export function inspectionText(value: unknown, maxLength = 300): string {

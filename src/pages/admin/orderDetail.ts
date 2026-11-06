@@ -17,6 +17,7 @@ import { deliveryStatusInfo } from '../../deliveryStatus'
 import { renderAdminManualOrder } from './manualOrder'
 
 import { renderPickupPreparation } from '../partials/pickupPreparation'
+import { isPreInspectionComplete } from '../../lib/inspection'
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character))
@@ -45,6 +46,17 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   const risk = !existingContract && order.status === 'approved' && customer?.role === 'CUSTOMER' ? await getCustomerRiskAssessment(c, customer.id) : null
   if (risk?.blocked) return buildLayout('订单风控限制 - 电脑租赁管理系统', `<div class="panel"><h2>订单存在风控限制</h2><p>客户风险分 ${risk.score}/100，当前不能创建合同。请先完成风控处理后再继续。</p></div>`, user)
   const contract = existingContract || (order.status === 'approved' ? await ensureContractForOrder(c, order, user.id) : null)
+  const preRentalPending = !['cancelled', 'completed'].includes(String(order.status)) && !order.handover_completed_at
+  const preInspection = preRentalPending
+    ? await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+    : null
+  let preInspectionSnapshot: Record<string, any> = {}
+  try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
+  const preInspectionAction = !preRentalPending ? '' : isPreInspectionComplete(preInspectionSnapshot)
+    ? `<a class="button button-secondary" href="/inspection/view/${preInspection.id}">查看验机报告</a>`
+    : `<a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写出租前验机</a>`
+  const returnInspection = order.return_received_at ? await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any : null
+  const returnInspectionAction = returnInspection ? `<a class="button button-secondary" href="/inspection/view/${returnInspection.id}">查看归还验机报告</a>` : ''
   const [reconciliation, paymentSources, refundRows] = await Promise.all([
     reconcileOrderPayments(c, order.id),
     c.env.RENT.prepare("SELECT id, payment_method, payment_provider, amount, status, processing_fee, stripe_payment_intent_id FROM payments WHERE rental_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
@@ -145,6 +157,8 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
     ${renderPickupPreparation(order, contract, c.req?.query?.('pickupReady'))}
     <div class="order-detail-actions">
       ${['paid', 'active', 'completed', 'pending_return'].includes(String(order.status)) ? `<a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>` : ''}
+      ${preInspectionAction}
+      ${returnInspectionAction}
       ${['paid', 'pending_pickup'].includes(String(order.status)) ? `<a class="button button-primary" href="/staff/mobile?stage=pickup&order=${encodeURIComponent(order.id)}#scan">扫码取货</a>` : ''}
       ${contract && isContractFinalized(contract) ? `<a class="button button-secondary" href="/contract/view/${contract.id}?from=order">查看合同</a>` : ''}
       ${contract && contract.status === 'pending_sign' ? `<a class="button button-primary" href="/staff/contracts/${encodeURIComponent(contract.id)}/progress">查看合同签署进度</a>` : ''}

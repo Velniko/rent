@@ -4,6 +4,7 @@
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
 import { buildLayout, getOrderById, getUserById, getDeviceById, formatCurrency, formatMelbourneDateTime, getContractByOrderId, ensureContractForOrder, getCustomerRiskAssessment, systemSettings, isContractExpired, diffOrderSnapshots, ORDER_CHANGE_TYPE_LABELS, formatOrderChangeActor, reconcileOrderPayments } from '../../site'
+import { isPreInspectionComplete } from '../../lib/inspection'
 import { renderReconciliationPanel } from '../partials/reconciliationPanel'
 import type { Context } from 'hono'
 import { renderOrderOperations } from '../../services/returnOperations'
@@ -29,6 +30,17 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
   const risk = !existingContract && order.status === 'approved' && customer?.role === 'CUSTOMER' ? await getCustomerRiskAssessment(c, customer.id) : null
   if (risk?.blocked) return buildLayout('订单风控限制 - 电脑租赁管理系统', `<div class="panel"><h2>订单存在风控限制</h2><p>客户风险分 ${risk.score}/100，员工不能为该客户创建合同。请由管理员完成风控处理后再继续。</p></div>`, user)
   const contract = existingContract || (order.is_manual !== 1 && order.status === 'approved' ? await ensureContractForOrder(c, order, user.id) : null)
+  const preRentalPending = !['cancelled', 'completed'].includes(String(order.status)) && !order.handover_completed_at
+  const preInspection = preRentalPending
+    ? await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+    : null
+  let preInspectionSnapshot: Record<string, any> = {}
+  try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
+  const preInspectionAction = !preRentalPending ? '' : isPreInspectionComplete(preInspectionSnapshot)
+    ? `<a class="button button-secondary" href="/inspection/view/${preInspection.id}">查看验机报告</a>`
+    : `<a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写出租前验机</a>`
+  const returnInspection = order.return_received_at ? await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any : null
+  const returnInspectionAction = returnInspection ? `<a class="button button-secondary" href="/inspection/view/${returnInspection.id}">查看归还验机报告</a>` : ''
   const [reconciliation, paymentSources, refundRows] = await Promise.all([
     reconcileOrderPayments(c, order.id),
     c.env.RENT.prepare("SELECT id, payment_method, payment_provider, amount, status, processing_fee, stripe_payment_intent_id FROM payments WHERE rental_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
@@ -83,12 +95,14 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
           ${order.status === 'pending_payment' ? `
             <p class="alert">银行转账需管理员审核后确认付款。</p>
           ` : ''}
+          ${preInspectionAction}
           ${(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && contract?.status === 'signed')) ? `<a class="button button-primary" href="/staff/mobile?stage=pickup&order=${encodeURIComponent(order.id)}#scan">扫码取货</a>` : ''}
           ${user.role === 'ADMIN' && order.status === 'active' && order.early_return_requested_at ? `<div class="alert">客户已申请提前归还，等待审批。<form method="post" action="/staff/orders/${order.id}/early-return/approve" style="display:inline;margin-left:12px" data-site-confirm="确认批准客户提前归还吗？"><button class="button button-sm button-warning" type="submit">批准提前归还</button></form></div>` : ''}
           ${['active', 'extended', 'overdue'].includes(String(order.status)) ? `<form method="POST" action="/staff/orders/${order.id}/suspend" data-site-confirm="暂停后客户将无法继续使用设备，原因会随通知发送给客户。" data-confirm-title="暂停租赁？" data-confirm-label="暂停租赁"><label class="form-label" for="suspend-reason">暂停原因（必填，将随通知发送给客户）</label><input class="form-control" id="suspend-reason" name="reason" maxlength="300" required placeholder="例如：设备无货 / 客户申请"><button class="button button-warning" type="submit" style="margin-top:8px">暂停租赁</button><small class="form-text">仅绑定该客户的员工或管理员可操作。</small></form>` : ''}
           ${['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) ? `
             ${order.return_received_at?`<a class="button button-primary" data-workspace-modal href="/staff/orders/${order.id}/inspection?fragment=1">验机</a>`:`<a class="button button-secondary" href="/staff/mobile?stage=return&order=${encodeURIComponent(order.id)}#scan">扫码归还</a>`}
           ` : ''}
+          ${returnInspectionAction}
           ${['paid', 'active', 'completed', 'pending_return'].includes(String(order.status)) ? `<a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>` : ''}
           ${user.role === 'ADMIN' && (order.status === 'active' || order.status === 'paid') ? `
             <form method="POST" action="/staff/orders/${order.id}/cancel" data-site-confirm="取消后订单终止，设备释放并通知客户。" data-confirm-variant="danger" data-confirm-title="取消订单？" data-confirm-label="取消订单">
