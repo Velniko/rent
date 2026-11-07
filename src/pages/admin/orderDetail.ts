@@ -51,7 +51,8 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
     : null
   let preInspectionSnapshot: Record<string, any> = {}
   try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
-  const preInspectionAction = !preRentalPending ? '' : isPreInspectionComplete(preInspectionSnapshot)
+  const preInspectionDone = !preRentalPending || isPreInspectionComplete(preInspectionSnapshot)
+  const preInspectionAction = !preRentalPending ? '' : preInspectionDone
     ? `<a class="button button-secondary" href="/inspection/view/${preInspection.id}">查看验机报告</a>`
     : `<a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写出租前验机</a>`
   const returnInspection = order.return_received_at ? await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any : null
@@ -158,7 +159,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
       ${['paid', 'active', 'completed', 'pending_return'].includes(String(order.status)) ? `<a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>` : ''}
       ${preInspectionAction}
       ${returnInspectionAction}
-      ${['paid', 'pending_pickup'].includes(String(order.status)) ? renderOrderPickupAction(order) : ''}
+      ${['paid', 'pending_pickup'].includes(String(order.status)) ? renderOrderPickupAction(order, preInspectionDone) : ''}
       ${order.is_manual === 1 && canModifyOrder ? `<a class="button button-secondary" href="/admin/orders/${encodeURIComponent(order.id)}/edit">修改订单</a>` : ''}
       ${contract && isContractFinalized(contract) ? `<a class="button button-secondary" href="/contract/view/${contract.id}?from=order">查看合同</a>` : ''}
       ${contract && contract.status === 'pending_sign' ? `<a class="button button-primary" href="/staff/contracts/${encodeURIComponent(contract.id)}/progress">查看合同签署进度</a>` : ''}
