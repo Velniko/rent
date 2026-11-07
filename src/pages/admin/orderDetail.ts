@@ -14,11 +14,10 @@ import { renderReconciliationPanel } from '../partials/reconciliationPanel';
 import { isCardDepositSettled, normalizeSecurityDepositMethod, securityDepositMethodLabel } from '../../domain/paymentPlan';
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl } from '../../services/deliveryViews'
 import { deliveryStatusInfo } from '../../deliveryStatus'
-import { renderOrderPickupAction, renderOrderReturnAction } from '../partials/orderFulfillmentActions'
+import { renderAdminManualOrder } from './manualOrder'
 
 import { renderPickupPreparation } from '../partials/pickupPreparation'
 import { isPreInspectionComplete } from '../../lib/inspection'
-import { pickupAwareOrderStatusBadge } from '../partials/orderStatusBadge'
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character))
@@ -30,9 +29,10 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   if (!order) {
     return buildLayout('订单详情 - 电脑租赁管理系统', '<div class="panel"><h2>订单未找到</h2><p>您请求的订单不存在。</p></div>', user);
   }
-  const deliveryBookings = await getDeliveryBookingsForOrder(c, order.id)
+  if (order.is_manual === 1) return renderAdminManualOrder(c, user, order)
 
-  const [customer, device, existingContract, completedRefund, depositRefundSummary, pendingPriceRefundSummary, transferProof, statusHistory, depositSettlement, changeHistory, swapDevices] = await Promise.all([
+  const [deliveryBookings, customer, device, existingContract, completedRefund, depositRefundSummary, pendingPriceRefundSummary, transferProof, statusHistory, depositSettlement, changeHistory, swapDevices] = await Promise.all([
+    getDeliveryBookingsForOrder(c, order.id),
     getUserById(c, order.userId), getDeviceById(c, order.deviceId), getContractByOrderId(c, order.id),
     c.env.RENT.prepare("SELECT type, status, refundable_amount, refund_amount, refunded_processing_fee, deduction_amount, deduction_reason, refund_method, refund_bsb, refund_account_number, refund_account_name FROM payment_refunds WHERE order_id = ? ORDER BY created_at DESC LIMIT 1").bind(order.id).first(),
     c.env.RENT.prepare("SELECT COALESCE(SUM(refund_amount), 0) AS refunded_amount FROM payment_refunds WHERE order_id = ? AND type = 'deposit' AND status = 'succeeded'").bind(order.id).first(),
@@ -45,24 +45,25 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   ]) as any[];
   const risk = !existingContract && order.status === 'approved' && customer?.role === 'CUSTOMER' ? await getCustomerRiskAssessment(c, customer.id) : null
   if (risk?.blocked) return buildLayout('订单风控限制 - 电脑租赁管理系统', `<div class="panel"><h2>订单存在风控限制</h2><p>客户风险分 ${risk.score}/100，当前不能创建合同。请先完成风控处理后再继续。</p></div>`, user)
-  const contract = existingContract || (order.is_manual !== 1 && order.status === 'approved' ? await ensureContractForOrder(c, order, user.id) : null)
+  const contract = existingContract || (order.status === 'approved' ? await ensureContractForOrder(c, order, user.id) : null)
   const preRentalPending = !['cancelled', 'completed'].includes(String(order.status)) && !order.handover_completed_at
-  const preInspection = preRentalPending
-    ? await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
-    : null
-  let preInspectionSnapshot: Record<string, any> = {}
-  try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
-  const preInspectionDone = !preRentalPending || isPreInspectionComplete(preInspectionSnapshot)
-  const preInspectionAction = !preRentalPending ? '' : preInspectionDone
-    ? `<a class="button button-secondary" href="/inspection/view/${preInspection.id}">查看验机报告</a>`
-    : `<a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写出租前验机</a>`
-  const returnInspection = order.return_received_at ? await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any : null
-  const returnInspectionAction = returnInspection ? `<a class="button button-secondary" href="/inspection/view/${returnInspection.id}">查看归还验机报告</a>` : ''
-  const [reconciliation, paymentSources, refundRows] = await Promise.all([
+  const [preInspection, returnInspection, reconciliation, paymentSources, refundRows] = await Promise.all([
+    preRentalPending
+      ? c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+      : Promise.resolve(null),
+    order.return_received_at
+      ? c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+      : Promise.resolve(null),
     reconcileOrderPayments(c, order.id),
     c.env.RENT.prepare("SELECT id, payment_method, payment_provider, amount, status, processing_fee, stripe_payment_intent_id FROM payments WHERE rental_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
     c.env.RENT.prepare("SELECT id, payment_id, type, refund_amount, refund_method, status, created_at FROM payment_refunds WHERE order_id = ? ORDER BY created_at").bind(order.id).all().then((r: any) => (r.results || []) as any[]),
   ]);
+  let preInspectionSnapshot: Record<string, any> = {}
+  try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
+  const preInspectionAction = !preRentalPending ? '' : isPreInspectionComplete(preInspectionSnapshot)
+    ? `<a class="button button-secondary" href="/inspection/view/${preInspection.id}">查看验机报告</a>`
+    : `<a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写出租前验机</a>`
+  const returnInspectionAction = returnInspection ? `<a class="button button-secondary" href="/inspection/view/${returnInspection.id}">查看归还验机报告</a>` : ''
   const canModifyOrder = !['completed', 'cancelled'].includes(String(order.status));
   const paymentMethodLabels: Record<string, string> = {
     card: '信用卡（Stripe）', stripe: '信用卡（Stripe）', cash: '现金', bank_transfer: '银行转账',
@@ -116,7 +117,23 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   const canSettleDeposit = order.status === 'completed' && !cardDepositSettled && (isSetupIntentDeposit || remainingRefundTotal > 0) && (!depositSettlement || depositSettlement.status === 'REJECTED' || depositSettlement.status === 'APPROVED')
   const showRefundCard = order.status === 'completed' || (order.status === 'paid' && order.startDate > today && !completedRefund)
 
-  const currentStatus = pickupAwareOrderStatusBadge(order, contract);
+  const statusLabels: Record<string, { label: string, color: string, bg: string, icon: string }> = {
+    'pending': { label: '待处理', color: '#d97706', bg: '#fef3c7', icon: '' },
+    'pending_payment': { label: '待付款', color: '#d97706', bg: '#fef3c7', icon: '' },
+    'awaiting_signature': { label: '待签合同', color: '#7c3aed', bg: '#ede9fe', icon: '' },
+    'paid': { label: '租赁已确认，等待开始', color: '#059669', bg: '#d1fae5', icon: '' },
+    'approved': { label: '租赁已确认，等待开始', color: '#059669', bg: '#d1fae5', icon: '' },
+    'pending_pickup': { label: '待取货', color: '#0891b2', bg: '#cffafe', icon: '' },
+    'active': { label: '租赁中', color: '#2563eb', bg: '#dbeafe', icon: '' },
+    'extended': { label: '已延期 / 租赁中', color: '#2563eb', bg: '#dbeafe', icon: '' },
+    'overdue': { label: '已逾期', color: '#dc2626', bg: '#fee2e2', icon: '' },
+    'suspended': { label: '已暂停', color: '#6b7280', bg: '#f3f4f6', icon: '' },
+    'pending_return': { label: '待归还', color: '#d97706', bg: '#fef3c7', icon: '' },
+    'returned': { label: '已归还', color: '#0891b2', bg: '#cffafe', icon: '' },
+    'completed': { label: '已完成', color: '#0891b2', bg: '#cffafe', icon: '' },
+    'cancelled': { label: '已取消', color: '#dc2626', bg: '#fee2e2', icon: '' }
+  };
+  const currentStatus = statusLabels[order.status] || { label: order.status, color: '#6b7280', bg: '#f3f4f6', icon: '' };
   // 订单“已完成”只代表设备已归还，跟押金是否真正结清（deposit_status）是两回事，
   // 单独一个徽章显示，不能让“已完成”看起来什么都办完了（对应 o-af1VCjmW 那次事故）。
   const settlementPending = order.status === 'completed' && order.settlement_status === 'PENDING';
@@ -125,15 +142,16 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
 
   const installmentSection = await renderRentalInstallments(c, order, false)
   const body = `
-    <div class="order-detail-hero">
-      <div class="order-detail-hero__row">
-        <div>
-          <h2>订单详情 #${escapeHtml(order.orderNo || order.id)}</h2>
-          <p class="order-detail-hero__meta">${escapeHtml(customer?.name || '未知客户')} · ${escapeHtml(device?.name || '未知设备')}</p>
+    <div class="panel hero order-detail-shell admin-order-detail" style="padding: 32px; margin-bottom: 24px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div>
+            <h2 style="margin: 0 0 8px 0;">订单详情 - ${order.orderNo}</h2>
+          </div>
         </div>
-        <div class="order-detail-hero__status">
-          <span class="badge badge-lg ${currentStatus.badgeClass}">${escapeHtml(currentStatus.label)}</span>
-          ${settlementPending ? `<span class="badge badge-lg badge-warning" title="押金尚未结清，不能视为完全办结">押金待结算</span>` : ''}
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <span style="padding: 10px 20px; border-radius: 9999px; font-weight: 600; font-size: 1rem; background: ${currentStatus.bg}; color: ${currentStatus.color}; display: inline-flex; align-items: center; gap: 8px;">${currentStatus.label}</span>
+          ${settlementPending ? `<span style="padding: 10px 20px; border-radius: 9999px; font-weight: 600; font-size: 1rem; background: #fef3c7; color: #b45309; display: inline-flex; align-items: center; gap: 8px;" title="押金尚未结清，不能视为完全办结">押金待结算</span>` : ''}
         </div>
       </div>
     </div>
@@ -143,13 +161,12 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
       ${['paid', 'active', 'completed', 'pending_return'].includes(String(order.status)) ? `<a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>` : ''}
       ${preInspectionAction}
       ${returnInspectionAction}
-      ${['paid', 'pending_pickup'].includes(String(order.status)) ? renderOrderPickupAction(order, preInspectionDone) : ''}
-      ${order.is_manual === 1 && canModifyOrder ? `<a class="button button-secondary" href="/admin/orders/${encodeURIComponent(order.id)}/edit">修改订单</a>` : ''}
+      ${['paid', 'pending_pickup'].includes(String(order.status)) ? `<a class="button button-primary" href="/staff/mobile?stage=pickup&order=${encodeURIComponent(order.id)}#scan">扫码取货</a>` : ''}
       ${contract && isContractFinalized(contract) ? `<a class="button button-secondary" href="/contract/view/${contract.id}?from=order">查看合同</a>` : ''}
       ${contract && contract.status === 'pending_sign' ? `<a class="button button-primary" href="/staff/contracts/${encodeURIComponent(contract.id)}/progress">查看合同签署进度</a>` : ''}
     </div>
     ${deliveryBlock}
-    ${order.is_manual === 1 && !contract ? '' : `<section class="panel" style="margin: 0 0 24px;"><div class="section-title"><h3>合同签署流程</h3><span class="section-note">${contract ? (contractFinalized ? '合同已签署' : '等待客户完成电子签名') : '合同尚未生成'}</span></div>${renderWorkflow()}${contract && contract.status === 'pending_sign' ? `<div class="record-actions" style="margin-top: 16px;"><a class="button button-secondary" href="/staff/contracts/${encodeURIComponent(contract.id)}/progress">打开签署链接管理</a></div>` : ''}</section>`}
+    <section class="panel" style="margin: 0 0 24px;"><div class="section-title"><h3>合同签署流程</h3><span class="section-note">${contract ? (contractFinalized ? '合同已签署' : '等待客户完成电子签名') : '合同尚未生成'}</span></div>${renderWorkflow()}${contract && contract.status === 'pending_sign' ? `<div class="record-actions" style="margin-top: 16px;"><a class="button button-secondary" href="/staff/contracts/${encodeURIComponent(contract.id)}/progress">打开签署链接管理</a></div>` : ''}</section>
     ${statusHistory?.results?.length ? `<section class="panel" style="margin: 0 0 24px;"><div class="section-title"><h3>租赁状态历史</h3><span class="section-note">最近 ${statusHistory.results.length} 条</span></div><div class="table-wrapper"><table><thead><tr><th>时间</th><th>状态变化</th><th>触发方式</th><th>原因</th></tr></thead><tbody>${statusHistory.results.map((item: any) => `<tr><td class="mono">${escapeHtml(formatMelbourneDateTime(item.created_at))}</td><td>${escapeHtml(item.old_status || '—')} → <strong>${escapeHtml(item.new_status)}</strong></td><td>${escapeHtml(item.trigger_type)}${item.triggered_by ? ` · ${escapeHtml(item.triggered_by)}` : ''}</td><td>${escapeHtml(item.reason || '—')}</td></tr>`).join('')}</tbody></table></div></section>` : ''}
     ${changeHistory?.results?.length ? `<section class="panel" style="margin: 0 0 24px;"><div class="section-title"><h3>订单修改历史</h3><span class="section-note">最近 ${changeHistory.results.length} 条</span></div><div class="table-wrapper"><table><thead><tr><th>时间</th><th>类型</th><th>变更内容</th><th>原因</th><th>操作人</th></tr></thead><tbody>${changeHistory.results.map((item: any) => {
     let before: any = {}; let after: any = {};
@@ -312,7 +329,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
             <button type="submit" class="button button-primary">保存退款方式</button>
           </form>
         </div>` : ''}
-        ${['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) ? `<div style="padding:24px;background:#eff6ff;border-radius:16px"><h4>设备归还</h4><p>${String(order.status) === 'pending_return' ? '客户已获批提前归还，请完成归还验机。' : order.early_return_requested_at ? '客户已申请提前归还，等待审批。' : '订单租赁中，可申请提前归还并安排验机。'}</p>${String(order.status) === 'active' && order.early_return_requested_at ? `<form method="post" action="/staff/orders/${order.id}/early-return/approve" data-site-confirm="确认批准客户提前归还吗？"><button class="button button-warning" type="submit">批准提前归还</button></form>` : ''}${renderOrderReturnAction(order)}</div>` : ''}
+        ${['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) ? `<div style="padding:24px;background:#eff6ff;border-radius:16px"><h4>设备归还</h4><p>${String(order.status) === 'pending_return' ? '客户已获批提前归还，请完成归还验机。' : order.early_return_requested_at ? '客户已申请提前归还，等待审批。' : '订单租赁中，可申请提前归还并安排验机。'}</p>${String(order.status) === 'active' && order.early_return_requested_at ? `<form method="post" action="/staff/orders/${order.id}/early-return/approve" data-site-confirm="确认批准客户提前归还吗？"><button class="button button-warning" type="submit">批准提前归还</button></form>` : ''}${order.return_received_at?`<a class="button button-primary" data-workspace-modal href="/staff/orders/${order.id}/inspection?fragment=1">验机</a>`:`<a class="button button-secondary" href="/staff/mobile?stage=return&order=${encodeURIComponent(order.id)}#scan">扫码归还</a>`}</div>` : ''}
         ${((order.paymentMethod === 'bank_transfer' || (isAdjustmentTransferProof && transferProofPaymentMethod === 'bank_transfer')) && (String(order.status) !== 'active' || transferProof?.status === 'submitted')) ? `<div style="padding:24px;background:#eff6ff;border-radius:16px"><h4>银行转账审核${isAdjustmentTransferProof ? '（差价）' : ''}</h4>${transferProof?.transfer_code ? `<p>转账备注码：<strong class="mono">${escapeHtml(transferProof.transfer_code)}</strong></p>` : ''}${transferProof ? `<p>Reference：<strong>${escapeHtml(transferProof.reference_number)}</strong></p><p>备注：${escapeHtml(transferProof.note || '-')}</p>${proofImage ? `<a href="${escapeHtml(proofImage)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(proofImage)}" alt="转账凭证" loading="lazy" referrerpolicy="no-referrer" style="max-width:100%;max-height:320px;border-radius:8px"></a>` : '<p class="alert">凭证图片链接缺失或无效</p>'}<p>状态：${escapeHtml(transferProof.status)}</p>${transferProof.status === 'submitted' ? `<div style="display:flex;gap:10px"><form method="post" action="/admin/orders/${order.id}/transfer-proof/approve" data-site-confirm="通过后系统会将订单标记为已付款。请先核对凭证图片、Reference 与到账金额。" data-confirm-variant="danger" data-confirm-title="确认付款凭证？" data-confirm-label="审核通过"><button class="button button-primary" type="submit">审核通过</button></form><form method="post" action="/admin/orders/${order.id}/transfer-proof/reject" data-site-confirm="确认驳回这笔付款凭证吗？驳回后客户需要重新提交。" data-confirm-title="驳回付款凭证？" data-confirm-label="驳回凭证"><input class="form-control" name="reason" maxlength="300" placeholder="驳回原因" required><button class="button button-danger" type="submit">驳回</button></form></div>` : ''}` : '<p>客户尚未提交转账 Reference。</p>'}</div>` : ''}
         ${(isAdjustmentTransferProof && ['alipay', 'wechat'].includes(transferProofPaymentMethod) || ['alipay', 'wechat'].includes(String(order.paymentMethod))) ? `<div style="padding:24px;background:#eff6ff;border-radius:16px"><h4>${(isAdjustmentTransferProof ? transferProofPaymentMethod : order.paymentMethod) === 'alipay' ? '支付宝' : '微信'}付款审核${isAdjustmentTransferProof ? '（差价）' : ''}</h4>${transferProof ? `<p>Reference：<strong>${escapeHtml(transferProof.reference_number)}</strong></p>${proofImage ? `<a href="${escapeHtml(proofImage)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(proofImage)}" alt="付款凭证" loading="lazy" referrerpolicy="no-referrer" style="display:block;max-width:100%;max-height:420px;border-radius:8px;margin:12px 0"></a>` : '<p class="alert">凭证图片链接缺失或无效</p>'}<p>状态：${escapeHtml(transferProof.status)}</p>${transferProof.status === 'submitted' ? `<div style="display:flex;gap:10px"><form method="post" action="/admin/orders/${order.id}/transfer-proof/approve" data-site-confirm="通过后系统会将订单标记为已付款。请先核对凭证图片、Reference 与到账金额。" data-confirm-variant="danger" data-confirm-title="确认付款凭证？" data-confirm-label="审核通过"><button class="button button-primary" type="submit">审核通过</button></form><form method="post" action="/admin/orders/${order.id}/transfer-proof/reject" data-site-confirm="确认驳回这笔付款凭证吗？驳回后客户需要重新提交。" data-confirm-title="驳回付款凭证？" data-confirm-label="驳回凭证"><input class="form-control" name="reason" maxlength="300" placeholder="驳回原因" required><button class="button button-danger" type="submit">驳回</button></form></div>` : ''}` : '<p>客户尚未提交付款凭证。</p>'}</div>` : ''}
         ${['card', 'stripe'].includes(paymentMethod) && String(order.status) === 'pending_payment' ? `<div style="padding:24px;background:#eff6ff;border-radius:16px"><h4>Stripe 信用卡支付</h4><p>客户通过 Stripe 支付租金及服务费，卡信息不保存在本站。</p></div>` : ''}
