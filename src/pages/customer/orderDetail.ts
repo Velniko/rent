@@ -19,7 +19,7 @@ import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl, type DeliveryBook
 import { decryptSecret } from '../../lib/secretBox';
 import { canPreparePickup } from '../../domain/pickupPreparation';
 import { pickupTimeSlots } from '../../domain/pickupTimeSlots';
-import { pickupAwareOrderStatusBadge, renderPickupAwareOrderStatusBadge } from '../partials/orderStatusBadge';
+import { renderPickupAwareOrderStatusBadge } from '../partials/orderStatusBadge';
 import { canRequestCustomerRefund, getCustomerRefundRequest, CUSTOMER_REFUND_STATUSES } from '../../services/customerRefunds';
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
@@ -124,7 +124,6 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           ${order.orderNo ? `<p class="order-detail-hero__meta">${esc(device?.name || '未知设备')}</p>` : '<span class="section-note">订单编号将在付款确认后生成。</span>'}
         </div>
         <div class="order-detail-hero__status">
-          <span class="badge badge-lg ${pickupAwareOrderStatusBadge(order, contract).badgeClass}">${esc(pickupAwareOrderStatusBadge(order, contract).label)}</span>
           <a class="button button-secondary" href="/customer/orders">返回我的订单</a>
         </div>
       </div>

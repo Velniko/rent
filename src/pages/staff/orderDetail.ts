@@ -13,7 +13,7 @@ import { canStaffReadRosterOrder } from '../../services/roster'
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl } from '../../services/deliveryViews'
 import { deliveryStatusInfo } from '../../deliveryStatus'
 import { renderPickupPreparation } from '../partials/pickupPreparation'
-import { pickupAwareOrderStatusBadge, renderPickupAwareOrderStatusBadge } from '../partials/orderStatusBadge'
+import { renderPickupAwareOrderStatusBadge } from '../partials/orderStatusBadge'
 
 const esc = (value: unknown) => String(value ?? '—').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
@@ -71,7 +71,6 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
           ${order.orderNo ? `<p class="order-detail-hero__meta">${esc(customer?.name || '未知客户')} · ${esc(device?.name || '未知设备')}</p>` : '<span class="section-note">订单编号将在付款确认后生成。</span>'}
         </div>
         <div class="order-detail-hero__status">
-          <span class="badge badge-lg ${pickupAwareOrderStatusBadge(order, contract).badgeClass}">${esc(pickupAwareOrderStatusBadge(order, contract).label)}</span>
           <a class="button button-secondary" href="/staff/orders${backSuffix}">返回订单列表</a>
         </div>
       </div>
