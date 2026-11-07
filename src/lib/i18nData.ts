@@ -504,6 +504,7 @@ const common: Readonly<Record<string, string>> = {
   '待付款': 'Awaiting payment',
   '待签署': 'Awaiting signature',
   '待取货': 'Ready for pickup',
+  '退回待取货': 'Revert to ready for pickup',
   '归还中': 'Return pending',
   '已暂停': 'Suspended',
   '未知': 'Unknown',

@@ -11,7 +11,7 @@ const ORDER_TRANSITIONS: Record<string, string[]> = {
   paid: ['pending_pickup', 'active', 'cancelled'],
   pending_pickup: ['active', 'pending_return', 'cancelled'],
   awaiting_signature: ['paid', 'pending_payment', 'cancelled'],
-  active: ['extended', 'overdue', 'suspended', 'pending_return', 'completed', 'cancelled'],
+  active: ['extended', 'overdue', 'suspended', 'pending_return', 'completed', 'cancelled', 'pending_pickup'],
   extended: ['active', 'overdue', 'suspended', 'pending_return', 'completed', 'cancelled'],
   overdue: ['active', 'suspended', 'pending_return', 'completed', 'cancelled'],
   suspended: ['active', 'pending_return', 'cancelled'],

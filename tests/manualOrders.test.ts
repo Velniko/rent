@@ -15,8 +15,9 @@ import { registerReturnRoutes } from '../src/routes/returns'
 import { saveAdminManualOrder } from '../src/actions/admin/manualOrders'
 import { renderAdminOrderDetail } from '../src/pages/admin/orderDetail'
 import { renderAdminManualOrder } from '../src/pages/admin/manualOrder'
-import { ensureContractForOrder, getOrderById, runDataConsistencyChecks } from '../src/site'
-import { extractInlineScripts } from './helpers'
+import { ensureContractForOrder, getOrderById, runDataConsistencyChecks, createAuthSession } from '../src/site'
+import { extractInlineScripts, testOrderScanCookie } from './helpers'
+import worker from '../src/index'
 
 const migrations = readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()
 const migrationSql = (name: string) => readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')
@@ -141,6 +142,24 @@ test('admin can create with device+dates+time slots, edit optional fields, swap 
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action LIKE 'MANUAL_ORDER_%'").get()?.n, 3)
   const order = await getOrderById({ env: { RENT: db } } as any, id)
   await assert.rejects(() => ensureContractForOrder({ env: { RENT: db } } as any, order!), /手动订单无需创建合同/)
+  sqlite.close()
+})
+
+test('an active manual order can be reverted to pending pickup through the admin quick-update route, but a regular order cannot', async t => {
+  const { sqlite, db } = setup()
+  sqlite.exec("INSERT INTO orders (id, userId, deviceId, status, is_manual, startDate, endDate, startPeriod, endPeriod, rentalPeriod, totalAmount, depositAmount) VALUES ('manual-active', NULL, 'd-1', 'active', 1, '2026-10-10', '2026-10-15', 'AM', 'PM', 5, 0, 0), ('regular-active', 'customer', 'd-2', 'active', 0, '2026-10-10', '2026-10-15', 'AM', 'PM', 5, 0, 0)")
+  sqlite.exec("UPDATE devices SET status='rented', lifecycle_status='RENTED' WHERE id IN ('d-1', 'd-2')")
+  const context = { env: { RENT: db } } as any
+  const session = await createAuthSession(context, 'admin')
+  const update = async (id: string, status: string) => worker.fetch(new Request(`https://example.test/admin/orders/${id}/update`, {
+    method: 'POST', body: new URLSearchParams({ status }),
+    headers: { Cookie: `session=${session.token}${await testOrderScanCookie(sqlite, 'admin', `/admin/orders/${id}/update`, { status })}`, Origin: 'https://example.test', 'Sec-Fetch-Site': 'same-origin' },
+  }), context.env, { waitUntil() {} } as any)
+  assert.equal((await update('regular-active', 'pending_pickup')).status, 409)
+  assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='regular-active'").get()?.status, 'active')
+  assert.equal((await update('manual-active', 'pending_pickup')).status, 302)
+  assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='manual-active'").get()?.status, 'pending_pickup')
+  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id='d-1'").get()?.lifecycle_status, 'RESERVED')
   sqlite.close()
 })
 
