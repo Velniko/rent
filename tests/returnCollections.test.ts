@@ -229,6 +229,22 @@ test('a price change preserves accrued late charges when quoting and collecting 
   assert.equal(f.row().overdue_charge_total,95)
 })
 
+test('overdue return only emails the customer on day 1, 3 and 7',async t=>{
+  const f=await setup(t)
+  f.sqlite.exec("UPDATE orders SET endDate='2030-06-01', returnTimeSlot='00:00' WHERE id='order'")
+  const notified = () => f.sqlite.prepare("SELECT dedupe_key FROM notifications WHERE recipient_id='customer' AND type='rental_overdue' ORDER BY created_at").all() as any[]
+  await chargeOverdueReturns(f.c, new Date('2030-06-02T02:00:00Z'))
+  await chargeOverdueReturns(f.c, new Date('2030-06-03T02:00:00Z'))
+  await chargeOverdueReturns(f.c, new Date('2030-06-04T02:00:00Z'))
+  await chargeOverdueReturns(f.c, new Date('2030-06-04T03:00:00Z'))
+  await chargeOverdueReturns(f.c, new Date('2030-06-08T02:00:00Z'))
+  assert.deepEqual(notified().map((row: any) => row.dedupe_key), [
+    'rental-overdue-milestone:order:day1',
+    'rental-overdue-milestone:order:day3',
+    'rental-overdue-milestone:order:day7',
+  ])
+})
+
 test('staff and admin have separate pickup and return lists, overdue returns, and stage-specific scanning',async t=>{
   const f=await setup(t)
   f.sqlite.exec("INSERT INTO orders (id,orderNo,userId,deviceId,startDate,endDate,rentalPeriod,totalAmount,depositAmount,status,paymentMethod) VALUES ('pickup','OD-PICKUP','customer','device','2030-01-03','2030-01-05',2,60,20,'paid','bank_transfer'); UPDATE orders SET pickupTimeSlot='13:00' WHERE id='pickup'")

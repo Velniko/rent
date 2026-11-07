@@ -1834,6 +1834,8 @@ function dateAfter(date: string, days: number): string {
   return value.toISOString().slice(0, 10)
 }
 
+const OVERDUE_NOTIFY_MILESTONE_DAYS = [1, 3, 7]
+
 export async function chargeOverdueReturns(c: Context, now = new Date(), orderId?: string): Promise<{ overdue: number; charged: number }> {
   const administrator = await c.env.RENT.prepare("SELECT id FROM users WHERE role = 'ADMIN' AND COALESCE(status, 'active') = 'active' ORDER BY created_at ASC LIMIT 1").first() as any
   if (!administrator?.id) throw new Error('没有可用于处理逾期归还的管理员账户')
@@ -1845,10 +1847,11 @@ export async function chargeOverdueReturns(c: Context, now = new Date(), orderId
     if (overdueDays === null) continue
     overdue++
     const dailyRate = Math.max(0, Number(order.dailyRate || order.pricePerDay || 0))
-    const charges = [{ date: String(order.endDate), rental: 0, fee: 25 }, ...Array.from({ length: overdueDays }, (_, index) => ({ date: dateAfter(String(order.endDate), index + 1), rental: dailyRate, fee: 0 }))]
-    const before = await c.env.RENT.prepare('SELECT COUNT(*) AS count FROM overdue_return_charges WHERE order_id = ?').bind(order.id).first() as any
+    const charges = [{ date: String(order.endDate), rental: 0, fee: 25, day: 0 }, ...Array.from({ length: overdueDays }, (_, index) => ({ date: dateAfter(String(order.endDate), index + 1), rental: dailyRate, fee: 0, day: index + 1 }))]
+    const insertedDays: number[] = []
     for (const charge of charges) {
-      await c.env.RENT.prepare('INSERT OR IGNORE INTO overdue_return_charges (id, order_id, charge_date, rental_amount, handling_fee) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM orders WHERE id = ? AND return_received_at IS NULL AND deleted_at IS NULL AND status IN (\'active\',\'extended\',\'overdue\',\'suspended\',\'pending_return\'))').bind(`orc-${nanoid(12)}`, order.id, charge.date, charge.rental, charge.fee, order.id).run()
+      const result = await c.env.RENT.prepare('INSERT OR IGNORE INTO overdue_return_charges (id, order_id, charge_date, rental_amount, handling_fee) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM orders WHERE id = ? AND return_received_at IS NULL AND deleted_at IS NULL AND status IN (\'active\',\'extended\',\'overdue\',\'suspended\',\'pending_return\'))').bind(`orc-${nanoid(12)}`, order.id, charge.date, charge.rental, charge.fee, order.id).run()
+      if (Number(result?.meta?.changes || 0) > 0) insertedDays.push(charge.day)
     }
     const summary = await c.env.RENT.prepare('SELECT COALESCE(SUM(rental_amount + handling_fee), 0) AS total FROM overdue_return_charges WHERE order_id = ?').bind(order.id).first() as any
     const total = Number(Number(summary?.total || 0).toFixed(2))
@@ -1862,17 +1865,14 @@ export async function chargeOverdueReturns(c: Context, now = new Date(), orderId
     await c.env.RENT.prepare("UPDATE orders SET totalAmount = totalAmount + MAX(0, ? - overdue_outstanding_amount - overdue_collected_amount), overdue_charge_total = ?, overdue_deposit_applied = ?, overdue_outstanding_amount = MAX(0, ? - overdue_collected_amount), deposit_deduction_amount = ?, deposit_status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND return_received_at IS NULL AND status IN ('active','extended','overdue','suspended','pending_return')")
       .bind(grossOutstanding, total, depositApplied, grossOutstanding, Number((otherDepositDeductions + depositApplied).toFixed(2)), nextDepositStatus, order.id).run()
     if (['active', 'extended'].includes(String(order.status))) await updateOrderStatus(c, order.id, 'overdue', { reason: '超过预约归还时间 2 小时', expectedStatus: String(order.status) })
-    const after = await c.env.RENT.prepare('SELECT COUNT(*) AS count FROM overdue_return_charges WHERE order_id = ?').bind(order.id).first() as any
-    const addedRows = Math.max(0, Number(after?.count || 0) - Number(before?.count || 0))
-    if (addedRows > 0) {
-      charged += addedRows
-      if (order.userId) await createNotification(c, {
-        recipientId: order.userId, senderId: administrator.id, type: 'rental_overdue',
-        title: '设备归还已逾期',
-        message: `订单 ${order.orderNo || order.id} 已超过预约归还时间 2 小时。已计入一次 AUD 25.00 逾期处理手续费${overdueDays ? `及 ${overdueDays} 天逾期租金` : ''}；将优先从押金扣除，押金不足部分为待补款。`,
-        orderId: order.id, dedupeKey: `rental-overdue:${order.id}:${charges.at(-1)?.date}`,
-      })
-    }
+    if (insertedDays.length > 0) charged += insertedDays.length
+    const milestoneDay = Math.max(0, ...insertedDays.filter(day => OVERDUE_NOTIFY_MILESTONE_DAYS.includes(day)))
+    if (milestoneDay > 0 && order.userId) await createNotification(c, {
+      recipientId: order.userId, senderId: administrator.id, type: 'rental_overdue',
+      title: '设备归还已逾期',
+      message: `订单 ${order.orderNo || order.id} 已逾期 ${overdueDays} 天，应补款 AUD ${grossOutstanding.toFixed(2)}，订单完成时统一结算。`,
+      orderId: order.id, dedupeKey: `rental-overdue-milestone:${order.id}:day${milestoneDay}`,
+    })
   }
   return { overdue, charged }
 }

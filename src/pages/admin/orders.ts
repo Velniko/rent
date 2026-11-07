@@ -209,7 +209,7 @@ export async function renderAdminOrders(c: Context, user: any) {
   const activeCount = stats.activeCount;
   const completedCount = stats.completedCount;
 
-  const orderTabs=`<nav class="filter-tabs" aria-label="订单筛选">${[['','全部订单'],['pending_approval','待审核'],['approved','已审核'],['pending_payment','待付款'],['pending_pickup','待取货'],['active','租赁中'],['completed','已完成'],['cancelled','已取消']].map(([value,label])=>`<a class="button ${(statusFilter==='all'?'':statusFilter)===value?'button-primary':'button-secondary'}" href="/admin/orders${value?'?status='+value:''}">${label}</a>`).join('')}</nav>`
+  const orderTabs=`<nav class="filter-tabs" aria-label="订单筛选">${[['','全部订单'],['pending_approval','待审核'],['approved','已审核'],['pending_payment','待付款'],['pending_pickup','待取货'],['active','租赁中'],['overdue','已逾期'],['completed','已完成'],['cancelled','已取消']].map(([value,label])=>`<a class="button ${(statusFilter==='all'?'':statusFilter)===value?'button-primary':'button-secondary'}" href="/admin/orders${value?'?status='+value:''}">${label}</a>`).join('')}</nav>`
   const body = `${orderTabs}
     <div class="panel">
       <div class="section-title">
