@@ -526,7 +526,7 @@ for (const state of ['authorized', 'paid', 'failed']) {
       assert.ok(payment?.paid_at)
       assert.equal(snapshot.signed_content, `<p>${formatMelbourneDateTime(payment.paid_at)}|pi_auth</p>`)
     } else {
-      assert.equal(snapshot.signed_content, state === 'authorized' ? '<p>NA|pi_auth</p>' : '<p>NA|NA</p>')
+      assert.equal(snapshot.signed_content, state === 'authorized' ? '<p>N/A|pi_auth</p>' : '<p>N/A|N/A</p>')
       assert.equal(sqlite.prepare('SELECT paid_at FROM payments').get()?.paid_at, null)
     }
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(snapshot.signed_content))), byte => byte.toString(16).padStart(2, '0')).join('')

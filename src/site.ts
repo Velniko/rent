@@ -1264,7 +1264,7 @@ export function renderContractVariables(content: string, contract: Contract, ord
     const raw = String(value ?? '')
     const forceMaskSensitive = SENSITIVE_CONTRACT_FIELDS.has(name) && !revealSensitive
     const safe = !raw.trim()
-      ? (name === 'deleted' && !includeInternal ? '' : 'NA')
+      ? (name === 'deleted' && !includeInternal ? '' : 'N/A')
       : signature && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(raw)
       ? `<img src="${raw}" alt="电子签名" style="max-width:280px;max-height:100px;object-fit:contain">`
       : escapeContractValue(forceMaskSensitive || !includeInternal ? maskContractValue(name, value) : value)
