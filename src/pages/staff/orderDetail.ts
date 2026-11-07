@@ -13,7 +13,7 @@ import { canStaffReadRosterOrder } from '../../services/roster'
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl } from '../../services/deliveryViews'
 import { deliveryStatusInfo } from '../../deliveryStatus'
 import { renderPickupPreparation } from '../partials/pickupPreparation'
-import { renderOrderStatusBadge } from '../partials/orderStatusBadge'
+import { renderPickupAwareOrderStatusBadge } from '../partials/orderStatusBadge'
 
 const esc = (value: unknown) => String(value ?? '—').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
@@ -37,7 +37,8 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
     : null
   let preInspectionSnapshot: Record<string, any> = {}
   try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
-  const preInspectionAction = !preRentalPending ? '' : isPreInspectionComplete(preInspectionSnapshot)
+  const preInspectionDone = !preRentalPending || isPreInspectionComplete(preInspectionSnapshot)
+  const preInspectionAction = !preRentalPending ? '' : preInspectionDone
     ? `<a class="button button-secondary" href="/inspection/view/${preInspection.id}">查看验机报告</a>`
     : `<a class="button button-primary" href="/staff/orders/${order.id}/pre-inspection">填写出租前验机</a>`
   const returnInspection = order.return_received_at ? await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any : null
@@ -64,12 +65,20 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
 
   const body = `
     <div class="panel order-detail-shell staff-order-detail">
-      <div class="section-title"><h2>${order.orderNo ? `订单详情 #${order.orderNo}` : '订单详情'}</h2>${order.orderNo ? '' : '<span class="section-note">订单编号将在付款确认后生成。</span>'}<a class="button button-secondary" href="/staff/orders${backSuffix}">返回订单列表</a></div>
+      <div class="section-title order-detail-hero__row">
+        <div>
+          <h2>${order.orderNo ? `订单详情 #${order.orderNo}` : '订单详情'}</h2>
+          ${order.orderNo ? `<p class="order-detail-hero__meta">${esc(customer?.name || '未知客户')} · ${esc(device?.name || '未知设备')}</p>` : '<span class="section-note">订单编号将在付款确认后生成。</span>'}
+        </div>
+        <div class="order-detail-hero__status">
+          <a class="button button-secondary" href="/staff/orders${backSuffix}">返回订单列表</a>
+        </div>
+      </div>
       ${alertMessage}
       <div class="order-detail-grid">
         <div class="order-info-card">
           <h3>订单信息</h3>
-          <p><strong>订单状态:</strong> ${renderOrderStatusBadge(order.status)}</p>
+          <p><strong>订单状态:</strong> ${renderPickupAwareOrderStatusBadge(order, contract)}</p>
           <p><strong>下单时间:</strong> ${esc(formatMelbourneDateTime(order.createdAt || order.orderDate)) || '—'}</p>
           <p><strong>租期:</strong> ${order.startDate} 至 ${order.endDate}</p>
           <p><strong>总金额:</strong> ${formatCurrency(order.totalAmount)}</p>
@@ -97,7 +106,7 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
             <p class="alert">银行转账需管理员审核后确认付款。</p>
           ` : ''}
           ${preInspectionAction}
-          ${(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && contract?.status === 'signed')) ? renderOrderPickupAction(order) : ''}
+          ${(['paid', 'pending_pickup'].includes(String(order.status)) || (order.status === 'approved' && contract?.status === 'signed')) ? renderOrderPickupAction(order, preInspectionDone) : ''}
           ${user.role === 'ADMIN' && order.status === 'active' && order.early_return_requested_at ? `<div class="alert">客户已申请提前归还，等待审批。<form method="post" action="/staff/orders/${order.id}/early-return/approve" style="display:inline;margin-left:12px" data-site-confirm="确认批准客户提前归还吗？"><button class="button button-sm button-warning" type="submit">批准提前归还</button></form></div>` : ''}
           ${['active', 'extended', 'overdue'].includes(String(order.status)) ? `<form method="POST" action="/staff/orders/${order.id}/suspend" data-site-confirm="暂停后客户将无法继续使用设备，原因会随通知发送给客户。" data-confirm-title="暂停租赁？" data-confirm-label="暂停租赁"><label class="form-label" for="suspend-reason">暂停原因（必填，将随通知发送给客户）</label><input class="form-control" id="suspend-reason" name="reason" maxlength="300" required placeholder="例如：设备无货 / 客户申请"><button class="button button-warning" type="submit" style="margin-top:8px">暂停租赁</button><small class="form-text">仅绑定该客户的员工或管理员可操作。</small></form>` : ''}
           ${['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) ? `
@@ -135,7 +144,7 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
         <div class="contract-detail-meta"><span><small>合同状态</small><strong>${contract.status === 'signed' || contract.status === 'completed' ? '已签署' : contract.status === 'pending_sign' ? '待签署' : contract.status}</strong></span><span><small>签署时间（墨尔本）</small><strong>${formatMelbourneDateTime(contract.signedAt) || '尚未签署'}</strong></span><span><small>有效期</small><strong>${contract.validFrom || order.startDate} 至 ${contract.validUntil || order.endDate}</strong></span></div>
         <div class="contract-actions" style="margin-bottom: 16px; display: flex; gap: 12px;">
           ${contract.status === 'signed' ? `<a class="button" href="/contract/view/${contract.id}?from=order" target="_blank">查看/下载合同</a>` : contract.status === 'pending_sign' ? `<a class="button button-primary" href="/contract/sign?token=${encodeURIComponent(contract.signToken || '')}&step=1" target="_blank">打开签约链接</a>` : '<span class="section-note">正式合同将在客户完成签署后开放。</span>'}
-          ${contractExpired ? '<span class="badge danger">已过期</span>' : contract.status === 'signed' ? `<span class="badge success">已签署</span>` : `<span class="badge warning-badge">${contract.status === 'pending_sign' ? '待签署' : '草稿'}</span>`}
+          ${contractExpired ? '<span class="badge badge-danger">已过期</span>' : contract.status === 'signed' ? `<span class="badge badge-success">已签署</span>` : `<span class="badge badge-warning">${contract.status === 'pending_sign' ? '待签署' : '草稿'}</span>`}
         </div>
       ` : '<p style="margin-top: 24px;">暂无相关租赁合同。</p>'}
 

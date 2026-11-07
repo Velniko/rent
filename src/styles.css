@@ -159,6 +159,56 @@
   margin: 0 0 18px;
 }
 
+.order-detail-hero__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.order-detail-hero__row h2 {
+  margin: 0;
+}
+
+.order-detail-hero__meta {
+  margin: 4px 0 0;
+  color: var(--c-text-2, #52606d);
+  font-size: var(--t-sm, 0.8rem);
+}
+
+.order-detail-hero__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+/* 独立页头（目前管理端订单详情在用）：和订单信息卡片的深色头保持同一套配色，
+   让「这是一个订单」在管理端/员工端/客户端三处长得一样。 */
+.order-detail-hero {
+  position: relative;
+  overflow: hidden;
+  margin: 0 0 24px;
+  padding: 22px 26px;
+  background: linear-gradient(110deg, #172331 0%, #24384b 72%, #304c64 100%);
+  border-radius: var(--radius, 6px);
+}
+
+.order-detail-hero h2 {
+  margin: 0;
+  color: #fff;
+  font-family: var(--f-display, inherit);
+  font-size: 1.55rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.order-detail-hero .order-detail-hero__meta {
+  color: #b9c8d3;
+}
+
 .pickup-preparation {
   display: flex;
   align-items: center;
@@ -480,20 +530,22 @@
 }
 
 .order-detail-shell>.section-title:first-child {
-  margin: -1px -1px 24px;
-  padding: 22px 26px;
-  background: linear-gradient(110deg, #172331 0%, #24384b 72%, #304c64 100%);
-  color: #f4f7f9;
-  border-bottom: 0;
+  margin: -1px -1px 24px !important;
+  padding: 22px 26px !important;
+  background: linear-gradient(110deg, #172331 0%, #24384b 72%, #304c64 100%) !important;
+  color: #f4f7f9 !important;
+  border: 0 !important;
+  border-radius: var(--radius, 6px) var(--radius, 6px) 0 0 !important;
 }
 
 .order-detail-shell>.section-title:first-child h2 {
-  color: #fff;
-  letter-spacing: -.02em;
+  color: #fff !important;
+  letter-spacing: -.02em !important;
 }
 
-.order-detail-shell>.section-title:first-child .section-note {
-  color: #b9c8d3;
+.order-detail-shell>.section-title:first-child .section-note,
+.order-detail-shell>.section-title:first-child .order-detail-hero__meta {
+  color: #b9c8d3 !important;
 }
 
 .order-detail-grid {
@@ -10738,8 +10790,8 @@ input[type="number"] {
   --warning-light: #fdf3e2;
   --danger: #b3261e;
   --danger-light: #fceceb;
-  --info: #3f5b6e;
-  --info-light: #eef2f5;
+  --info: #2f6690;
+  --info-light: #e3eef8;
   --bg: #f5f6f7;
   --bg-subtle: #fafbfc;
   --surface: #ffffff;
@@ -10808,8 +10860,8 @@ input[type="number"] {
   --c-warn-tint: #fdf3e2;
   --c-danger: #b3261e;
   --c-danger-tint: #fceceb;
-  --c-info: #3f5b6e;
-  --c-info-tint: #eef2f5;
+  --c-info: #2f6690;
+  --c-info-tint: #e3eef8;
 
   /* —— 字体 —— */
   --f-display: 'Barlow Condensed', 'PingFang SC', 'Noto Sans SC', sans-serif;
@@ -11896,11 +11948,21 @@ header.desktop-header {
   color: var(--c-text-3);
 }
 
-/* 有异常值的指标：数字换警示色 + 左侧 2px 标记 */
-.stat-card.warning .value,
+/* 有异常值的指标：数字换警示色 + 左侧 2px 标记。
+   warning 和 danger 以前共用 --c-danger，待处理/告警类数字全变成了刺眼的红色，
+   跟真正的危险状态分不清——改用 --c-warn（琥珀色），红色留给 danger。 */
+.stat-card.warning .value { color: var(--c-warn) !important; }
 .stat-card.danger .value { color: var(--c-danger) !important; }
-.stat-card.warning,
+.stat-card.warning { box-shadow: inset 2px 0 0 var(--c-warn) !important; }
 .stat-card.danger { box-shadow: inset 2px 0 0 var(--c-danger) !important; }
+
+/* primary/success/info/accent 这几个修饰类以前靠 ::before 画一条顶部色带，
+   现在 .stat-card::before 被全局禁用（content:none !important），色带早就不渲染了，
+   数值卡片全部变成一模一样的白卡——改走跟 warning/danger 一致的左侧色标方案。 */
+.stat-card.primary { box-shadow: inset 2px 0 0 var(--c-accent) !important; }
+.stat-card.success { box-shadow: inset 2px 0 0 var(--c-ok) !important; }
+.stat-card.info { box-shadow: inset 2px 0 0 var(--c-info) !important; }
+.stat-card.accent { box-shadow: inset 2px 0 0 var(--c-accent) !important; }
 
 a.stat-card { text-decoration: none; color: inherit; }
 a.stat-card:hover { text-decoration: none; }
@@ -11988,8 +12050,21 @@ td.mono, td code, td [style*="monospace"] {
 .badge-success { background: var(--c-ok-tint); color: var(--c-ok); border-color: #c8e6d8; }
 .badge-warning { background: var(--c-warn-tint); color: var(--c-warn); border-color: #f0d9b5; }
 .badge-danger  { background: var(--c-danger-tint); color: var(--c-danger); border-color: #f3cdc9; }
-.badge-info    { background: var(--c-info-tint); color: var(--c-info); border-color: #dbe3e9; }
+.badge-info    { background: var(--c-info-tint); color: var(--c-info); border-color: #c3dced; }
 .badge-primary { background: var(--c-accent-tint); color: var(--c-accent); border-color: var(--c-accent-line); }
+
+/* 页头级状态徽章：同一套配色，只是在需要先声明的场合放大一档 */
+.badge-lg {
+  padding: 4px 12px;
+  gap: 6px;
+  font-size: var(--t-sm);
+  min-height: 26px;
+}
+
+.badge-lg::before {
+  width: 6px;
+  height: 6px;
+}
 
 /* --------------------------------------------------------------------------
    8. 按钮
@@ -12191,7 +12266,7 @@ select.form-control {
   font-size: var(--t-sm);
   color: var(--c-text);
   background: var(--c-info-tint) !important;
-  border: 1px solid #dbe3e9 !important;
+  border: 1px solid #c3dced !important;
   border-left: 3px solid var(--c-info) !important;
   border-radius: var(--radius-sm) !important;
   box-shadow: none !important;
