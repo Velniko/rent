@@ -18,7 +18,7 @@ export async function saveAdminManualOrder(c: Context, orderId?: string) {
   if (order && !canEditManualOrder(order)) return c.text('该订单不能修改，已完成或已取消的手动订单不可编辑', 409)
   const form = await c.req.parseBody()
   const fail = async (message: string, status: 400 | 409 = 400) => c.html(await renderAdminManualOrder(c, admin, order, message, form), status)
-  const parsed = parseManualOrder(order ? form : { ...form, status: 'active' }, order?.status)
+  const parsed = parseManualOrder(form, order?.status)
   if (parsed.error) return fail(parsed.error)
   const data = parsed.data!
   if (order && data.status !== order.status) return fail('不允许的订单状态转换', 409)
@@ -46,8 +46,9 @@ export async function saveAdminManualOrder(c: Context, orderId?: string) {
   } else {
     await insertManualOrder(c, id, data, admin.id)
   }
+  const lifecycleByOrderStatus = { pending_pickup: 'RESERVED', active: 'RENTED', suspended: 'RENTED', pending_return: 'INSPECTION' } as const
   if (closing) await releaseDeviceIfUnbooked(c, data.deviceId)
-  else await recordDeviceLifecycle(c, data.deviceId, data.status === 'pending_return' ? 'INSPECTION' : 'RENTED', { orderId: id, reason: '管理员维护手动订单', changedBy: admin.id })
+  else await recordDeviceLifecycle(c, data.deviceId, lifecycleByOrderStatus[data.status as keyof typeof lifecycleByOrderStatus] || 'RENTED', { orderId: id, reason: '管理员维护手动订单', changedBy: admin.id })
   if (order && order.deviceId !== data.deviceId) await releaseDeviceIfUnbooked(c, order.deviceId)
   await createAuditLog(c, { actor: admin, action: order ? 'MANUAL_ORDER_UPDATED' : 'MANUAL_ORDER_CREATED', targetType: 'ORDER', targetId: id, before: order || undefined, after: data })
   return c.redirect(`/admin/orders/${encodeURIComponent(id)}`, 303)

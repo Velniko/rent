@@ -74,13 +74,25 @@ test('device, full dates and pickup/return time slots are required; other fields
   assert.equal(parsed.data.startPeriod, 'AM')
   assert.equal(parsed.data.endPeriod, 'PM')
   assert.equal(parsed.data.totalAmount, 0)
+  assert.equal(parsed.data.status, 'pending_pickup')
   assert.equal(canEditManualOrder({ is_manual: 1, status: 'completed' }), false)
   assert.equal(canEditManualOrder({ is_manual: 1, status: 'cancelled' }), false)
 })
 
+test('new manual orders default to pending pickup and reserve the device instead of starting as rented', async () => {
+  const { sqlite, request } = setup()
+  assert.equal(parseManualOrder({ deviceId: 'd-1', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', status: 'completed' }).error, '不允许的订单状态转换')
+  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM' })
+  assert.equal(created.status, 303)
+  const id = created.headers.get('location')!.split('/').at(-1)!
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id = ?').get(id)?.status, 'pending_pickup')
+  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id='d-1'").get()?.lifecycle_status, 'RESERVED')
+  sqlite.close()
+})
+
 test('admin can create with device+dates+time slots, edit optional fields, swap equipment and use the shared return workflow', async () => {
   const { sqlite, db, request } = setup()
-  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM' })
+  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM', status: 'active' })
   assert.equal(created.status, 303)
   const path = created.headers.get('location')!
   const id = path.split('/').at(-1)!
@@ -209,12 +221,12 @@ test('manual orders can select rented equipment outside existing rental dates an
   sqlite.exec("INSERT INTO orders (id, userId, deviceId, startDate, endDate, rentalPeriod, totalAmount, depositAmount, status) VALUES ('existing', 'customer', 'd-1', '2026-10-01', '2026-10-05', 4, 120, 0, 'active'); UPDATE devices SET status='rented', lifecycle_status='RENTED' WHERE id='d-1'")
   const html = await (await request('/admin/orders/new')).text()
   assert.match(html, /value="d-1"/)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-02', endDate: '2026-10-04' })).status, 409)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-01', endDate: '2026-11-05' })).status, 303)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-02', startPeriod: 'AM', endDate: '2026-10-04', endPeriod: 'PM' })).status, 409)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-01', startPeriod: 'AM', endDate: '2026-11-05', endPeriod: 'PM' })).status, 303)
   assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='existing'").get()?.status, 'active')
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-02', endDate: '2026-11-04' })).status, 409)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-02', startPeriod: 'AM', endDate: '2026-11-04', endPeriod: 'PM' })).status, 409)
   sqlite.exec("UPDATE devices SET status='maintenance' WHERE id='d-2'")
   assert.doesNotMatch(await (await request('/admin/orders/new')).text(), /value="d-2"/)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-2', startDate: '2026-12-01', endDate: '2026-12-05' })).status, 409)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-2', startDate: '2026-12-01', startPeriod: 'AM', endDate: '2026-12-05', endPeriod: 'PM' })).status, 409)
   sqlite.close()
 })
