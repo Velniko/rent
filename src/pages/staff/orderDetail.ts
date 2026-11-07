@@ -145,7 +145,7 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
         <div class="contract-detail-meta"><span><small>合同状态</small><strong>${contract.status === 'signed' || contract.status === 'completed' ? '已签署' : contract.status === 'pending_sign' ? '待签署' : contract.status}</strong></span><span><small>签署时间（墨尔本）</small><strong>${formatMelbourneDateTime(contract.signedAt) || '尚未签署'}</strong></span><span><small>有效期</small><strong>${contract.validFrom || order.startDate} 至 ${contract.validUntil || order.endDate}</strong></span></div>
         <div class="contract-actions" style="margin-bottom: 16px; display: flex; gap: 12px;">
           ${contract.status === 'signed' ? `<a class="button" href="/contract/view/${contract.id}?from=order" target="_blank">查看/下载合同</a>` : contract.status === 'pending_sign' ? `<a class="button button-primary" href="/contract/sign?token=${encodeURIComponent(contract.signToken || '')}&step=1" target="_blank">打开签约链接</a>` : '<span class="section-note">正式合同将在客户完成签署后开放。</span>'}
-          ${contractExpired ? '<span class="badge danger">已过期</span>' : contract.status === 'signed' ? `<span class="badge success">已签署</span>` : `<span class="badge warning-badge">${contract.status === 'pending_sign' ? '待签署' : '草稿'}</span>`}
+          ${contractExpired ? '<span class="badge badge-danger">已过期</span>' : contract.status === 'signed' ? `<span class="badge badge-success">已签署</span>` : `<span class="badge badge-warning">${contract.status === 'pending_sign' ? '待签署' : '草稿'}</span>`}
         </div>
       ` : '<p style="margin-top: 24px;">暂无相关租赁合同。</p>'}
 

@@ -10860,8 +10860,8 @@ input[type="number"] {
   --c-warn-tint: #fdf3e2;
   --c-danger: #b3261e;
   --c-danger-tint: #fceceb;
-  --c-info: #3f5b6e;
-  --c-info-tint: #eef2f5;
+  --c-info: #2f6690;
+  --c-info-tint: #e3eef8;
 
   /* —— 字体 —— */
   --f-display: 'Barlow Condensed', 'PingFang SC', 'Noto Sans SC', sans-serif;
@@ -12040,7 +12040,7 @@ td.mono, td code, td [style*="monospace"] {
 .badge-success { background: var(--c-ok-tint); color: var(--c-ok); border-color: #c8e6d8; }
 .badge-warning { background: var(--c-warn-tint); color: var(--c-warn); border-color: #f0d9b5; }
 .badge-danger  { background: var(--c-danger-tint); color: var(--c-danger); border-color: #f3cdc9; }
-.badge-info    { background: var(--c-info-tint); color: var(--c-info); border-color: #dbe3e9; }
+.badge-info    { background: var(--c-info-tint); color: var(--c-info); border-color: #c3dced; }
 .badge-primary { background: var(--c-accent-tint); color: var(--c-accent); border-color: var(--c-accent-line); }
 
 /* 页头级状态徽章：同一套配色，只是在需要先声明的场合放大一档 */
@@ -12256,7 +12256,7 @@ select.form-control {
   font-size: var(--t-sm);
   color: var(--c-text);
   background: var(--c-info-tint) !important;
-  border: 1px solid #dbe3e9 !important;
+  border: 1px solid #c3dced !important;
   border-left: 3px solid var(--c-info) !important;
   border-radius: var(--radius-sm) !important;
   box-shadow: none !important;
