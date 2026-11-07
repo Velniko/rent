@@ -165,10 +165,8 @@
   flex-wrap: wrap;
   gap: 10px;
   margin: 0 0 14px;
-  padding: 10px 12px;
-  background: var(--c-info-tint, #eef2f5);
-  border: 1px solid var(--c-line-2, #dbe3e9);
-  border-radius: 8px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--c-line, #e3e7ea);
 }
 
 .pickup-preparation p[data-flash-notice] {
