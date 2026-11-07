@@ -52,31 +52,54 @@ function setup(role = 'ADMIN') {
   return { sqlite, db, request }
 }
 
-test('only the device is required; optional values can be cleared and malformed values are rejected', () => {
-  const parsed = parseManualOrder({ deviceId: 'd-1' })
+test('device, full dates and pickup/return time slots are required; other fields are optional and malformed values are rejected', () => {
+  assert.equal(parseManualOrder({}).error, '请选择设备')
+  assert.equal(parseManualOrder({ deviceId: 'd-1' }).error, '请填写起租日期和归还日期')
+  assert.equal(parseManualOrder({ deviceId: 'd-1', startDate: '2026-10-20' }).error, '请填写起租日期和归还日期')
+  assert.equal(parseManualOrder({ deviceId: 'd-1', endDate: '2026-10-20' }).error, '请填写起租日期和归还日期')
+  for (const fields of [
+    { startDate: '2026-02-30', endDate: '2026-10-25' }, { startDate: 'invalid', endDate: '2026-10-25' },
+    { startDate: '2026-10-20', endDate: '2026-10-19' }, { startDate: '2026-10-20', endDate: '2026-10-25' },
+    { startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25' },
+    { startDate: '2026-10-20', startPeriod: 'PM', endDate: '2026-10-20', endPeriod: 'AM' },
+    { startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', rentalAmount: '-1' },
+    { startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', depositAmount: 'NaN' },
+    { startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', rentalAmount: '0.001' },
+    { startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', paymentMethod: 'invalid' },
+    { startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', status: 'paid' },
+  ]) assert.ok(parseManualOrder({ deviceId: 'd-1', ...fields }).error)
+  const parsed = parseManualOrder({ deviceId: 'd-1', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM' })
   assert.ok(parsed.data)
   assert.equal(parsed.data.userId, null)
-  assert.equal(parsed.data.startDate, null)
-  assert.equal(parsed.data.endDate, null)
+  assert.equal(parsed.data.startPeriod, 'AM')
+  assert.equal(parsed.data.endPeriod, 'PM')
   assert.equal(parsed.data.totalAmount, 0)
-  assert.equal(parseManualOrder({}).error, '请选择设备')
-  for (const fields of [{ startDate: '2026-02-30' }, { startDate: 'invalid' }, { startDate: '2026-10-20', endDate: '2026-10-19' }, { startDate: '2026-10-20', endDate: '2026-10-25' }, { startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25' }, { startDate: '2026-10-20', startPeriod: 'PM', endDate: '2026-10-20', endPeriod: 'AM' }, { rentalAmount: '-1' }, { depositAmount: 'NaN' }, { rentalAmount: '0.001' }, { paymentMethod: 'invalid' }, { status: 'paid' }]) assert.ok(parseManualOrder({ deviceId: 'd-1', ...fields }).error)
-  assert.ok(parseManualOrder({ deviceId: 'd-1', endDate: '2026-10-20' }).data)
-  assert.equal(parseManualOrder({ deviceId: 'd-1', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM' }).data?.startPeriod, 'AM')
+  assert.equal(parsed.data.status, 'pending_pickup')
   assert.equal(canEditManualOrder({ is_manual: 1, status: 'completed' }), false)
   assert.equal(canEditManualOrder({ is_manual: 1, status: 'cancelled' }), false)
 })
 
-test('admin can create with only a device, edit metadata and use the shared return workflow without scanning', async () => {
+test('new manual orders default to pending pickup and reserve the device instead of starting as rented', async () => {
+  const { sqlite, request } = setup()
+  assert.equal(parseManualOrder({ deviceId: 'd-1', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', status: 'completed' }).error, '不允许的订单状态转换')
+  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM' })
+  assert.equal(created.status, 303)
+  const id = created.headers.get('location')!.split('/').at(-1)!
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id = ?').get(id)?.status, 'pending_pickup')
+  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id='d-1'").get()?.lifecycle_status, 'RESERVED')
+  sqlite.close()
+})
+
+test('admin can create with device+dates+time slots, edit optional fields, swap equipment and use the shared return workflow', async () => {
   const { sqlite, db, request } = setup()
-  const created = await request('/admin/orders/new', { deviceId: 'd-1' })
+  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM', status: 'active' })
   assert.equal(created.status, 303)
   const path = created.headers.get('location')!
   const id = path.split('/').at(-1)!
   const row = () => sqlite.prepare('SELECT * FROM orders WHERE id = ?').get(id) as any
   assert.equal(row().is_manual, 1)
   assert.equal(row().userId, null)
-  assert.equal(row().startDate, null)
+  assert.equal(row().startDate, '2026-10-10')
   assert.equal(row().contractId, null)
   assert.equal(row().payment_status, 'UNPAID')
   assert.equal(await runDataConsistencyChecks({ env: { RENT: db } } as any), 0)
@@ -95,11 +118,14 @@ test('admin can create with only a device, edit metadata and use the shared retu
   assert.equal(row().rentalNote, '备注')
   assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id='d-1'").get()?.status, 'available')
   assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id='d-2'").get()?.status, 'rented')
-  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2' })).status, 303)
+  // 不重新提供日期/时段时缺少必填项，编辑失败，原记录不变。
+  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2' })).status, 400)
+  assert.equal(row().userId, 'customer')
+  // 保留日期/时段，仅清空其余选填字段。
+  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM' })).status, 303)
   assert.equal(row().userId, null)
-  assert.equal(row().startDate, null)
   assert.equal(row().totalAmount, 0)
-  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', status: 'completed' })).status, 409)
+  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', status: 'completed' })).status, 409)
   assert.equal((await request(`/staff/orders/${id}/inspection`, { damageFound: 'no' })).status, 409)
   assert.equal((await request(`/staff/orders/${id}/receive-return`, { received: '1' })).status, 303)
   assert.equal(row().status, 'pending_return')
@@ -107,7 +133,7 @@ test('admin can create with only a device, edit metadata and use the shared retu
   assert.equal(row().status, 'completed')
   assert.ok(row().return_received_at)
   assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id='d-2'").get()?.status, 'available')
-  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', rentalAmount: '999' })).status, 409)
+  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', rentalAmount: '999' })).status, 409)
   assert.equal(row().totalAmount, 0)
   assert.doesNotMatch(await (await request(path)).text(), /保存修改/)
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM contracts').get()?.n, 0)
@@ -118,16 +144,19 @@ test('admin can create with only a device, edit metadata and use the shared retu
   sqlite.close()
 })
 
-test('creation rejects missing devices, unavailable devices, invalid customers and conflicting bookings', async () => {
+test('creation rejects missing devices, unavailable devices, invalid customers, missing dates and conflicting bookings', async () => {
   const { sqlite, request } = setup()
   assert.equal((await request('/admin/orders/new', {})).status, 400)
   assert.equal((await request('/admin/orders/new', { deviceId: 'missing' })).status, 400)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', userId: 'admin' })).status, 400)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1' })).status, 303)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1' })).status, 409)
-  // 即使设备状态意外变为 available，未填写租期的订单仍占用设备。
-  sqlite.exec("UPDATE devices SET status = 'available' WHERE id='d-1'")
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2027-01-01', startPeriod: 'AM', endDate: '2027-01-05', endPeriod: 'PM', userId: 'admin' })).status, 400)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1' })).status, 400)
+  const first = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2027-01-01', startPeriod: 'AM', endDate: '2027-01-05', endPeriod: 'PM' })
+  assert.equal(first.status, 303)
   assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2027-01-01', startPeriod: 'AM', endDate: '2027-01-05', endPeriod: 'PM' })).status, 409)
+  // 历史遗留的无日期手动订单（迁移前数据）仍会占用设备，阻止新订单创建。
+  sqlite.exec("UPDATE devices SET status = 'available' WHERE id='d-1'")
+  sqlite.exec("INSERT INTO orders (id, deviceId, is_manual, status, rentalPeriod, totalAmount, depositAmount, orderNo) VALUES ('legacy-undated', 'd-1', 1, 'active', 0, 0, 0, 'LEGACY1')")
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2028-01-01', startPeriod: 'AM', endDate: '2028-01-05', endPeriod: 'PM' })).status, 409)
   sqlite.close()
 })
 
@@ -165,8 +194,7 @@ test('only admins can write manual orders and only the device is required in the
   const { sqlite, request } = setup()
   const html = await (await request('/admin/orders/new')).text()
   const required = [...html.matchAll(/<(?:input|select|textarea)\b[^>]*\brequired\b[^>]*>/g)].map(match => match[0])
-  assert.equal(required.length, 1)
-  assert.match(required[0], /name="deviceId"/)
+  assert.deepEqual(required.map(tag => tag.match(/name="(\w+)"/)?.[1]).sort(), ['deviceId', 'endDate', 'endPeriod', 'startDate', 'startPeriod'])
   sqlite.close()
 })
 
@@ -193,12 +221,12 @@ test('manual orders can select rented equipment outside existing rental dates an
   sqlite.exec("INSERT INTO orders (id, userId, deviceId, startDate, endDate, rentalPeriod, totalAmount, depositAmount, status) VALUES ('existing', 'customer', 'd-1', '2026-10-01', '2026-10-05', 4, 120, 0, 'active'); UPDATE devices SET status='rented', lifecycle_status='RENTED' WHERE id='d-1'")
   const html = await (await request('/admin/orders/new')).text()
   assert.match(html, /value="d-1"/)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-02', endDate: '2026-10-04' })).status, 409)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-01', endDate: '2026-11-05' })).status, 303)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-02', startPeriod: 'AM', endDate: '2026-10-04', endPeriod: 'PM' })).status, 409)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-01', startPeriod: 'AM', endDate: '2026-11-05', endPeriod: 'PM' })).status, 303)
   assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='existing'").get()?.status, 'active')
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-02', endDate: '2026-11-04' })).status, 409)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-02', startPeriod: 'AM', endDate: '2026-11-04', endPeriod: 'PM' })).status, 409)
   sqlite.exec("UPDATE devices SET status='maintenance' WHERE id='d-2'")
   assert.doesNotMatch(await (await request('/admin/orders/new')).text(), /value="d-2"/)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-2', startDate: '2026-12-01', endDate: '2026-12-05' })).status, 409)
+  assert.equal((await request('/admin/orders/new', { deviceId: 'd-2', startDate: '2026-12-01', startPeriod: 'AM', endDate: '2026-12-05', endPeriod: 'PM' })).status, 409)
   sqlite.close()
 })
