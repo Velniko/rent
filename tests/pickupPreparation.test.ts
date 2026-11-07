@@ -15,6 +15,7 @@ import { createDueDateNotifications, sendScheduledPickupReminders } from '../src
 import { pickupAppointmentAt } from '../src/domain/pickupPreparation'
 import { MANUAL_INSPECTION_CHECKS } from '../src/lib/inspection'
 import { renderPickupPreparation } from '../src/pages/partials/pickupPreparation'
+import { pickupAwareOrderStatusBadge } from '../src/pages/partials/orderStatusBadge'
 
 async function setup(t: any) {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2089-12-31T20:30:00Z') })
@@ -102,7 +103,8 @@ test('assigned staff marks equipment ready and sends pickup details and a scanna
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM notifications WHERE type = 'pickup_reminder'").get()!.n, 1)
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'PICKUP_PREPARED'").get()!.n, 1)
   const order = (await getOrderById({ env: f.env } as any, 'pickup-order'))!
-  assert.match(renderPickupPreparation(order), /准备完成/)
+  // 「准备完成」现在并进订单状态徽章显示，不再是 pickup-preparation 自己的徽章。
+  assert.equal(pickupAwareOrderStatusBadge(order).label, '准备完成')
   assert.doesNotMatch(renderPickupPreparation(order), /<form/)
 })
 

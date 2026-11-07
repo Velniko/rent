@@ -19,7 +19,7 @@ import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl, type DeliveryBook
 import { decryptSecret } from '../../lib/secretBox';
 import { canPreparePickup } from '../../domain/pickupPreparation';
 import { pickupTimeSlots } from '../../domain/pickupTimeSlots';
-import { renderOrderStatusBadge, orderStatusBadge } from '../partials/orderStatusBadge';
+import { pickupAwareOrderStatusBadge, renderPickupAwareOrderStatusBadge } from '../partials/orderStatusBadge';
 import { canRequestCustomerRefund, getCustomerRefundRequest, CUSTOMER_REFUND_STATUSES } from '../../services/customerRefunds';
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
@@ -124,7 +124,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
           ${order.orderNo ? `<p class="order-detail-hero__meta">${esc(device?.name || '未知设备')}</p>` : '<span class="section-note">订单编号将在付款确认后生成。</span>'}
         </div>
         <div class="order-detail-hero__status">
-          <span class="badge badge-lg ${orderStatusBadge(order.status).badgeClass}">${esc(orderStatusBadge(order.status).label)}</span>
+          <span class="badge badge-lg ${pickupAwareOrderStatusBadge(order, contract).badgeClass}">${esc(pickupAwareOrderStatusBadge(order, contract).label)}</span>
           <a class="button button-secondary" href="/customer/orders">返回我的订单</a>
         </div>
       </div>
@@ -134,7 +134,7 @@ export async function renderCustomerOrderDetail(c: Context, user: any, orderId: 
       <div class="order-detail-grid">
         <div class="order-info-card">
           <h3>订单信息</h3>
-          <p><strong>订单状态:</strong> ${renderOrderStatusBadge(order.status)}</p>
+          <p><strong>订单状态:</strong> ${renderPickupAwareOrderStatusBadge(order, contract)}</p>
           <p><strong>下单时间:</strong> ${esc(formatMelbourneDateTime(order.createdAt || order.orderDate)) || '—'}</p>
           <p><strong>租期:</strong> ${order.startDate} ${order.startPeriod === 'PM' ? '下午' : '上午'} 至 ${order.endDate} ${order.endPeriod === 'PM' ? '下午' : '上午'}（${order.rentalPeriod || 0} 天）</p>
           <p><strong>领取/归还地点:</strong> ${order.pickupLocation || '待确认'} / ${order.returnLocation || '待确认'}</p>

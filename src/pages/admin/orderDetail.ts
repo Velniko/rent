@@ -18,7 +18,7 @@ import { renderOrderPickupAction, renderOrderReturnAction } from '../partials/or
 
 import { renderPickupPreparation } from '../partials/pickupPreparation'
 import { isPreInspectionComplete } from '../../lib/inspection'
-import { orderStatusBadge } from '../partials/orderStatusBadge'
+import { pickupAwareOrderStatusBadge } from '../partials/orderStatusBadge'
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character))
@@ -116,7 +116,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   const canSettleDeposit = order.status === 'completed' && !cardDepositSettled && (isSetupIntentDeposit || remainingRefundTotal > 0) && (!depositSettlement || depositSettlement.status === 'REJECTED' || depositSettlement.status === 'APPROVED')
   const showRefundCard = order.status === 'completed' || (order.status === 'paid' && order.startDate > today && !completedRefund)
 
-  const currentStatus = orderStatusBadge(order.status);
+  const currentStatus = pickupAwareOrderStatusBadge(order, contract);
   // 订单“已完成”只代表设备已归还，跟押金是否真正结清（deposit_status）是两回事，
   // 单独一个徽章显示，不能让“已完成”看起来什么都办完了（对应 o-af1VCjmW 那次事故）。
   const settlementPending = order.status === 'completed' && order.settlement_status === 'PENDING';
