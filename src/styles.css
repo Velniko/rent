@@ -159,6 +159,32 @@
   margin: 0 0 18px;
 }
 
+.order-detail-hero__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.order-detail-hero__row h2 {
+  margin: 0;
+}
+
+.order-detail-hero__meta {
+  margin: 4px 0 0;
+  color: var(--c-text-2, #52606d);
+  font-size: var(--t-sm, 0.8rem);
+}
+
+.order-detail-hero__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
 .pickup-preparation {
   display: flex;
   align-items: center;
@@ -11990,6 +12016,19 @@ td.mono, td code, td [style*="monospace"] {
 .badge-danger  { background: var(--c-danger-tint); color: var(--c-danger); border-color: #f3cdc9; }
 .badge-info    { background: var(--c-info-tint); color: var(--c-info); border-color: #dbe3e9; }
 .badge-primary { background: var(--c-accent-tint); color: var(--c-accent); border-color: var(--c-accent-line); }
+
+/* 页头级状态徽章：同一套配色，只是在需要先声明的场合放大一档 */
+.badge-lg {
+  padding: 4px 12px;
+  gap: 6px;
+  font-size: var(--t-sm);
+  min-height: 26px;
+}
+
+.badge-lg::before {
+  width: 6px;
+  height: 6px;
+}
 
 /* --------------------------------------------------------------------------
    8. 按钮

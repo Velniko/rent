@@ -18,6 +18,7 @@ import { renderOrderPickupAction, renderOrderReturnAction } from '../partials/or
 
 import { renderPickupPreparation } from '../partials/pickupPreparation'
 import { isPreInspectionComplete } from '../../lib/inspection'
+import { orderStatusBadge } from '../partials/orderStatusBadge'
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character))
@@ -115,23 +116,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
   const canSettleDeposit = order.status === 'completed' && !cardDepositSettled && (isSetupIntentDeposit || remainingRefundTotal > 0) && (!depositSettlement || depositSettlement.status === 'REJECTED' || depositSettlement.status === 'APPROVED')
   const showRefundCard = order.status === 'completed' || (order.status === 'paid' && order.startDate > today && !completedRefund)
 
-  const statusLabels: Record<string, { label: string, color: string, bg: string, icon: string }> = {
-    'pending': { label: '待处理', color: '#d97706', bg: '#fef3c7', icon: '' },
-    'pending_payment': { label: '待付款', color: '#d97706', bg: '#fef3c7', icon: '' },
-    'awaiting_signature': { label: '待签合同', color: '#7c3aed', bg: '#ede9fe', icon: '' },
-    'paid': { label: '租赁已确认，等待开始', color: '#059669', bg: '#d1fae5', icon: '' },
-    'approved': { label: '租赁已确认，等待开始', color: '#059669', bg: '#d1fae5', icon: '' },
-    'pending_pickup': { label: '待取货', color: '#0891b2', bg: '#cffafe', icon: '' },
-    'active': { label: '租赁中', color: '#2563eb', bg: '#dbeafe', icon: '' },
-    'extended': { label: '已延期 / 租赁中', color: '#2563eb', bg: '#dbeafe', icon: '' },
-    'overdue': { label: '已逾期', color: '#dc2626', bg: '#fee2e2', icon: '' },
-    'suspended': { label: '已暂停', color: '#6b7280', bg: '#f3f4f6', icon: '' },
-    'pending_return': { label: '待归还', color: '#d97706', bg: '#fef3c7', icon: '' },
-    'returned': { label: '已归还', color: '#0891b2', bg: '#cffafe', icon: '' },
-    'completed': { label: '已完成', color: '#0891b2', bg: '#cffafe', icon: '' },
-    'cancelled': { label: '已取消', color: '#dc2626', bg: '#fee2e2', icon: '' }
-  };
-  const currentStatus = statusLabels[order.status] || { label: order.status, color: '#6b7280', bg: '#f3f4f6', icon: '' };
+  const currentStatus = orderStatusBadge(order.status);
   // 订单“已完成”只代表设备已归还，跟押金是否真正结清（deposit_status）是两回事，
   // 单独一个徽章显示，不能让“已完成”看起来什么都办完了（对应 o-af1VCjmW 那次事故）。
   const settlementPending = order.status === 'completed' && order.settlement_status === 'PENDING';
@@ -140,16 +125,15 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
 
   const installmentSection = await renderRentalInstallments(c, order, false)
   const body = `
-    <div class="panel hero order-detail-shell admin-order-detail" style="padding: 32px; margin-bottom: 24px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
-        <div style="display: flex; align-items: center; gap: 16px;">
-          <div>
-            <h2 style="margin: 0 0 8px 0;">订单详情 - ${order.orderNo}</h2>
-          </div>
+    <div class="panel hero order-detail-shell admin-order-detail">
+      <div class="order-detail-hero__row">
+        <div>
+          <h2>订单详情 #${escapeHtml(order.orderNo || order.id)}</h2>
+          <p class="order-detail-hero__meta">${escapeHtml(customer?.name || '未知客户')} · ${escapeHtml(device?.name || '未知设备')}</p>
         </div>
-        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-          <span style="padding: 10px 20px; border-radius: 9999px; font-weight: 600; font-size: 1rem; background: ${currentStatus.bg}; color: ${currentStatus.color}; display: inline-flex; align-items: center; gap: 8px;">${currentStatus.label}</span>
-          ${settlementPending ? `<span style="padding: 10px 20px; border-radius: 9999px; font-weight: 600; font-size: 1rem; background: #fef3c7; color: #b45309; display: inline-flex; align-items: center; gap: 8px;" title="押金尚未结清，不能视为完全办结">押金待结算</span>` : ''}
+        <div class="order-detail-hero__status">
+          <span class="badge badge-lg ${currentStatus.badgeClass}">${escapeHtml(currentStatus.label)}</span>
+          ${settlementPending ? `<span class="badge badge-lg badge-warning" title="押金尚未结清，不能视为完全办结">押金待结算</span>` : ''}
         </div>
       </div>
     </div>
