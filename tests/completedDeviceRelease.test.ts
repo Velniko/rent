@@ -91,8 +91,8 @@ for (const legacy of [false, true]) test(`early completion frees the calendar af
   const cells = elements.get('fleet-calendar')!.children
   const day = (date: string, outside = false) => cells.find(cell => cell.children[0].textContent === date && cell.className.includes('is-outside') === outside)!
   assert.equal(day('30', true).children.length, 2, 'past rental remains visible')
-  assert.equal(day('31', true).children.length, 1, 'early return frees the original remaining dates')
-  assert.equal(day('1').children.length, 1)
+  assert.equal(day('31', true).children.length, 2, 'the Melbourne return day itself still shows as occupied')
+  assert.equal(day('1').children.length, 1, 'early return frees the days after the Melbourne return date')
   assert.equal(sqlite.prepare("SELECT endDate FROM orders WHERE id = 'release-order'").get()?.endDate, '2026-11-15', 'contract date stays intact')
   assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id = 'release-device'").get()?.status, 'available')
 })

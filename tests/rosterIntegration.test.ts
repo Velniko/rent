@@ -25,7 +25,7 @@ async function setup(t:any) {
  const ctx={waitUntil() {}} as any
  const c={env,req:{url:'https://rent.test/admin/roster',query(){return undefined},header(){return undefined}},get(){return null}} as any
  const actors:any={admin:{id:'admin',name:'管理员',role:'ADMIN'},a:{id:'a',name:'员工 A',role:'STAFF'},b:{id:'b',name:'员工 B',role:'STAFF'},c:{id:'c',name:'客户',role:'CUSTOMER'}}
- const sessions:any={};for(const id of Object.keys(actors))sessions[id]=(await createAuthSession(c,id)).token
+ const sessions:any={};for(const id of Object.keys(actors))sessions[id]=(await createAuthSession(c,id,true)).token
  const request=async(path:string,id='admin',body?:any,json=false)=>worker.fetch(new Request('https://rent.test'+path,{method:body?'POST':'GET',body:body?(json?JSON.stringify(body):body instanceof FormData?body:new URLSearchParams(body)):undefined,headers:{Cookie:'session='+sessions[id]+await testOrderScanCookie(sql,id,path,body),Origin:'https://rent.test','Sec-Fetch-Site':'same-origin',...(json?{'Content-Type':'application/json','Accept':'application/json'}:{})}}),env,ctx)
  const state=JSON.parse(String(sql.prepare('SELECT state_json FROM staff_roster').get()!.state_json));state.published=[{id:'shift-a',employeeId:'a',day:'2026-11-06',start:'09:00',end:'17:00'}];sql.prepare('UPDATE staff_roster SET state_json=?').run(JSON.stringify(state))
  const rawRequest=(path:string,id='a',body?:any,pass='',json=true)=>worker.fetch(new Request('https://rent.test'+path,{method:body?'POST':'GET',body:body?(json?JSON.stringify(body):new URLSearchParams(body)):undefined,headers:{Cookie:'session='+sessions[id]+(pass?'; '+pass:''),Origin:'https://rent.test','Sec-Fetch-Site':'same-origin',...(body?{'Content-Type':json?'application/json':'application/x-www-form-urlencoded'}:{})}}),env,ctx)
@@ -220,7 +220,7 @@ test('staff task cards escape other staff names and order labels before assignin
 
 test('manual orders share admin updates, bulk operations and cancellation without inventing a payment', async t => {
  const {sql,rawRequest}=await setup(t)
- const created=await rawRequest('/admin/orders/new','admin',{deviceId:'d',startDate:'2026-11-10',endDate:'2026-11-12'},'',false)
+ const created=await rawRequest('/admin/orders/new','admin',{deviceId:'d',startDate:'2026-11-10',startPeriod:'AM',endDate:'2026-11-12',endPeriod:'PM',status:'active'},'',false)
  assert.equal(created.status,303,await created.clone().text())
  const path=created.headers.get('location')!,id=path.split('/').at(-1)!
  const row=()=>sql.prepare('SELECT * FROM orders WHERE id=?').get(id)!
@@ -228,14 +228,14 @@ test('manual orders share admin updates, bulk operations and cancellation withou
  assert.match(html,/订单管理操作/);assert.match(html,/登记归还/);assert.doesNotMatch(html,/#scan/)
  const list=await rawRequest('/admin/orders','admin');assert.match(await list.text(),new RegExp(`action="${path}/update"`))
  assert.equal((await rawRequest(path+'/update','admin',{status:'suspended',reason:'暂停'},'',false)).status,302)
- assert.equal(row().status,'suspended');assert.equal(row().payment_status,'UNPAID');assert.equal(row().deposit_status,'PENDING')
+ assert.equal(row().status,'suspended');assert.equal(row().payment_status,'UNPAID');assert.equal(row().deposit_status,'NOT_REQUIRED')
  assert.equal((await rawRequest(path+'/update','admin',{status:'active'},'',false)).status,302)
  const bulk=await rawRequest('/admin/orders/bulk-update','admin',{orderIds:id,status:'suspended',reason:'批量暂停'},'',false)
  assert.equal(bulk.status,302);assert.equal(row().status,'suspended')
  const changed=await rawRequest(path+'/changes','admin',{changeType:'LOCATION_CHANGE',pickupLocation:'门店',returnLocation:'门店',reason:'修改地点'},'',false)
  assert.equal(changed.status,303,await changed.clone().text())
  assert.equal((await rawRequest(path+'/edit','admin')).status,200)
- assert.equal((await rawRequest(path+'/edit','admin',{deviceId:'d',status:'completed'},'',false)).status,409)
+ assert.equal((await rawRequest(path+'/edit','admin',{deviceId:'d',startDate:'2026-11-10',startPeriod:'AM',endDate:'2026-11-12',endPeriod:'PM',status:'active'},'',false)).status,409)
  const cancelled=await rawRequest('/admin/orders/bulk-update','admin',{orderIds:id,status:'cancelled',reason:'取消'},'',false)
  assert.equal(cancelled.status,302);assert.equal(row().status,'cancelled')
  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM payments WHERE rental_id=?').get(id)!.n,0)
