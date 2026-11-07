@@ -33,6 +33,10 @@ export function renderAdminSettings(user: any) {
             <div class="form-group"><label class="form-label" for="companyXiaohongshuQrUrl">小红书二维码 URL</label><input class="form-control" type="url" id="companyXiaohongshuQrUrl" name="companyXiaohongshuQrUrl" value="${escAttr(settings.companyDetails.xiaohongshuQrUrl || '')}" placeholder="https://"></div>
             <div class="form-group"><label class="form-label" for="companyDouyinUrl">抖音主页链接</label><input class="form-control" type="url" id="companyDouyinUrl" name="companyDouyinUrl" value="${escAttr(settings.companyDetails.douyinUrl || '')}" placeholder="https://"></div>
             <div class="form-group"><label class="form-label" for="companyDouyinQrUrl">抖音二维码 URL</label><input class="form-control" type="url" id="companyDouyinQrUrl" name="companyDouyinQrUrl" value="${escAttr(settings.companyDetails.douyinQrUrl || '')}" placeholder="https://"></div>
+            <div class="form-group"><label class="form-label" for="companyWhatsappUrl">WhatsApp 链接</label><input class="form-control" type="url" id="companyWhatsappUrl" name="companyWhatsappUrl" value="${escAttr(settings.companyDetails.whatsappUrl || '')}" placeholder="https://wa.me/..."></div>
+            <div class="form-group"><label class="form-label" for="companyInstagramUrl">Instagram 链接</label><input class="form-control" type="url" id="companyInstagramUrl" name="companyInstagramUrl" value="${escAttr(settings.companyDetails.instagramUrl || '')}" placeholder="https://instagram.com/..."></div>
+            <div class="form-group"><label class="form-label" for="companyFacebookUrl">Facebook 链接</label><input class="form-control" type="url" id="companyFacebookUrl" name="companyFacebookUrl" value="${escAttr(settings.companyDetails.facebookUrl || '')}" placeholder="https://facebook.com/..."></div>
+            <p class="form-text">社交平台链接留空时，官网页脚不会显示对应图标。</p>
             <div class="form-group"><label class="form-label" for="pickupLocations">自取/归还地点</label><textarea id="pickupLocations" name="pickupLocations" class="form-control" rows="4" placeholder="每行一个地点">${settings.companyDetails.pickupLocations.join('\n')}</textarea><small class="form-text">员工新建合同时只能从这些地点中选择；管理员仍可临时编辑。</small></div>
               <div class="form-group"><label class="form-label" for="deliveryAreas">配送区域</label><textarea id="deliveryAreas" name="deliveryAreas" class="form-control" rows="4" placeholder="每行一个区域">${(settings.companyDetails.deliveryAreas || []).join('\n')}</textarea><small class="form-text">官网会显示这些区域；每行一个 suburb 或区域名称。</small></div>
               <div class="form-group"><label class="form-label" for="deliveryNote">配送说明</label><input id="deliveryNote" name="deliveryNote" class="form-control" value="${settings.companyDetails.deliveryNote || ''}" placeholder="例如：配送范围和运费以审核确认为准"><small class="form-text">官网申请页、租赁指南和设备详情会读取这段说明。</small></div>
@@ -203,6 +207,9 @@ export function renderAdminSettings(user: any) {
             xiaohongshuQrUrl: formData.get('companyXiaohongshuQrUrl'),
             douyinUrl: formData.get('companyDouyinUrl'),
             douyinQrUrl: formData.get('companyDouyinQrUrl'),
+            whatsappUrl: formData.get('companyWhatsappUrl'),
+            instagramUrl: formData.get('companyInstagramUrl'),
+            facebookUrl: formData.get('companyFacebookUrl'),
             pickupLocations: String(formData.get('pickupLocations') || '').split(/\\n+/).map(value => value.trim()).filter(Boolean),
                       deliveryAreas: String(formData.get('deliveryAreas') || '').split(/\\n+/).map(value => value.trim()).filter(Boolean),
                       deliveryNote: String(formData.get('deliveryNote') || '').trim(),

@@ -113,6 +113,9 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
       xiaohongshuQrUrl: String(payload.companyDetails?.xiaohongshuQrUrl ?? getSystemSettings().companyDetails.xiaohongshuQrUrl ?? '').trim().slice(0, 1000),
       douyinUrl: String(payload.companyDetails?.douyinUrl ?? getSystemSettings().companyDetails.douyinUrl ?? '').trim().slice(0, 1000),
       douyinQrUrl: String(payload.companyDetails?.douyinQrUrl ?? getSystemSettings().companyDetails.douyinQrUrl ?? '').trim().slice(0, 1000),
+      whatsappUrl: String(payload.companyDetails?.whatsappUrl ?? getSystemSettings().companyDetails.whatsappUrl ?? '').trim().slice(0, 1000),
+      instagramUrl: String(payload.companyDetails?.instagramUrl ?? getSystemSettings().companyDetails.instagramUrl ?? '').trim().slice(0, 1000),
+      facebookUrl: String(payload.companyDetails?.facebookUrl ?? getSystemSettings().companyDetails.facebookUrl ?? '').trim().slice(0, 1000),
       pickupLocations: Array.isArray(payload.companyDetails?.pickupLocations)
         ? payload.companyDetails.pickupLocations.map((value: unknown) => String(value).trim()).filter(Boolean).slice(0, 20)
         : getSystemSettings().companyDetails.pickupLocations,
@@ -168,7 +171,7 @@ export async function handleSaveAdminSettings(c: Context): Promise<Response> {
   if (next.feedbackRewards.rewardType === 'BALANCE' && next.feedbackRewards.enabled && (next.feedbackRewards.balanceAmountMin <= 0 || next.feedbackRewards.balanceAmountMax < next.feedbackRewards.balanceAmountMin)) throw new Error('反馈奖励余额范围无效')
   if (next.feedbackRewards.rewardType === 'COUPON' && next.feedbackRewards.enabled && (next.feedbackRewards.couponDiscountValueMin <= 0 || next.feedbackRewards.couponDiscountValueMax < next.feedbackRewards.couponDiscountValueMin || (next.feedbackRewards.couponDiscountType === 'percent' && next.feedbackRewards.couponDiscountValueMax > 100))) throw new Error('反馈奖励优惠值范围无效')
 
-  for (const key of ['wechatUrl', 'wechatQrUrl', 'xiaohongshuUrl', 'xiaohongshuQrUrl', 'douyinUrl', 'douyinQrUrl'] as const) {
+  for (const key of ['wechatUrl', 'wechatQrUrl', 'xiaohongshuUrl', 'xiaohongshuQrUrl', 'douyinUrl', 'douyinQrUrl', 'whatsappUrl', 'instagramUrl', 'facebookUrl'] as const) {
     const value = next.companyDetails[key]
     if (!value) continue
     try { validateHostedImageUrls(value, 1) } catch { throw new Error('社交平台链接和二维码必须使用公开的 HTTPS 地址') }
