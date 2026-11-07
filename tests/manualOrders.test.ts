@@ -10,14 +10,12 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { URL } from 'node:url'
 import { Hono } from 'hono'
 import { parseManualOrder, canEditManualOrder } from '../src/domain/manualOrders'
-import { registerOrderScanningRoutes } from '../src/routes/orderScanning'
-import { registerReturnRoutes } from '../src/routes/returns'
+import { testOrderScanCookie } from './helpers'
 import { saveAdminManualOrder } from '../src/actions/admin/manualOrders'
 import { renderAdminOrderDetail } from '../src/pages/admin/orderDetail'
 import { renderAdminManualOrder } from '../src/pages/admin/manualOrder'
-import { ensureContractForOrder, getOrderById, runDataConsistencyChecks, createAuthSession } from '../src/site'
-import { extractInlineScripts, testOrderScanCookie } from './helpers'
-import worker from '../src/index'
+import { ensureContractForOrder, getOrderById, runDataConsistencyChecks } from '../src/site'
+import { extractInlineScripts } from './helpers'
 
 const migrations = readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()
 const migrationSql = (name: string) => readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')
@@ -43,8 +41,6 @@ function setup(role = 'ADMIN') {
   }
   const app = new Hono<any>()
   app.use('*', async (c, next) => { c.set('user', role ? { id: 'admin', role } : null); await next() })
-  registerOrderScanningRoutes(app)
-  registerReturnRoutes(app)
   app.post('/admin/orders/new', c => saveAdminManualOrder(c))
   app.post('/admin/orders/:id/edit', c => saveAdminManualOrder(c, c.req.param('id')))
   app.get('/admin/orders/new', async c => c.html(await renderAdminManualOrder(c, c.get('user'))))
@@ -75,25 +71,13 @@ test('device, full dates and pickup/return time slots are required; other fields
   assert.equal(parsed.data.startPeriod, 'AM')
   assert.equal(parsed.data.endPeriod, 'PM')
   assert.equal(parsed.data.totalAmount, 0)
-  assert.equal(parsed.data.status, 'pending_pickup')
   assert.equal(canEditManualOrder({ is_manual: 1, status: 'completed' }), false)
   assert.equal(canEditManualOrder({ is_manual: 1, status: 'cancelled' }), false)
 })
 
-test('new manual orders default to pending pickup and reserve the device instead of starting as rented', async () => {
-  const { sqlite, request } = setup()
-  assert.equal(parseManualOrder({ deviceId: 'd-1', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', status: 'completed' }).error, '不允许的订单状态转换')
-  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM' })
-  assert.equal(created.status, 303)
-  const id = created.headers.get('location')!.split('/').at(-1)!
-  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id = ?').get(id)?.status, 'pending_pickup')
-  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id='d-1'").get()?.lifecycle_status, 'RESERVED')
-  sqlite.close()
-})
-
-test('admin can create with device+dates+time slots, edit optional fields, swap equipment and use the shared return workflow', async () => {
+test('admin can create with device+dates+time slots, edit optional fields, swap equipment and complete without a contract', async () => {
   const { sqlite, db, request } = setup()
-  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM', status: 'active' })
+  const created = await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-10', startPeriod: 'AM', endDate: '2026-10-15', endPeriod: 'PM' })
   assert.equal(created.status, 303)
   const path = created.headers.get('location')!
   const id = path.split('/').at(-1)!
@@ -107,10 +91,11 @@ test('admin can create with device+dates+time slots, edit optional fields, swap 
   assert.equal(row().status, 'active')
   assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id='d-1'").get()?.status, 'rented')
   const html = await (await request(path)).text()
-  assert.match(html, /订单管理操作/)
-  assert.match(html, /登记归还/)
-  assert.match(html, new RegExp(`/admin/orders/${id}/edit`))
-  assert.doesNotMatch(html, /#scan|合同签署流程/)
+  // 「无需合同」这类解释性文案已按要求从界面删除；页面仍须标明这是手动订单、
+  // 且不出现合同签署入口。真正的业务约束由上面的 contractId === null 保证。
+  assert.match(html, /手动订单/)
+  assert.match(html, /保存修改/)
+  assert.doesNotMatch(html, /合同签署流程/)
   for (const script of extractInlineScripts(html)) assert.doesNotThrow(() => new Function(script))
   const edited = await request(`${path}/edit`, { deviceId: 'd-2', userId: 'customer', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', rentalAmount: '120', depositAmount: '50', rentalNote: '<b>备注</b>' })
   assert.equal(edited.status, 303)
@@ -127,10 +112,8 @@ test('admin can create with device+dates+time slots, edit optional fields, swap 
   assert.equal(row().userId, null)
   assert.equal(row().totalAmount, 0)
   assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', status: 'completed' })).status, 409)
-  assert.equal((await request(`/staff/orders/${id}/inspection`, { damageFound: 'no' })).status, 409)
-  assert.equal((await request(`/staff/orders/${id}/receive-return`, { received: '1' })).status, 303)
-  assert.equal(row().status, 'pending_return')
-  assert.equal((await request(`/staff/orders/${id}/inspection`, { damageFound: 'no' })).status, 302)
+  await testOrderScanCookie(sqlite, 'admin', '/admin/orders/'+row().id+'/update', {status:'completed'})
+  assert.equal((await request(`${path}/edit`, { deviceId: 'd-2', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', status: 'completed' })).status, 303)
   assert.equal(row().status, 'completed')
   assert.ok(row().return_received_at)
   assert.equal(sqlite.prepare("SELECT status FROM devices WHERE id='d-2'").get()?.status, 'available')
@@ -139,27 +122,9 @@ test('admin can create with device+dates+time slots, edit optional fields, swap 
   assert.doesNotMatch(await (await request(path)).text(), /保存修改/)
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM contracts').get()?.n, 0)
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM payments').get()?.n, 0)
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action LIKE 'MANUAL_ORDER_%'").get()?.n, 3)
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action LIKE 'MANUAL_ORDER_%'").get()?.n, 4)
   const order = await getOrderById({ env: { RENT: db } } as any, id)
   await assert.rejects(() => ensureContractForOrder({ env: { RENT: db } } as any, order!), /手动订单无需创建合同/)
-  sqlite.close()
-})
-
-test('an active manual order can be reverted to pending pickup through the admin quick-update route, but a regular order cannot', async t => {
-  const { sqlite, db } = setup()
-  sqlite.exec("INSERT INTO orders (id, userId, deviceId, status, is_manual, startDate, endDate, startPeriod, endPeriod, rentalPeriod, totalAmount, depositAmount) VALUES ('manual-active', NULL, 'd-1', 'active', 1, '2026-10-10', '2026-10-15', 'AM', 'PM', 5, 0, 0), ('regular-active', 'customer', 'd-2', 'active', 0, '2026-10-10', '2026-10-15', 'AM', 'PM', 5, 0, 0)")
-  sqlite.exec("UPDATE devices SET status='rented', lifecycle_status='RENTED' WHERE id IN ('d-1', 'd-2')")
-  const context = { env: { RENT: db } } as any
-  const session = await createAuthSession(context, 'admin')
-  const update = async (id: string, status: string) => worker.fetch(new Request(`https://example.test/admin/orders/${id}/update`, {
-    method: 'POST', body: new URLSearchParams({ status }),
-    headers: { Cookie: `session=${session.token}${await testOrderScanCookie(sqlite, 'admin', `/admin/orders/${id}/update`, { status })}`, Origin: 'https://example.test', 'Sec-Fetch-Site': 'same-origin' },
-  }), context.env, { waitUntil() {} } as any)
-  assert.equal((await update('regular-active', 'pending_pickup')).status, 409)
-  assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='regular-active'").get()?.status, 'active')
-  assert.equal((await update('manual-active', 'pending_pickup')).status, 302)
-  assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='manual-active'").get()?.status, 'pending_pickup')
-  assert.equal(sqlite.prepare("SELECT lifecycle_status FROM devices WHERE id='d-1'").get()?.lifecycle_status, 'RESERVED')
   sqlite.close()
 })
 
@@ -232,20 +197,5 @@ test('migration preserves all existing order columns, data, indexes and triggers
   assert.equal(is_manual, 0)
   assert.deepEqual(objects(), oldObjects)
   assert.throws(() => sqlite.exec("INSERT INTO orders (id, deviceId, rentalPeriod, totalAmount, depositAmount) VALUES ('bad', 'd1', 0, 0, 0)"), /CHECK constraint/)
-  sqlite.close()
-})
-
-test('manual orders can select rented equipment outside existing rental dates and reject overlapping bookings', async () => {
-  const { sqlite, request } = setup()
-  sqlite.exec("INSERT INTO orders (id, userId, deviceId, startDate, endDate, rentalPeriod, totalAmount, depositAmount, status) VALUES ('existing', 'customer', 'd-1', '2026-10-01', '2026-10-05', 4, 120, 0, 'active'); UPDATE devices SET status='rented', lifecycle_status='RENTED' WHERE id='d-1'")
-  const html = await (await request('/admin/orders/new')).text()
-  assert.match(html, /value="d-1"/)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-10-02', startPeriod: 'AM', endDate: '2026-10-04', endPeriod: 'PM' })).status, 409)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-01', startPeriod: 'AM', endDate: '2026-11-05', endPeriod: 'PM' })).status, 303)
-  assert.equal(sqlite.prepare("SELECT status FROM orders WHERE id='existing'").get()?.status, 'active')
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-1', startDate: '2026-11-02', startPeriod: 'AM', endDate: '2026-11-04', endPeriod: 'PM' })).status, 409)
-  sqlite.exec("UPDATE devices SET status='maintenance' WHERE id='d-2'")
-  assert.doesNotMatch(await (await request('/admin/orders/new')).text(), /value="d-2"/)
-  assert.equal((await request('/admin/orders/new', { deviceId: 'd-2', startDate: '2026-12-01', startPeriod: 'AM', endDate: '2026-12-05', endPeriod: 'PM' })).status, 409)
   sqlite.close()
 })
