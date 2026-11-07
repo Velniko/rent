@@ -44,8 +44,8 @@ async function setup(t: any, emailStatus = 200) {
   }
   const env = { RENT: db, RESEND_API_KEY: 'test-key', EMAIL_FROM: 'PC Rental <sender@example.test>' }
   const context = { env } as any
-  const admin = await createAuthSession(context, 'test-admin')
-  const staff = await createAuthSession(context, 'test-staff')
+  const admin = await createAuthSession(context, 'test-admin', true)
+  const staff = await createAuthSession(context, 'test-staff', true)
   const emails: any[] = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init: any) => {
     assert.equal(String(url), 'https://api.resend.com/emails')
