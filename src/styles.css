@@ -159,6 +159,23 @@
   margin: 0 0 18px;
 }
 
+.pickup-preparation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: var(--c-info-tint, #eef2f5);
+  border: 1px solid var(--c-line-2, #dbe3e9);
+  border-radius: 8px;
+}
+
+.pickup-preparation p[data-flash-notice] {
+  flex-basis: 100%;
+  margin: 0 0 4px;
+}
+
 .balance-stat-link {
   display: block;
   color: inherit;
