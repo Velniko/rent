@@ -13,7 +13,7 @@ import { canStaffReadRosterOrder } from '../../services/roster'
 import { getDeliveryBookingsForOrder, safeDeliveryTrackingUrl } from '../../services/deliveryViews'
 import { deliveryStatusInfo } from '../../deliveryStatus'
 import { renderPickupPreparation } from '../partials/pickupPreparation'
-import { renderOrderStatusBadge } from '../partials/orderStatusBadge'
+import { renderOrderStatusBadge, orderStatusBadge } from '../partials/orderStatusBadge'
 
 const esc = (value: unknown) => String(value ?? '—').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
@@ -65,7 +65,16 @@ export async function renderStaffOrderDetail(c: Context, user: any, orderId: str
 
   const body = `
     <div class="panel order-detail-shell staff-order-detail">
-      <div class="section-title"><h2>${order.orderNo ? `订单详情 #${order.orderNo}` : '订单详情'}</h2>${order.orderNo ? '' : '<span class="section-note">订单编号将在付款确认后生成。</span>'}<a class="button button-secondary" href="/staff/orders${backSuffix}">返回订单列表</a></div>
+      <div class="section-title order-detail-hero__row">
+        <div>
+          <h2>${order.orderNo ? `订单详情 #${order.orderNo}` : '订单详情'}</h2>
+          ${order.orderNo ? `<p class="order-detail-hero__meta">${esc(customer?.name || '未知客户')} · ${esc(device?.name || '未知设备')}</p>` : '<span class="section-note">订单编号将在付款确认后生成。</span>'}
+        </div>
+        <div class="order-detail-hero__status">
+          <span class="badge badge-lg ${orderStatusBadge(order.status).badgeClass}">${esc(orderStatusBadge(order.status).label)}</span>
+          <a class="button button-secondary" href="/staff/orders${backSuffix}">返回订单列表</a>
+        </div>
+      </div>
       ${alertMessage}
       <div class="order-detail-grid">
         <div class="order-info-card">

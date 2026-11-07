@@ -125,7 +125,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
 
   const installmentSection = await renderRentalInstallments(c, order, false)
   const body = `
-    <div class="panel hero order-detail-shell admin-order-detail">
+    <div class="order-detail-hero">
       <div class="order-detail-hero__row">
         <div>
           <h2>订单详情 #${escapeHtml(order.orderNo || order.id)}</h2>

@@ -185,6 +185,30 @@
   padding-top: 2px;
 }
 
+/* 独立页头（目前管理端订单详情在用）：和订单信息卡片的深色头保持同一套配色，
+   让「这是一个订单」在管理端/员工端/客户端三处长得一样。 */
+.order-detail-hero {
+  position: relative;
+  overflow: hidden;
+  margin: 0 0 24px;
+  padding: 22px 26px;
+  background: linear-gradient(110deg, #172331 0%, #24384b 72%, #304c64 100%);
+  border-radius: var(--radius, 6px);
+}
+
+.order-detail-hero h2 {
+  margin: 0;
+  color: #fff;
+  font-family: var(--f-display, inherit);
+  font-size: 1.55rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.order-detail-hero .order-detail-hero__meta {
+  color: #b9c8d3;
+}
+
 .pickup-preparation {
   display: flex;
   align-items: center;
@@ -506,20 +530,22 @@
 }
 
 .order-detail-shell>.section-title:first-child {
-  margin: -1px -1px 24px;
-  padding: 22px 26px;
-  background: linear-gradient(110deg, #172331 0%, #24384b 72%, #304c64 100%);
-  color: #f4f7f9;
-  border-bottom: 0;
+  margin: -1px -1px 24px !important;
+  padding: 22px 26px !important;
+  background: linear-gradient(110deg, #172331 0%, #24384b 72%, #304c64 100%) !important;
+  color: #f4f7f9 !important;
+  border: 0 !important;
+  border-radius: var(--radius, 6px) var(--radius, 6px) 0 0 !important;
 }
 
 .order-detail-shell>.section-title:first-child h2 {
-  color: #fff;
-  letter-spacing: -.02em;
+  color: #fff !important;
+  letter-spacing: -.02em !important;
 }
 
-.order-detail-shell>.section-title:first-child .section-note {
-  color: #b9c8d3;
+.order-detail-shell>.section-title:first-child .section-note,
+.order-detail-shell>.section-title:first-child .order-detail-hero__meta {
+  color: #b9c8d3 !important;
 }
 
 .order-detail-grid {
