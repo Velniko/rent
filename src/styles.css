@@ -10790,8 +10790,8 @@ input[type="number"] {
   --warning-light: #fdf3e2;
   --danger: #b3261e;
   --danger-light: #fceceb;
-  --info: #3f5b6e;
-  --info-light: #eef2f5;
+  --info: #2f6690;
+  --info-light: #e3eef8;
   --bg: #f5f6f7;
   --bg-subtle: #fafbfc;
   --surface: #ffffff;
@@ -11948,11 +11948,21 @@ header.desktop-header {
   color: var(--c-text-3);
 }
 
-/* 有异常值的指标：数字换警示色 + 左侧 2px 标记 */
-.stat-card.warning .value,
+/* 有异常值的指标：数字换警示色 + 左侧 2px 标记。
+   warning 和 danger 以前共用 --c-danger，待处理/告警类数字全变成了刺眼的红色，
+   跟真正的危险状态分不清——改用 --c-warn（琥珀色），红色留给 danger。 */
+.stat-card.warning .value { color: var(--c-warn) !important; }
 .stat-card.danger .value { color: var(--c-danger) !important; }
-.stat-card.warning,
+.stat-card.warning { box-shadow: inset 2px 0 0 var(--c-warn) !important; }
 .stat-card.danger { box-shadow: inset 2px 0 0 var(--c-danger) !important; }
+
+/* primary/success/info/accent 这几个修饰类以前靠 ::before 画一条顶部色带，
+   现在 .stat-card::before 被全局禁用（content:none !important），色带早就不渲染了，
+   数值卡片全部变成一模一样的白卡——改走跟 warning/danger 一致的左侧色标方案。 */
+.stat-card.primary { box-shadow: inset 2px 0 0 var(--c-accent) !important; }
+.stat-card.success { box-shadow: inset 2px 0 0 var(--c-ok) !important; }
+.stat-card.info { box-shadow: inset 2px 0 0 var(--c-info) !important; }
+.stat-card.accent { box-shadow: inset 2px 0 0 var(--c-accent) !important; }
 
 a.stat-card { text-decoration: none; color: inherit; }
 a.stat-card:hover { text-decoration: none; }
