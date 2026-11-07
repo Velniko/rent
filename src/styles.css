@@ -159,6 +159,21 @@
   margin: 0 0 18px;
 }
 
+.pickup-preparation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--c-line, #e3e7ea);
+}
+
+.pickup-preparation p[data-flash-notice] {
+  flex-basis: 100%;
+  margin: 0 0 4px;
+}
+
 .balance-stat-link {
   display: block;
   color: inherit;

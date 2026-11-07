@@ -19,7 +19,13 @@ export function renderAdminDashboard(
     'pending_payment': { text: '待支付', class: 'badge-warning' },
     'approved': { text: '已审核', class: 'badge-info' },
     'paid': { text: '已支付', class: 'badge-primary' },
+    'pending_pickup': { text: '待取货', class: 'badge-info' },
     'active': { text: '租赁中', class: 'badge-primary' },
+    'extended': { text: '已延期（租赁中）', class: 'badge-primary' },
+    'overdue': { text: '已逾期', class: 'badge-danger' },
+    'suspended': { text: '已暂停', class: 'badge-warning' },
+    'pending_return': { text: '待归还', class: 'badge-info' },
+    'returned': { text: '已归还', class: 'badge-info' },
     'completed': { text: '已完成', class: 'badge-success' },
     'cancelled': { text: '已取消', class: 'badge-danger' }
   }
