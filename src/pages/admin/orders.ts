@@ -7,6 +7,7 @@ import { buildLayout, getDB, formatCurrency, formatMelbourneDate } from '../../s
 import { Context } from 'hono';
 import { renderOrderStatusFeedback } from './orderStatusFeedback';
 import { escapeHtml } from '../../lib/html';
+import { renderReasonPresets, ORDER_CANCEL_REASON_PRESETS, ORDER_SUSPEND_REASON_PRESETS } from '../../lib/reasonPresets';
 
 // The order list has server-side pagination; cap how many rows we ever
 // render in one page load so the table stays usable as order volume grows.
@@ -310,6 +311,7 @@ export async function renderAdminOrders(c: Context, user: any) {
             <option value="">批量更新状态</option>
             ${BULK_STATUS_OPTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
           </select>
+          ${renderReasonPresets('bulk-status-reason', [...ORDER_CANCEL_REASON_PRESETS, ...ORDER_SUSPEND_REASON_PRESETS], { hidden: true })}
           <input type="text" name="reason" id="bulk-status-reason" class="form-control" maxlength="300" placeholder="原因（必填，随通知发送给客户）" style="min-width: 280px; padding: 8px 12px;" hidden />
           <button type="submit" class="button button-primary" style="padding: 8px 16px;">批量更新</button>
         </div>
@@ -317,11 +319,13 @@ export async function renderAdminOrders(c: Context, user: any) {
       <script>(function(){
         var select = document.getElementById('bulk-status-select');
         var reason = document.getElementById('bulk-status-reason');
+        var reasonPreset = document.querySelector('[data-reason-preset-for="bulk-status-reason"]');
         if (!select || !reason) return;
         function sync() {
           var needsReason = select.value !== '';
           reason.hidden = !needsReason;
           reason.required = needsReason;
+          if (reasonPreset) reasonPreset.hidden = !needsReason;
         }
         select.addEventListener('change', sync);
         sync();

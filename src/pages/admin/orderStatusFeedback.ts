@@ -3,6 +3,8 @@
  * Noncommercial use, modification, and distribution are permitted.
  * Keep this notice and the LICENSE file with all copies and modified versions. */
 
+import { ORDER_CANCEL_REASON_PRESETS, ORDER_SUSPEND_REASON_PRESETS } from '../../lib/reasonPresets'
+
 export function renderOrderStatusFeedback(): string {
   return `
     <dialog class="feedback-dialog" data-order-status-dialog aria-labelledby="order-status-dialog-title">
@@ -66,6 +68,7 @@ export function renderOrderStatusFeedback(): string {
                 placeholder: '例如：客户申请 / 设备无货 / 订单信息有误',
                 confirmLabel: statusField.value === 'cancelled' ? '确认取消订单' : '确认暂停',
                 maxLength: 300,
+                presets: statusField.value === 'cancelled' ? ${JSON.stringify(ORDER_CANCEL_REASON_PRESETS)} : ${JSON.stringify(ORDER_SUSPEND_REASON_PRESETS)},
               });
               return;
             }
