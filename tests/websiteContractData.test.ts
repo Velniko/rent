@@ -85,7 +85,7 @@ test('confirmed authorization supplies its reference without a paid date or paid
   assert.equal(authorized.rent_paid, '0.00')
   assert.equal(authorized.deposit_paid, '0.00')
   assert.equal(authorized.amount_due, '230.00')
-  assert.equal(renderContractVariables('{payment_date}|{payment_reference}', contract, order, {}, {}, authorized), 'NA|pi_auth')
+  assert.equal(renderContractVariables('{payment_date}|{payment_reference}', contract, order, {}, {}, authorized), 'N/A|pi_auth')
 })
 
 test('bank transfer references still use approved payment proofs', async t => {
