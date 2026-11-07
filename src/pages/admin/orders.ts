@@ -22,6 +22,7 @@ export const adminOrderStatusMap: Record<string, { text: string; class: string }
   pending_payment: { text: '待支付', class: 'badge-warning' },
   approved: { text: '已审核', class: 'badge-info' },
   paid: { text: '已确认', class: 'badge-primary' },
+  pending_pickup: { text: '待取货', class: 'badge-warning' },
   active: { text: '租赁中', class: 'badge-primary' },
   completed: { text: '已完成', class: 'badge-success' },
   cancelled: { text: '已取消', class: 'badge-danger' }
@@ -203,7 +204,7 @@ export async function renderAdminOrders(c: Context, user: any) {
   const activeCount = stats.activeCount;
   const completedCount = stats.completedCount;
 
-  const orderTabs=`<nav class="filter-tabs" aria-label="订单筛选">${[['','全部订单'],['active','租赁中'],['pending_payment','待付款'],['completed','已完成'],['cancelled','已取消']].map(([value,label])=>`<a class="button ${(statusFilter==='all'?'':statusFilter)===value?'button-primary':'button-secondary'}" href="/admin/orders${value?'?status='+value:''}">${label}</a>`).join('')}</nav>`
+  const orderTabs=`<nav class="filter-tabs" aria-label="订单筛选">${[['','全部订单'],['pending_approval','待审核'],['approved','已审核'],['pending_payment','待付款'],['pending_pickup','待取货'],['active','租赁中'],['completed','已完成'],['cancelled','已取消']].map(([value,label])=>`<a class="button ${(statusFilter==='all'?'':statusFilter)===value?'button-primary':'button-secondary'}" href="/admin/orders${value?'?status='+value:''}">${label}</a>`).join('')}</nav>`
   const body = `${orderTabs}
     <div class="panel">
       <div class="section-title">
@@ -362,6 +363,7 @@ export async function renderAdminOrders(c: Context, user: any) {
                       ${!['completed', 'cancelled'].includes(String(order.status)) ? `<form method="POST" action="/admin/orders/${order.id}/update" class="js-order-status-form" style="display: flex; gap: 8px; align-items: center;">
                         <select name="status" class="form-control" style="min-width: 110px; padding: 6px 10px; font-size: 0.85rem;">
                           ${order.status === 'suspended' ? '<option value="active">恢复租赁</option>' : '<option value="suspended">暂停租赁（仅管理员）</option>'}
+                          ${order.is_manual === 1 && order.status === 'active' ? '<option value="pending_pickup">退回待取货</option>' : ''}
                           <option value="cancelled">已取消</option>
                         </select>
                         <button type="submit" class="button button-secondary" style="padding: 6px 10px; font-size: 0.8rem;">更新</button>

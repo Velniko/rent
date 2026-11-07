@@ -4742,9 +4742,9 @@ app.post('/admin/orders/:id/update', async (c) => {
   const order = await getOrderById(c, c.req.param('id'))
   // 'completed' 必须在这里放行，否则下面第 3996 行「跳过归还验机并强制完成」
   // 的校验逻辑永远走不到——订单详情页的强制完成按钮此前一直被这里挡在 409。
-  const editableStatuses = ['suspended', 'active', 'cancelled', 'completed']
+  const editableStatuses = ['suspended', 'active', 'cancelled', 'completed', 'pending_pickup']
   const isResume = status === 'active' && order?.status === 'suspended'
-  if (!order || !editableStatuses.includes(status) || (status === 'active' && !isResume) || !canTransitionOrder(order.status, status)) return wantsJson ? c.json({ ok: false, error: '不允许的订单状态转换，请刷新页面查看最新状态' }, 409) : c.text('不允许的订单状态转换', 409)
+  if (!order || !editableStatuses.includes(status) || (status === 'active' && !isResume) || (status === 'pending_pickup' && order.is_manual !== 1) || !canTransitionOrder(order.status, status)) return wantsJson ? c.json({ ok: false, error: '不允许的订单状态转换，请刷新页面查看最新状态' }, 409) : c.text('不允许的订单状态转换', 409)
   if ((status === 'suspended' || status === 'cancelled') && !reason) return wantsJson ? c.json({ ok: false, error: '请填写暂停/取消原因' }, 400) : c.text('请填写暂停/取消原因', 400)
   if (status === 'cancelled') {
     try {
