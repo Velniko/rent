@@ -16,7 +16,7 @@
 请使用 GitHub 的私密漏洞报告通道：
 
 1. 打开仓库的 **Security** 标签页 → **Report a vulnerability**
-   （https://github.com/aaoqqqdd/rent/security/advisories/new）
+   （https://github.com/Velniko/rent/security/advisories/new）
 2. 如无法使用该通道，可通过仓库所有者的 GitHub 主页私信联系。
 
 报告时请尽量包含：
