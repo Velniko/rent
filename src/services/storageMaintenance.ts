@@ -56,7 +56,7 @@ export async function migrateLegacyImages(c: Context): Promise<number> {
         let object = existing
         if (!object) {
           const url = allowedMigrationUrl(c, raw)
-          const response = await fetch(url, { redirect:'error', signal:AbortSignal.timeout(15000) })
+          const response = await fetch(url, { redirect:'manual', signal:AbortSignal.timeout(15000) })
           if (!response.ok) throw new Error('历史图片读取失败')
           const type = response.headers.get('Content-Type')?.split(';')[0] || ''
           const bytes = await readBoundedBytes(response)
