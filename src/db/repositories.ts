@@ -799,7 +799,7 @@ export async function hasDeviceBookingConflict(c: Context, deviceId: string, sta
       AND status NOT IN ('completed', 'cancelled')
       AND startDate IS NOT NULL AND endDate IS NOT NULL
   `).bind(deviceId, excludeOrderId || '').all() as any
-  return (rows.results || []).some((item: any) => requestStart < periodIndex(String(item.endDate || '').slice(0, 10), String(item.endPeriod || 'AM')) && periodIndex(String(item.startDate || '').slice(0, 10), String(item.startPeriod || 'AM')) < requestEnd)
+  return (rows.results || []).some((item: any) => requestStart <= periodIndex(String(item.endDate || '').slice(0, 10), String(item.endPeriod || 'AM')) && periodIndex(String(item.startDate || '').slice(0, 10), String(item.startPeriod || 'AM')) <= requestEnd)
 }
 
 // ---------------------------------------------------------------------------
