@@ -1730,7 +1730,7 @@ export async function cancelAndRefund(c: Context, admin: any, orderId: string, r
   if (existingRefund) return c.text('该订单已经全额退款', 409)
   const payment = await c.env.RENT.prepare("SELECT * FROM payments WHERE rental_id = ? AND (status = 'paid' OR (status = 'pending' AND payment_method = 'card' AND stripe_payment_intent_id = (SELECT stripe_deposit_payment_intent_id FROM orders WHERE id = ?))) ORDER BY CASE WHEN status = 'paid' THEN 0 ELSE 1 END, paid_at DESC LIMIT 1").bind(order.id, order.id).first() as any
   if (!payment) {
-    if (!(order.is_manual === 1 && order.payment_status === 'UNPAID') && !['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment'].includes(order.status) && !verifiedStripePayment) return c.text('未找到已结算付款，不能自动退款', 409)
+    if (order.is_manual !== 1 && !['draft', 'pending_approval', 'approved', 'awaiting_signature', 'pending_payment'].includes(order.status) && !verifiedStripePayment) return c.text('未找到已结算付款，不能自动退款', 409)
     await finishOrderCancellation(c, admin, order, reason)
     if (order.userId) await createNotification(c, { recipientId: order.userId, senderId: admin.id, type: 'rental_cancelled', title: '订单已取消', message: `您的订单 ${order.orderNo || order.id} 已取消${reason ? `，原因：${reason}` : ''}。`, orderId: order.id })
     return c.redirect(`/admin/orders/${order.id}`, 303)

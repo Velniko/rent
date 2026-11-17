@@ -45,6 +45,7 @@ function setup(role = 'ADMIN') {
   app.post('/admin/orders/:id/edit', c => saveAdminManualOrder(c, c.req.param('id')))
   app.get('/admin/orders/new', async c => c.html(await renderAdminManualOrder(c, c.get('user'))))
   app.get('/admin/orders/:id', async c => c.html(await renderAdminOrderDetail(c, c.get('user'), c.req.param('id'))))
+  app.get('/admin/orders/:id/edit', async c => c.html(await renderAdminManualOrder(c, c.get('user'), await getOrderById({ env: { RENT: db } } as any, c.req.param('id')))))
   const request = (path: string, data?: Record<string, string>) => app.request(`https://example.test${path}`, data ? { method: 'POST', body: new URLSearchParams(data) } : {}, { RENT: db })
   return { sqlite, db, request }
 }
@@ -93,10 +94,13 @@ test('admin can create with device+dates+time slots, edit optional fields, swap 
   const html = await (await request(path)).text()
   // 「无需合同」这类解释性文案已按要求从界面删除；页面仍须标明这是手动订单、
   // 且不出现合同签署入口。真正的业务约束由上面的 contractId === null 保证。
-  assert.match(html, /手动订单/)
-  assert.match(html, /保存修改/)
+  assert.match(html, /修改订单/)
   assert.doesNotMatch(html, /合同签署流程/)
   for (const script of extractInlineScripts(html)) assert.doesNotThrow(() => new Function(script))
+  const editHtml = await (await request(`${path}/edit`)).text()
+  assert.match(editHtml, /手动订单/)
+  assert.match(editHtml, /保存修改/)
+  for (const script of extractInlineScripts(editHtml)) assert.doesNotThrow(() => new Function(script))
   const edited = await request(`${path}/edit`, { deviceId: 'd-2', userId: 'customer', startDate: '2026-10-20', startPeriod: 'AM', endDate: '2026-10-25', endPeriod: 'PM', rentalAmount: '120', depositAmount: '50', rentalNote: '<b>备注</b>' })
   assert.equal(edited.status, 303)
   assert.equal(row().userId, 'customer')

@@ -51,7 +51,7 @@ export async function signOciRequest(env: ObjectStorageEnv, bucket: string, key:
   for (const part of [env.OCI_REGION!, 's3', 'aws4_request']) signingKey = await hmac(signingKey, part)
   const signature = hex(await hmac(signingKey, `AWS4-HMAC-SHA256\n${date}\n${scope}\n${await sha256(canonical)}`))
   headers.set('Authorization', `AWS4-HMAC-SHA256 Credential=${env.OCI_ACCESS_KEY_ID}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`)
-  return new Request(`https://${host}${path}${canonicalQuery ? '?' + canonicalQuery : ''}`, { method, headers, ...(body ? { body } : {}) , redirect: 'error', signal: AbortSignal.timeout(20000) })
+  return new Request(`https://${host}${path}${canonicalQuery ? '?' + canonicalQuery : ''}`, { method, headers, ...(body ? { body } : {}) , redirect: 'manual', signal: AbortSignal.timeout(20000) })
 }
 export async function ociRequest(env: ObjectStorageEnv, bucket: string, key: string, method: string, body?: ArrayBuffer, query = ''): Promise<Response> {
   return fetch(await signOciRequest(env, bucket, key, method, body, query))
