@@ -235,7 +235,11 @@ test('manual orders share admin updates, bulk operations and cancellation withou
  const changed=await rawRequest(path+'/changes','admin',{changeType:'LOCATION_CHANGE',pickupLocation:'门店',returnLocation:'门店',reason:'修改地点'},'',false)
  assert.equal(changed.status,303,await changed.clone().text())
  assert.equal((await rawRequest(path+'/edit','admin')).status,200)
- assert.equal((await rawRequest(path+'/edit','admin',{deviceId:'d',startDate:'2026-11-10',startPeriod:'AM',endDate:'2026-11-12',endPeriod:'PM',status:'active'},'',false)).status,409)
+ // suspended -> active 是允许的转换（/update 在上面第 232 行已验证过同样的转换），
+ // /edit 端点在改设备/日期的同时顺带把状态改回 active 也应当成功。
+ const resumed=await rawRequest(path+'/edit','admin',{deviceId:'d',startDate:'2026-11-10',startPeriod:'AM',endDate:'2026-11-12',endPeriod:'PM',status:'active'},'',false)
+ assert.equal(resumed.status,303,await resumed.clone().text())
+ assert.equal(row().status,'active')
  const cancelled=await rawRequest('/admin/orders/bulk-update','admin',{orderIds:id,status:'cancelled',reason:'取消'},'',false)
  assert.equal(cancelled.status,302);assert.equal(row().status,'cancelled')
  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM payments WHERE rental_id=?').get(id)!.n,0)

@@ -57,7 +57,7 @@ async function requestTranslations(config: Awaited<ReturnType<typeof getTranslat
   try {
     const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json',
       ...(deepl ? { Authorization: `DeepL-Auth-Key ${apiKey}` } : { 'X-Goog-Api-Key': apiKey }) },
-      body: JSON.stringify(payload), signal: AbortSignal.timeout(10000), redirect: 'error' })
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(10000), redirect: 'manual' })
     if (!response.ok) { await response.body?.cancel(); throw new Error(`HTTP ${response.status}`) }
     const body = await readTranslationJson(response.body, 128 * 1024) as { translations?: Array<{ text: string }>; data?: { translations?: Array<{ translatedText: string }> } }
     const result = deepl ? body.translations?.map(row => row.text) : body.data?.translations?.map(row => typeof row.translatedText === 'string' ? decodeGoogleText(row.translatedText) : row.translatedText)

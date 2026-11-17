@@ -134,7 +134,7 @@ export async function uploadSiteImage(value: unknown, c: Context, folder: string
   // Identity documents never use this public image service.
   if (options.watermark) {
     const watermarked = await uploadCloudinaryImage(file, await getCloudinaryRuntimeConfig(c), folder, options)
-    const response = await fetch(watermarked, { redirect: 'error', signal: AbortSignal.timeout(15000) })
+    const response = await fetch(watermarked, { redirect: 'manual', signal: AbortSignal.timeout(15000) })
     if (!response.ok) throw new Error('图片上传失败，请稍后重试')
     bytes = await readBoundedBytes(response)
     const type = response.headers.get('Content-Type')?.split(';')[0] || file.type
