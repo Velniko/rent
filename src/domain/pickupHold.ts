@@ -10,6 +10,10 @@ const LEGACY_PICKUP_START_MINUTES: Record<string, number> = {
   evening_service: 21 * 60,
   delivery_morning: 9 * 60,
   delivery_afternoon: 13 * 60,
+  // 手动订单只有 AM/PM 半天时段（startPeriod/endPeriod），没有具体的
+  // pickupTimeSlot/returnTimeSlot，按半天切分成取货/归还判定的锚点时间。
+  AM: 0,
+  PM: 12 * 60,
 }
 
 function dateDay(value: string): number | null {
@@ -55,7 +59,7 @@ export function isPickupHoldExpired(order: any, now = new Date()): boolean {
 // period. Zero means the return is overdue today but has not crossed midnight.
 export function returnOverdueDays(order: any, now = new Date()): number | null {
   const scheduledDay = dateDay(String(order?.endDate || order?.end_date || ''))
-  const scheduledMinutes = pickupStartMinutes(order?.returnTimeSlot || order?.return_time_slot)
+  const scheduledMinutes = pickupStartMinutes(order?.returnTimeSlot || order?.return_time_slot || order?.endPeriod)
   if (scheduledDay === null || scheduledMinutes === null) return null
   const current = melbourneDayAndMinutes(now)
   if (current.day * 1440 + current.minutes < scheduledDay * 1440 + scheduledMinutes + 120) return null
