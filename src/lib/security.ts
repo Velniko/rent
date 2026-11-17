@@ -72,6 +72,7 @@ const UPLOAD_PATH_PATTERNS: RegExp[] = [
   /^\/staff\/orders\/[^/]+\/(?:inspection|pickup)$/,
   /^\/admin\/inventory\/[^/]+\/(?:damage|inspection)$/,
   /^\/staff\/inventory\/[^/]+\/(?:damage|inspection)$/,
+  /^\/(?:staff|admin)\/contracts\/[^/]+\/data$/,
 ]
 
 export function isUploadPath(pathname: string, method = 'GET'): boolean {
