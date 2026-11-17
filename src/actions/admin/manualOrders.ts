@@ -31,7 +31,7 @@ export async function saveAdminManualOrder(c: Context, orderId?: string) {
   if (data.userId && (!customer || customer.role !== 'CUSTOMER' || customer.status === 'inactive' || customer.deletedAt)) return fail('请选择有效的客户账户')
   const closing = ['completed', 'cancelled'].includes(data.status)
   if (!closing) {
-    if (data.deviceId !== order?.deviceId && device.status === 'maintenance') return fail('所选设备当前不可租用', 409)
+    if (data.deviceId !== order?.deviceId && ['maintenance', 'retired'].includes(device.status)) return fail('所选设备当前不可租用', 409)
     const rules = await getDeviceRentalRules(c, data.deviceId)
     const [conflict, undated] = await Promise.all([
       data.startDate && data.endDate

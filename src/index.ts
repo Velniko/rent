@@ -608,14 +608,14 @@ app.get('/api/monitor', async (c) => {
 })
 
 app.get('/downloads/RentDeviceAgent-Setup.exe', async (c) => {
-  return c.redirect('https://github.com/aaoqqqdd/rent-app/releases/latest/download/RentDeviceAgent-Setup.exe', 302)
+  return c.redirect('https://github.com/Velniko/rent-app/releases/latest/download/RentDeviceAgent-Setup.exe', 302)
 })
 
 app.get('/downloads/RentDeviceAgent.exe', async (c) => {
-  return c.redirect('https://github.com/aaoqqqdd/rent-app/releases/latest/download/RentDeviceAgent-x64.exe', 302)
+  return c.redirect('https://github.com/Velniko/rent-app/releases/latest/download/RentDeviceAgent-x64.exe', 302)
 })
 
-const AGENT_REPO = 'aaoqqqdd/rent-app'
+const AGENT_REPO = 'Velniko/rent-app'
 // Pinned fallback used only when the GitHub Releases API is unreachable. Keep it
 // roughly current so an offline check still returns a plausible version.
 const AGENT_UPDATE_FALLBACK_VERSION = '1.7.4'

@@ -106,7 +106,7 @@ async function runProbe(c: Context, definition: ConnectivityProbeDefinition): Pr
       if (!Number.isFinite(rate) || rate <= 0) throw new Error('汇率服务未返回有效汇率')
       detail = `1 AUD = ${rate.toFixed(4)} CNY`
     } else if (definition.id === 'github') {
-      const response = await timedFetch('https://api.github.com/repos/aaoqqqdd/rent-app/releases/latest', { headers: { 'User-Agent': 'rent-connectivity-check', Accept: 'application/vnd.github+json' } })
+      const response = await timedFetch('https://api.github.com/repos/Velniko/rent-app/releases/latest', { headers: { 'User-Agent': 'rent-connectivity-check', Accept: 'application/vnd.github+json' } })
       if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`)
       const data = await response.json() as any
       detail = `最新版本 ${String(data?.tag_name || '已读取')}`

@@ -91,6 +91,13 @@ test('return becomes overdue after its two-hour grace period and rents accrue fr
   assert.equal(returnOverdueDays(order, new Date('2026-10-06T01:00:00Z')), 1)
 })
 
+test('manual orders without a returnTimeSlot fall back to their AM/PM period so they still go overdue', () => {
+  const order = { endDate: '2026-10-05', endPeriod: 'PM' }
+  assert.equal(returnOverdueDays(order, new Date('2026-10-05T02:59:00Z')), null) // 13:59 AEDT, within grace
+  assert.equal(returnOverdueDays(order, new Date('2026-10-05T03:01:00Z')), 0) // 14:01 AEDT, just overdue
+  assert.equal(returnOverdueDays(order, new Date('2026-11-17T03:01:00Z')), 43)
+})
+
 test('login preserves a safe internal redirect for protected pages', () => {
   const html = renderLogin(undefined, false, '/orders/o-1/invoice/print')
   assert.match(html, /name="redirect" value="\/orders\/o-1\/invoice\/print"/)

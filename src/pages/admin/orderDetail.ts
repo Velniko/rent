@@ -345,7 +345,7 @@ export async function renderAdminOrderDetail(c: Context, user: any, orderId: str
             </div>
             <button type="submit" class="button button-primary" style="padding: 14px; border-radius: 12px; font-weight: 600; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); box-shadow: 0 4px 14px 0 rgba(59,130,246,0.4);">更新状态</button>
           </form>
-          ${['active', 'pending_return'].includes(String(order.status)) ? `<form method="POST" action="/admin/orders/${order.id}/update" class="js-order-status-form force-complete-form" data-force-confirm="true" style="margin-top: 12px;">
+          ${['active', 'extended', 'overdue', 'pending_return'].includes(String(order.status)) ? `<form method="POST" action="/admin/orders/${order.id}/update" class="js-order-status-form force-complete-form" data-force-confirm="true" style="margin-top: 12px;">
             <input type="hidden" name="status" value="completed">
             <input type="hidden" name="force" value="1"><label class="form-label">操作原因<textarea class="form-control" name="reason" maxlength="300" required></textarea></label><label class="workspace-checkbox"><input type="checkbox" name="deviceConfirmed" value="1" required>已确认设备收回且可正常出租</label>
             <button type="submit" class="button button-warning" style="width: 100%;">强制完成并上架</button>
