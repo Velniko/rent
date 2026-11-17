@@ -529,6 +529,18 @@
   box-shadow: 0 16px 40px rgba(22, 38, 53, .08);
 }
 
+/* 订单详情页头右上角状态徽章会被更晚声明的通用 .panel 内边距（18/20/20，移动端 14/14/16）
+   压缩到贴边，叠 4 个 class 提高优先级，保证这个页头在任何宽度下右侧都有足够呼吸空间。 */
+.panel.hero.order-detail-shell.admin-order-detail {
+  padding: 24px 28px !important;
+}
+
+@media (max-width: 760px) {
+  .panel.hero.order-detail-shell.admin-order-detail {
+    padding: 16px 20px 18px !important;
+  }
+}
+
 .order-detail-shell>.section-title:first-child {
   margin: -1px -1px 24px !important;
   padding: 22px 26px !important;
