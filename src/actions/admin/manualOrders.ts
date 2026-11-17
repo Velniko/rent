@@ -31,11 +31,11 @@ export async function saveAdminManualOrder(c: Context, orderId?: string) {
   if (data.userId && (!customer || customer.role !== 'CUSTOMER' || customer.status === 'inactive' || customer.deletedAt)) return fail('请选择有效的客户账户')
   const closing = ['completed', 'cancelled'].includes(data.status)
   if (!closing) {
-    if (data.deviceId !== order?.deviceId && device.status !== 'available') return fail('所选设备当前不可租用', 409)
+    if (data.deviceId !== order?.deviceId && ['maintenance', 'retired'].includes(device.status)) return fail('所选设备当前不可租用', 409)
     const rules = await getDeviceRentalRules(c, data.deviceId)
     const [conflict, undated] = await Promise.all([
       data.startDate && data.endDate
-        ? hasDeviceBookingConflict(c, data.deviceId, data.startDate, data.endDate, order?.id, rules.bufferDays)
+        ? hasDeviceBookingConflict(c, data.deviceId, data.startDate, data.endDate, order?.id, rules.bufferDays, data.startPeriod, data.endPeriod)
         : c.env.RENT.prepare("SELECT id FROM orders WHERE deviceId = ? AND id != ? AND status NOT IN ('completed', 'cancelled') LIMIT 1").bind(data.deviceId, order?.id || '').first().then(Boolean),
       c.env.RENT.prepare("SELECT id FROM orders WHERE deviceId = ? AND id != ? AND is_manual = 1 AND status NOT IN ('completed', 'cancelled') AND (startDate IS NULL OR endDate IS NULL) LIMIT 1").bind(data.deviceId, order?.id || '').first(),
     ])
