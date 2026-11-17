@@ -8,6 +8,8 @@ import type { Order } from '../../db/types'
 import { buildLayout, formatCurrency, formatMelbourneDateTime, canTransitionOrder } from '../../site'
 import { escapeHtml as esc } from '../../lib/html'
 import { canEditManualOrder, manualOrderStatuses } from '../../domain/manualOrders'
+import { renderOrderPickupAction, renderOrderReturnAction } from '../partials/orderFulfillmentActions'
+import { isPreInspectionComplete } from '../../lib/inspection'
 
 export async function renderAdminManualOrder(c: Context, user: any, order: Order | null = null, error = '', submitted?: Record<string, unknown>) {
   const editable = !order || canEditManualOrder(order)
@@ -17,12 +19,31 @@ export async function renderAdminManualOrder(c: Context, user: any, order: Order
     c.env.RENT.prepare("SELECT id, name, email FROM users WHERE role = 'CUSTOMER' AND (COALESCE(status, 'active') != 'inactive' OR id = ?) ORDER BY name").bind(String(values.userId || '')).all(),
     order ? c.env.RENT.prepare("SELECT a.before_json, a.after_json, a.created_at, u.name AS actor_name FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id WHERE a.target_type = 'ORDER' AND a.target_id = ? AND a.action IN ('MANUAL_ORDER_CREATED', 'MANUAL_ORDER_UPDATED') ORDER BY a.created_at DESC LIMIT 20").bind(order.id).all() : Promise.resolve({ results: [] }),
   ])
+  let fulfillmentActions = ''
+  if (order) {
+    const preRentalPending = !['cancelled', 'completed'].includes(String(order.status)) && !order.handover_completed_at
+    const preInspection = preRentalPending
+      ? await c.env.RENT.prepare("SELECT id, snapshot_json FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'before_rental' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any
+      : null
+    let preInspectionSnapshot: Record<string, any> = {}
+    try { preInspectionSnapshot = JSON.parse(preInspection?.snapshot_json || '{}') } catch (_) { }
+    const preInspectionDone = !preRentalPending || isPreInspectionComplete(preInspectionSnapshot)
+    const returnInspection = order.return_received_at ? await c.env.RENT.prepare("SELECT id FROM device_inspections WHERE deleted_at IS NULL AND rental_id = ? AND inspection_type = 'after_return' ORDER BY created_at DESC LIMIT 1").bind(order.id).first() as any : null
+    const actions = [
+      ['paid', 'pending_pickup'].includes(String(order.status)) ? renderOrderPickupAction(order, preInspectionDone) : '',
+      ['active', 'extended', 'overdue', 'suspended', 'pending_return'].includes(String(order.status)) ? renderOrderReturnAction(order) : '',
+      returnInspection ? `<a class="button button-secondary" href="/inspection/view/${returnInspection.id}">查看归还验机报告</a>` : '',
+      ['paid', 'active', 'completed', 'pending_return'].includes(String(order.status)) ? `<a class="button button-secondary" href="/orders/${order.id}/invoice">查看发票 / 收据</a>` : '',
+    ].filter(Boolean)
+    if (actions.length) fulfillmentActions = `<div class="panel"><h3>订单管理操作</h3>${actions.join('')}</div>`
+  }
   const field = (name: string, label: string, type = 'text', extra = '') => `<div class="form-group"><label class="form-label" for="manual-${name}">${label}（选填）</label><input class="form-control" id="manual-${name}" name="${name}" type="${type}" value="${esc(values[name] ?? '')}" ${extra}></div>`
   const deviceRows = devices.results as any[], customerRows = customers.results as any[]
   const paymentLabels: Record<string, string> = { card: '信用卡', bank_transfer: '银行转账', balance: '账户余额' }
   const body = `<div class="page-header"><div><h2>${order ? `手动订单 ${esc(order.orderNo || order.id)}` : '手动添加订单'}</h2><p>设备、起租/归还日期及取货/归还时段为必填项。</p></div><a class="button button-secondary" href="/admin/orders">返回订单列表</a></div>
     ${error ? `<div data-flash-notice class="page-notification page-notification--error" role="alert">${esc(error)}</div>` : ''}
     ${order ? `<div class="panel"><span class="badge badge-info">手动订单</span> <strong>${esc(manualOrderStatuses[order.status] || order.status)}</strong><p>租金 ${formatCurrency(Number(order.totalAmount) - Number(order.depositAmount))} · 押金 ${formatCurrency(order.depositAmount)}</p></div>` : ''}
+    ${fulfillmentActions}
     <div class="panel">${!editable ? '<p class="alert">订单已结束，不能再修改。</p>' : ''}<form method="POST" action="${order ? `/admin/orders/${encodeURIComponent(order.id)}/edit` : '/admin/orders/new'}">
       <fieldset ${editable ? '' : 'disabled'} style="border:0;padding:0;margin:0"><div class="grid grid-2">
         <div class="form-group"><label class="form-label" for="manual-deviceId">设备（必填）</label><select class="form-control" id="manual-deviceId" name="deviceId" required><option value="">请选择设备</option>${deviceRows.map(device => `<option value="${esc(device.id)}" data-price="${Number(device.pricePerDay) || 0}" data-deposit="${Number(device.depositAmount) || 0}" ${values.deviceId === device.id ? 'selected' : ''}>${esc(device.name)}${device.serialNumber ? ` · ${esc(device.serialNumber)}` : ''}</option>`).join('')}</select></div>

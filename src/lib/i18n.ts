@@ -152,7 +152,10 @@ export const languageScript = String.raw`
   // 返回值约定：认识就翻；不认识时保留原文并记录到 window.__i18nMissing。
   var cleanChinesePunctuation = function (value) {
     // 英文句子里残留的中文句号 / 分号会让排版很怪，只在整句命中后清理。
-    return String(value || '').replace(/[。；]/g, '').replace(/\s+$/, '');
+    // 中文逗号 / 顿号多半是拼接动态内容用的连接符（如"欢迎回来，"后面接用户名），
+    // 片段替换只换得了两侧的中文词，中间的标点不在任何字典 key 里，
+    // 删掉会把两段粘在一起不可读，所以换成半角逗号+空格，而不是直接删除。
+    return String(value || '').replace(/[。；]/g, '').replace(/[，、]\s*/g, ', ').replace(/\s+,/g, ',').replace(/,\s*,/g, ',').replace(/\s+$/, '');
   };
   var replaceSafeFragment = function (text, key) {
     var offset = 0;
@@ -190,9 +193,18 @@ export const languageScript = String.raw`
     // 句子由「中文片段 + 动态数据」拼成时必须按片段替换，否则整句永远对不上。
     // 纯中文也可能是多个已收录短语拼起来的（例如 confirm 里拼的提示），
     // 因此这里不分是否含 ASCII，一律尝试片段替换；只有替换后不再含中文才采用。
+    // 单趟替换是顺序敏感的：一个片段的左边界如果还没轮到替换，会卡在「左邻是中文」
+    // 的边界检查上，永远错过这次机会（例如"取货地点（选填）"里，"（选填）"排在
+    // "取货地点"前面试过一次，当时左边还是中文"点"，被挡住，之后"取货地点"才换完，
+    // 但不会回头重试）。多扫几轮到不再变化为止，让后换出来的边界给前面没换成的
+    // 片段一次新的机会。
     var replaced = core;
-    for (var i = 0; i < fragmentKeys.length; i++) {
-      if (replaced.indexOf(fragmentKeys[i]) !== -1) replaced = replaceSafeFragment(replaced, fragmentKeys[i]);
+    for (var pass = 0; pass < 3; pass++) {
+      var beforePass = replaced;
+      for (var i = 0; i < fragmentKeys.length; i++) {
+        if (replaced.indexOf(fragmentKeys[i]) !== -1) replaced = replaceSafeFragment(replaced, fragmentKeys[i]);
+      }
+      if (replaced === beforePass || !containsChinese(replaced)) break;
     }
     if (replaced !== core && !containsChinese(replaced)) return leading + replaced + trailing;
     // 认不出来：保留中文（可读性优先），但记录下来，方便补字典。
