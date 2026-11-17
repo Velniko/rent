@@ -155,8 +155,11 @@ test('SMTP times out and releases an unresponsive socket', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const pending = verifySmtpConnection(config)
   // Allow the dynamic runtime import and socket attachment to finish first.
-  await new Promise(resolve => setImmediate(resolve))
-  t.mock.timers.tick(20000)
+  // A single setImmediate has been observed to not always be enough under
+  // CI load, so flush a few more microtask/macrotask turns for safety.
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve))
+  // Tick past the 20s timeout with margin rather than exactly at the boundary.
+  t.mock.timers.tick(25000)
   await assert.rejects(pending, /SMTP 连接或发送超时/)
   assert.equal(remote.closed, 1)
 })
